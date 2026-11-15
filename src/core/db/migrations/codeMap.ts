@@ -30,7 +30,8 @@ export function runCodeMapSchema(db: Database.Database): void {
       line_start  INTEGER NOT NULL DEFAULT 0,
       line_end    INTEGER NOT NULL DEFAULT 0,
       signature   TEXT NOT NULL DEFAULT '',
-      exported    INTEGER NOT NULL DEFAULT 0
+      exported    INTEGER NOT NULL DEFAULT 0,
+      doc         TEXT
     );
 
     CREATE TABLE IF NOT EXISTS code_map_edges (
@@ -56,6 +57,25 @@ export function runCodeMapSchema(db: Database.Database): void {
       error         TEXT
     );
 
+    -- Семантический слой карты: документы выводятся из узлов (текст = имя +
+    -- сигнатура + путь), вектор — единственное «состояние». Hash-гейт: если
+    -- text_hash == embed_hash, текст не менялся и вектор не пересчитывается —
+    -- инкрементальные правки почти ничего не стоят.
+    CREATE TABLE IF NOT EXISTS code_map_docs (
+      project_id  TEXT NOT NULL,
+      node_id     TEXT NOT NULL,
+      file_path   TEXT NOT NULL,
+      kind        TEXT NOT NULL,
+      tier        INTEGER NOT NULL DEFAULT 2,
+      text        TEXT NOT NULL,
+      text_hash   TEXT NOT NULL,
+      embedding   BLOB,
+      embed_hash  TEXT,
+      model       TEXT,
+      embedded_at INTEGER,
+      PRIMARY KEY (project_id, node_id)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_cmn_project_file ON code_map_nodes(project_id, file_path);
     CREATE INDEX IF NOT EXISTS idx_cmn_project_name ON code_map_nodes(project_id, name);
     CREATE INDEX IF NOT EXISTS idx_cmn_project_kind ON code_map_nodes(project_id, kind);
@@ -63,5 +83,13 @@ export function runCodeMapSchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_cme_project_to ON code_map_edges(project_id, to_node);
     CREATE INDEX IF NOT EXISTS idx_cme_project_file ON code_map_edges(project_id, file_path);
     CREATE INDEX IF NOT EXISTS idx_cme_project_type ON code_map_edges(project_id, type);
+    CREATE INDEX IF NOT EXISTS idx_cmd_project_file ON code_map_docs(project_id, file_path);
+    CREATE INDEX IF NOT EXISTS idx_cmd_project_tier ON code_map_docs(project_id, tier);
   `)
+
+  // Старые БД без doc-колонки (docstring/декораторы для семантики) — идемпотентно.
+  const cols = db.prepare('PRAGMA table_info(code_map_nodes)').all() as Array<{ name: string }>
+  if (!cols.some(c => c.name === 'doc')) {
+    db.exec('ALTER TABLE code_map_nodes ADD COLUMN doc TEXT')
+  }
 }

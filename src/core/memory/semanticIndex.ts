@@ -91,9 +91,10 @@ const DOWNLOAD_RETRY_MS = 5 * 60 * 1000
  * инференс в Rust, поэтому и качать должен кто-то без ONNX в main — иначе
  * вернули бы 500 МБ и блокировки, от которых уходили. Это два HTTP-запроса.
  *
- * Возвращает true, если модель на месте.
+ * Возвращает true, если модель на месте. Экспортируется и для семантического
+ * слоя карты (mapSemantic) — скачивание общее, состояние ретраев общее.
  */
-async function ensureModelFiles(): Promise<boolean> {
+export async function ensureModelFiles(): Promise<boolean> {
   if (resolveSemanticModelPaths()) return true
   const cacheDir = process.env.TRANSFORMERS_CACHE
   if (!cacheDir) return false

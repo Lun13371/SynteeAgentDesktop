@@ -5,6 +5,8 @@ import { join } from 'path'
 import type Store from 'electron-store'
 import type { ChatMode } from '../../shared/types'
 import { getToolSchemas } from '../../core/tools'
+import { log } from '../../core/logger'
+import { projectMapQuery } from '../../core/tools/projectMap'
 import { getFileCacheSnapshot, mergeFileCache } from '../../core/context/fileReadCache'
 import { getAccessToken } from '../services/tokenStore'
 import { getGatewayAuthToken, forceRefreshGatewayToken } from '../services/gatewayClient'
@@ -1041,6 +1043,35 @@ resolve({ summary: record.summary, error: record.error })
                 })) })
               } catch (e) {
                 worker.postMessage({ type: 'recall_memory_reply', replyId, success: false, results: [], error: e instanceof Error ? e.message : String(e) })
+              }
+            })()
+            break
+          }
+
+          // project_map runs in main: the worker thread has no initialized DB
+          // (pattern recall_memory). Логика тула — projectMapQuery целиком:
+          // mapStore/mapSemantic/sidecar живут в main-процессе.
+          case 'project_map': {
+            const replyId = msg.replyId as string
+            const rpcStarted = Date.now()
+            log('[project_map] rpc: action=%s project=%s', msg.action, String(msg.projectId ?? '').slice(0, 8))
+            ;(async () => {
+              try {
+                const result = await projectMapQuery(
+                  {
+                    action: msg.action as 'search' | 'semantic' | 'callers' | 'callees' | 'file' | 'overview',
+                    query: msg.query as string | undefined,
+                    path: msg.path as string | undefined,
+                    nodeId: msg.nodeId as string | undefined,
+                    limit: msg.limit as number | undefined,
+                  },
+                  (msg.projectId as string | undefined) ?? undefined,
+                )
+                log('[project_map] rpc done in %dms (success=%s)', Date.now() - rpcStarted, result.success)
+                worker.postMessage({ type: 'project_map_reply', replyId, ...result })
+              } catch (e) {
+                log('[project_map] rpc FAILED in %dms: %s', Date.now() - rpcStarted, e instanceof Error ? e.message : String(e))
+                worker.postMessage({ type: 'project_map_reply', replyId, success: false, output: '', error: e instanceof Error ? e.message : String(e) })
               }
             })()
             break

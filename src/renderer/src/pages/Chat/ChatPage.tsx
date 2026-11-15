@@ -549,8 +549,12 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
 
   // Уведомляем extensions-detector о смене активного проекта —
   // авто-детект MCP/skills сканирует .mcp.json / .syntee/skills/ проекта.
+  // Туда же карта: активный проект получает весь приоритет индексации
+  // (mapBuilder ставит его первым в очередь, семантика вычищает первой),
+  // иначе main не знает, чей прогресс показывать и кого индексировать.
   useEffect(() => {
     window.syntee.extensions.setActiveProject(activeProjectId).catch(() => {})
+    window.syntee.projectMap.setActiveProject(activeProjectId).catch(() => {})
     // Перезагружаем списки MCP/skills для этого проекта — иначе бейдж и
     // ExtensionsPopover показывают только глобальные серверы, без проектных
     // из .mcp.json. Без этого проектные MCP появляются только после ручного

@@ -238,7 +238,7 @@ test('production integration passes reserved IDs, main context and excludes doub
 })
 
 test('one multifunction schema is exposed in normal, Ask, Plan and persona toolsets', () => {
-  const { getToolSchemas } = load('src/core/tools/schemas/index.ts')
+  const { getToolSchemas } = load('src/shared/toolSchemas/index.ts')
   for (const options of [{}, { askMode: true }, { planningMode: true }, { persona: 'reviewer' }, { persona: 'architect' }]) {
     const tools = getToolSchemas(options)
     const chats = tools.filter(t => t.function.name === 'manage_chats')

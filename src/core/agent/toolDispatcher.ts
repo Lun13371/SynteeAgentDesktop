@@ -425,17 +425,21 @@ export class ToolDispatcher {
             workdir: this.workdir,
           }
         )
-      case 'project_map':
-        return projectMapQuery(
-          {
-            action: resolvedArgs.action as 'search' | 'callers' | 'callees' | 'file' | 'overview',
-            query: resolvedArgs.query as string | undefined,
-            nodeId: resolvedArgs.nodeId as string | undefined,
-            path: resolvedArgs.path as string | undefined,
-            limit: resolvedArgs.limit as number | undefined,
-          },
-          this.projectId,
-        )
+      case 'project_map': {
+        const args = {
+          action: resolvedArgs.action as 'search' | 'semantic' | 'callers' | 'callees' | 'file' | 'overview',
+          query: resolvedArgs.query as string | undefined,
+          nodeId: resolvedArgs.nodeId as string | undefined,
+          path: resolvedArgs.path as string | undefined,
+          limit: resolvedArgs.limit as number | undefined,
+        }
+        // Worker-поток: БД там не инициализирована — round-trip в main (как
+        // recall_memory). В main-контекстах (chatSendEngine) колбэка нет —
+        // прямой вызов, БД доступна. projectId идёт в RPC отдельным полем:
+        // main сам не знает projectId воркера чата.
+        if (callbacks?.onProjectMap) return callbacks.onProjectMap({ ...args, projectId: this.projectId })
+        return projectMapQuery(args, this.projectId)
+      }
       case 'spawn_agent': {
         if (!callbacks?.onSpawnAgent) {
           return { success: false, output: '', error: 'spawn_agent is not supported in this context' }

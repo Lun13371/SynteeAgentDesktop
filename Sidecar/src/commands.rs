@@ -117,6 +117,10 @@ pub fn dispatch(request: Request) -> Result<CommandOutcome> {
                     "status": if db_ready != Some(false) { "ok" } else { "degraded" },
                     "protocolVersion": PROTOCOL_VERSION,
                     "dbReady": db_ready.unwrap_or(false),
+                    // Фактический провайдер семантики: directml/cpu; unknown,
+                    // пока модель ни разу не загружалась (настройки показывают,
+                    // что выбрал авто-режим).
+                    "semanticDevice": crate::semantic::embed::active_device(),
                 }),
 
                 shutdown: false,

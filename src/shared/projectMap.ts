@@ -46,6 +46,8 @@ export interface CodeMapNode {
   lineEnd: number
   signature: string
   exported: boolean
+  /** Docstring/JSDoc/XML-doc/декораторы — контекст для семантических документов. */
+  doc?: string | null
 }
 
 export interface CodeMapEdge {
@@ -94,7 +96,7 @@ export interface CodeMapGraph {
 /** Прогресс-событие для баннера/настроек (паттерн assistants.onSetupProgress). */
 export interface CodeMapProgress {
   projectId: string
-  phase: 'scanning' | 'parsing' | 'resolving' | 'ready' | 'error'
+  phase: 'scanning' | 'parsing' | 'resolving' | 'semantic' | 'ready' | 'error'
   percent: number
   indexedFiles: number
   totalFiles: number
@@ -108,6 +110,12 @@ export interface CodeMapProgress {
   incremental?: boolean
   /** Сколько файлов затронуто инкрементальным обновлением. */
   changedFiles?: number
+  /** Прогресс семантического слоя (эмбеддинг документов). */
+  semantic?: {
+    state: CodeMapSemanticState
+    indexedDocs: number
+    totalDocs: number
+  }
 }
 
 export interface GetGraphOptions {
@@ -116,6 +124,40 @@ export interface GetGraphOptions {
   /** Ограничить граф одним файлом (drill-down). */
   filePath?: string
   limit?: number
+}
+
+// ─── Семантический слой ──────────────────────────────────────────────────────
+
+/** Режим последнего семантического поиска: e5 — векторы, lexical — слова. */
+export type CodeMapSemanticMode = 'e5' | 'lexical' | 'none'
+
+/** Состояние семантического слоя проекта. */
+export type CodeMapSemanticState = 'off' | 'warming' | 'ready' | 'error'
+
+/** Документ символа/файла для эмбеддинга — выводится из узлов карты. */
+export interface CodeMapDocInfo {
+  nodeId: string
+  filePath: string
+  kind: CodeNodeKind
+  /** 1 — файлы + exported (индексируются первыми), 2 — остальные символы. */
+  tier: 1 | 2
+  text: string
+  textHash: string
+}
+
+/** Хит семантического поиска: узел + каналы, по которым он найден. */
+export interface CodeMapSemanticHit {
+  node: CodeMapNode
+  score: number
+  matchedBy: 'semantic' | 'lexical' | 'both'
+}
+
+/** Итог семантического поиска. */
+export interface CodeMapSemanticResult {
+  mode: CodeMapSemanticMode
+  totalDocs: number
+  indexedDocs: number
+  hits: CodeMapSemanticHit[]
 }
 
 /** Настройка скорости фоновой индексации. */
@@ -128,10 +170,21 @@ export interface ProjectMapSpeedSettings {
 
 export const DEFAULT_PROJECT_MAP_SPEED: ProjectMapSpeedSettings = { mode: 'auto', level: 50 }
 
+/** Статус семантического слоя проекта (для IPC/настроек). */
+export interface CodeMapSemanticStatus {
+  state: CodeMapSemanticState
+  mode: CodeMapSemanticMode
+  totalDocs: number
+  indexedDocs: number
+  error: string | null
+}
+
 /** Строка статистики проекта для вкладки настроек. */
 export interface ProjectMapProjectStats extends CodeMapStatus {
   name: string
   workdir: string
+  /** Семантический слой: сколько документов проиндексировано. */
+  semantic: CodeMapSemanticStatus
 }
 
 /** Что авто-режим выбрал от железа (для показа в настройках). */

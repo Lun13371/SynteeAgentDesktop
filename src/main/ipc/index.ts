@@ -16,6 +16,22 @@ import { registerAssistantsIPC } from './assistants.ipc'
 import { registerProjectMapIPC } from './projectMap.ipc'
 import { projectMapManager } from '../../core/projectMap/mapBuilder'
 import { DEFAULT_PROJECT_MAP_SPEED, type ProjectMapSpeedSettings } from '../../shared/projectMap'
+import { shutdownSidecar } from '../../core/sidecar/sidecarClient'
+
+/** Устройство семантики: 'auto' — DirectML при доступности, иначе CPU. */
+export type SemanticDeviceSetting = 'auto' | 'cpu' | 'gpu'
+
+function normalizeSemanticDevice(value: unknown): SemanticDeviceSetting {
+  return value === 'cpu' || value === 'gpu' ? value : 'auto'
+}
+
+/** Ставит env для следующего спавна sidecar и перезапускает текущий процесс. */
+function applySemanticDevice(value: unknown): void {
+  const next = normalizeSemanticDevice(value)
+  if (process.env.SYNTEE_SEMANTIC_DEVICE === next) return
+  process.env.SYNTEE_SEMANTIC_DEVICE = next
+  void shutdownSidecar().catch(() => { /* перезапуск ленивый, по следующему запросу */ })
+}
 
 interface IPCContext {
   store: Store
@@ -41,6 +57,11 @@ export function registerAllIPC(ctx: IPCContext): void {
     speed: (ctx.store.get('projectMapSpeed', DEFAULT_PROJECT_MAP_SPEED) as ProjectMapSpeedSettings) ?? DEFAULT_PROJECT_MAP_SPEED,
   }))
   projectMapManager.reloadConfig()
+  // Устройство семантики читается в момент спавна sidecar из process.env —
+  // выставляем до первого спавна; при смене настройки applySemanticDevice.
+  process.env.SYNTEE_SEMANTIC_DEVICE = normalizeSemanticDevice(
+    ctx.store.get('projectMapSemanticDevice', 'auto'),
+  )
 }
 
 function registerWindowIPC({ mainWindow }: IPCContext): void {
@@ -106,6 +127,12 @@ function registerSettingsIPC({ store, hotkeyManager }: IPCContext): void {
     }
     if (key === 'projectMapEnabled' || key === 'projectMapSpeed') {
       projectMapManager.reloadConfig()
+    }
+    // Смена устройства семантики: env читается при спавне sidecar, поэтому
+    // перезапускаем его — следующее обращение поднимет процесс с новым
+    // провайдером (и с выгруженной моделью: кэш эмбеддера в нём же).
+    if (key === 'projectMapSemanticDevice') {
+      applySemanticDevice(value)
     }
     // Перерегистрация глобальных хоткеев при изменении биндингов.
     // Без этого старые шорткаты остаются зарегистрированными до перезапуска.

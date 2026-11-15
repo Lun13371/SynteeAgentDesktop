@@ -6,6 +6,8 @@
 import { ipcMain, webContents } from 'electron'
 import { projectMapManager } from '../../core/projectMap/mapBuilder'
 import * as store from '../../core/projectMap/mapStore'
+import { getSemanticStatus, semanticWorker } from '../../core/projectMap/mapSemantic'
+import { sidecarHealth } from '../../core/sidecar/sidecarClient'
 import { getAllProjects } from '../../core/db'
 import type { GetGraphOptions, CodeMapProgress, ProjectMapProjectStats } from '../../shared/projectMap'
 
@@ -21,6 +23,13 @@ export function registerProjectMapIPC(): void {
     }
   })
 
+  // Прогресс семантического слоя (фаза 'semantic') — тот же канал.
+  semanticWorker.setProgressCallback((p: CodeMapProgress) => {
+    for (const wc of webContents.getAllWebContents()) {
+      if (!wc.isDestroyed()) wc.send('projectMap:progress', p)
+    }
+  })
+
   ipcMain.handle('projectMap:getGraph', (_, projectId: string, opts?: GetGraphOptions) => {
     return store.getGraph(projectId, opts ?? {})
   })
@@ -31,6 +40,10 @@ export function registerProjectMapIPC(): void {
 
   ipcMain.handle('projectMap:getStatus', (_, projectId: string) => {
     return store.getStatus(projectId)
+  })
+
+  ipcMain.handle('projectMap:getSemanticStatus', (_, projectId: string) => {
+    return getSemanticStatus(projectId)
   })
 
   ipcMain.handle('projectMap:getStats', (_, projectId: string) => {
@@ -65,10 +78,23 @@ export function registerProjectMapIPC(): void {
       ...store.getStatus(p.id),
       name: p.name,
       workdir: p.workdir,
+      semantic: getSemanticStatus(p.id),
     }))
   })
 
   ipcMain.handle('projectMap:getAutoInfo', () => projectMapManager.autoInfo())
+
+  // Фактический провайдер семантики ('directml'/'cpu'/'unknown') + что выбрано
+  // в настройках. Спавнит sidecar, если тот ещё не поднят — для отображения
+  // в настройках это допустимо.
+  ipcMain.handle('projectMap:getSemanticDevice', async () => {
+    let active: string | null = null
+    try {
+      const health = await sidecarHealth()
+      active = health.semanticDevice ?? null
+    } catch { /* sidecar недоступен — покажем только настройку */ }
+    return { requested: process.env.SYNTEE_SEMANTIC_DEVICE ?? 'auto', active }
+  })
 
   ipcMain.handle('projectMap:rebuild', (_, projectId: string) => {
     projectMapManager.rebuildProject(projectId)

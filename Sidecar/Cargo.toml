@@ -31,9 +31,11 @@ tree-sitter-json = "0.24.8"
 # ── Semantic (E5 embeddings) ─────────────────────────────────────────────────
 # ort — ONNX Runtime. Тот же движок, что у @huggingface/transformers в main,
 # поэтому векторы совпадают с JS-эталоном (важно для паритета индекса).
-# download-binaries тянет prebuilt onnxruntime при сборке, copy-dylibs кладёт
-# DLL рядом с exe (build.ps1 копирует её в resources/sidecar).
-ort = { version = "2.0.0-rc.15", default-features = false, features = ["std", "download-binaries", "copy-dylibs", "tls-native"] }
+# download-binaries тянет prebuilt onnxruntime при сборке; для Windows pyke
+# раздаёт сразу directml-флейвор (ORT статически вшивается в exe, а рядом с exe
+# остаётся только DirectML.dll — build.ps1 копирует её в resources/sidecar).
+# Фича directml открывает Rust-API EP (ort::ep::DirectML); архив тот же.
+ort = { version = "2.0.0-rc.15", default-features = false, features = ["std", "download-binaries", "copy-dylibs", "tls-native", "directml"] }
 # tokenizers — XLM-R SentencePiece (unigram) для E5; читает тот же tokenizer.json,
 # что использует JS-пайплайн, поэтому токенизация идентична.
 tokenizers = { version = "0.23", default-features = false, features = ["onig"] }

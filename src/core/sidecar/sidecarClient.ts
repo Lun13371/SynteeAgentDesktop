@@ -14,6 +14,8 @@ export interface SidecarDefinition {
   lineStart: number
   lineEnd: number
   parentName?: string
+  /** Docstring/JSDoc/декораторы над определением (семантический контекст). */
+  doc?: string
 }
 
 /** Structured import: module specifier as written + introduced binding names. */
@@ -35,6 +37,8 @@ export interface SidecarHealthResult {
   ok: boolean
   status?: string
   protocolVersion?: number
+  /** 'directml' | 'cpu' | 'unknown' — чем реально поднята E5-сессия. */
+  semanticDevice?: string
   [key: string]: unknown
 }
 
@@ -231,6 +235,20 @@ function ensureChild(): ChildProcessWithoutNullStreams {
     cwd: process.cwd(),
     stdio: ['pipe', 'pipe', 'pipe'],
     windowsHide: true,
+    // Потоки E5-эмбеддера: 4 по умолчанию (в Rust — 2 как conservative-дефолт).
+    // Прогрев карты быстрее вдвое; уступание foreground остаётся в планировщике.
+    // 8 потоков на семантику: сам sidecar запущен с BELOW_NORMAL-приоритетом —
+    // когда ПК занят, планировщик отдаёт ядра foreground-приложениям и
+    // индексация становится незаметной; когда свободен — прогрев идёт в
+    // полную силу. Переопределяется переменной окружения.
+    // SYNTEE_SEMANTIC_DEVICE ставит main: настройка projectMapSemanticDevice
+    // ('auto' | 'cpu' | 'gpu'); Rust сам откатится на CPU, если DirectML
+    // недоступен.
+    env: {
+      ...process.env,
+      SYNTEE_SEMANTIC_THREADS: process.env.SYNTEE_SEMANTIC_THREADS ?? '8',
+      SYNTEE_SEMANTIC_DEVICE: process.env.SYNTEE_SEMANTIC_DEVICE ?? 'auto',
+    },
   })
   child = processRef
   stdoutBuffer = ''
@@ -310,6 +328,7 @@ function normalizeDefinition(value: unknown): SidecarDefinition | null {
     lineStart: typeof d.lineStart === 'number' ? d.lineStart : 0,
     lineEnd: typeof d.lineEnd === 'number' ? d.lineEnd : typeof d.lineStart === 'number' ? d.lineStart : 0,
     parentName: typeof d.parentName === 'string' ? d.parentName : undefined,
+    doc: typeof d.doc === 'string' && d.doc.length > 0 ? d.doc : undefined,
   }
 }
 

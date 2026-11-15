@@ -5,10 +5,17 @@ import { cpus } from 'os'
 import { app, webContents } from 'electron'
 import { log } from '../../core/logger'
 import { getModelPath, detectModelSize, isModelDownloaded, downloadModel, resolveCtxSize, type ModelSize, type CtxSizeSetting } from '../assistants/modelManager'
-import { getLlamaServerPath, isBinaryReady, downloadBinary } from '../assistants/binaryManager'
+import { getLlamaServerPath, isBinaryReady, downloadBinary, type LlamaFlavor } from '../assistants/binaryManager'
 
 export type ManagerState = 'idle' | 'preparing' | 'starting' | 'ready' | 'error'
 export type QueuePriority = 'watcher' | 'janitor' | 'default'
+
+/**
+ * Где считать мини-агентов: `auto` — Vulkan-GPU, если сервер поднялся и
+ * реально offload'ил слои, иначе CPU; `cpu` — всегда CPU; `gpu` — Vulkan с
+ * откатом на CPU, если карты нет. Зеркально настройке семантики.
+ */
+export type LlamaDevice = 'auto' | 'cpu' | 'gpu'
 
 export interface CompleteOptions {
   priority?: QueuePriority
@@ -24,6 +31,10 @@ export interface ManagerStatus {
   ctxSize: number
   /** Выбранная настройка контекста ('auto' | фиксированный размер). */
   ctxSetting: CtxSizeSetting
+  /** Что выбрано в настройках ('auto' | 'cpu' | 'gpu'). */
+  device: LlamaDevice
+  /** Чем сервер реально работает сейчас: 'gpu' | 'cpu' | null — ещё не запущен. */
+  activeDevice: 'gpu' | 'cpu' | null
   modelDownloaded: boolean
   binaryReady: boolean
   port: number
@@ -75,6 +86,15 @@ class LocalModelManager {
   /** Настройка контекста (то, что выбрал пользователь) и её разрешённое значение. */
   private ctxSetting: CtxSizeSetting = 'auto'
   private ctxSize: number = resolveCtxSize('auto')
+  /** Устройство из настроек; факт — в activeDevice. */
+  private device: LlamaDevice = 'auto'
+  /** Чем сервер реально работает: после удачного спавна. */
+  private activeDevice: 'gpu' | 'cpu' | null = null
+  /** Авто уже откатывалось на CPU — не долбить Vulkan при каждом рестарте,
+   * пока настройку не поменяли или приложение не перезапущено. */
+  private gpuUnavailable = false
+  /** Stderr текущего/последнего спавна — по нему узнаём факт GPU-offload. */
+  private logLines: string[] = []
   private ensurePromise: Promise<boolean> | null = null
   private watchdog: NodeJS.Timeout | null = null
   private restarts = 0
@@ -123,6 +143,8 @@ class LocalModelManager {
       modelSize: this.modelSize,
       ctxSize: this.ctxSize,
       ctxSetting: this.ctxSetting,
+      device: this.device,
+      activeDevice: this.activeDevice,
       modelDownloaded: isModelDownloaded(this.modelSize),
       binaryReady: isBinaryReady(),
       port: this.port,
@@ -151,6 +173,25 @@ class LocalModelManager {
     }
   }
 
+  /** Смена устройства: применяется рестартом сервера (аргумент запуска). */
+  setDevice(device: LlamaDevice): void {
+    const next: LlamaDevice = device === 'cpu' || device === 'gpu' ? device : 'auto'
+    if (next === this.device) return
+    this.device = next
+    // Явная смена настройки = новая попытка GPU даже после отката.
+    this.gpuUnavailable = false
+    if (this.state === 'ready' || this.state === 'error') void this.restart()
+  }
+
+  /** Какую сборку llama-server качать/запускать при текущей настройке. */
+  private resolveFlavor(): LlamaFlavor {
+    if (this.device === 'cpu') return 'cpu'
+    // Явный gpu — ретраим Vulkan при каждом старте (драйвер могли поставить),
+    // auto после отката не долбится до смены настройки.
+    if (this.device === 'gpu') return 'vulkan'
+    return this.gpuUnavailable ? 'cpu' : 'vulkan'
+  }
+
   /** Idempotent, single-flight: download binary+model if needed, start server. */
   ensureReady(): Promise<boolean> {
     if (this.state === 'ready') return Promise.resolve(true)
@@ -171,6 +212,7 @@ class LocalModelManager {
     this.shuttingDown = true
     this.stopWatchdog()
     this.killProcess()
+    this.activeDevice = null
     for (const item of this.queue.splice(0)) item.reject(new Error('Manager shutting down'))
     this.setState('idle')
     this.shuttingDown = false
@@ -181,9 +223,11 @@ class LocalModelManager {
   private async doEnsure(): Promise<boolean> {
     try {
       this.setState('preparing')
+      // Сборка зависит от устройства: auto/gpu — Vulkan-версия llama-server
+      // (скачается сама в bin-vulkan/), cpu — обычная из bin/.
       this.emit({ phase: 'binary', percent: 0 })
-      if (!isBinaryReady()) {
-        await downloadBinary(p => this.emit({ phase: 'binary', percent: p.percent, error: p.error }))
+      if (!isBinaryReady(this.resolveFlavor())) {
+        await downloadBinary(this.resolveFlavor(), p => this.emit({ phase: 'binary', percent: p.percent, error: p.error }))
       }
       this.emit({ phase: 'model', percent: 0 })
       if (!isModelDownloaded(this.modelSize)) {
@@ -210,8 +254,9 @@ class LocalModelManager {
     }
   }
 
-  private findBinary(): string | null {
-    if (isBinaryReady()) return getLlamaServerPath()
+  private findBinary(flavor: LlamaFlavor): string | null {
+    if (isBinaryReady(flavor)) return getLlamaServerPath(flavor)
+    // Fallback для старых установок: бинарь, уложенный в ресурсы при сборке.
     const candidates = [
       join(app.getAppPath(), 'resources', 'llama', 'llama-server.exe'),
       join(process.resourcesPath ?? '', 'llama', 'llama-server.exe'),
@@ -220,8 +265,20 @@ class LocalModelManager {
     return null
   }
 
-  private async spawnServer(): Promise<boolean> {
-    const binary = this.findBinary()
+  private async spawnServer(flavorOverride?: LlamaFlavor): Promise<boolean> {
+    // Override рвёт рекурсию отката: после неудачного Vulkan запускаем
+    // ровно CPU, даже если настройка требует постоянных попыток.
+    const flavor = flavorOverride ?? this.resolveFlavor()
+    if (!isBinaryReady(flavor)) {
+      // Само скачает нужную сборку (Vulkan ~ вдвое тяжелее CPU-версии).
+      try {
+        await downloadBinary(flavor, p => this.emit({ phase: 'binary', percent: p.percent, error: p.error }))
+      } catch (err) {
+        this.lastError = `llama-server download failed: ${(err as Error).message}`
+        return false
+      }
+    }
+    const binary = this.findBinary(flavor)
     if (!binary) { this.lastError = 'llama-server binary not found'; return false }
     if (!isModelDownloaded(this.modelSize)) { this.lastError = `model ${this.modelSize} not downloaded`; return false }
 
@@ -240,12 +297,26 @@ class LocalModelManager {
       '--batch-size', '512',
       '--log-disable',
     ]
+    if (flavor === 'vulkan') {
+      // Вся модель + KV-кэш в VRAM: 1B-Q4 с контекстом — ~1-1.5 ГБ.
+      args.push('--n-gpu-layers', '999')
+    }
 
     try {
+      // Vulkan-сборка: сначала дешёвая проверка адаптера (~0.3 с). Регулярка
+      // по stderr ненадёжна — новые сборки не печатают «offloaded …» на
+      // дефолтном verbosity, а --list-devices даёт прямой ответ.
+      if (flavor === 'vulkan' && !(await this.detectVulkanDevice(binary))) {
+        return this.fallbackToCpu('no Vulkan devices on this machine')
+      }
+      this.logLines = []
       this.process = spawn(binary, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
       this.process.stderr?.on('data', (d: Buffer) => {
         const line = d.toString().trim()
-        if (line) log('[LocalModels] %s', line.slice(0, 200))
+        if (!line) return
+        this.logLines.push(line)
+        if (this.logLines.length > 500) this.logLines.shift()
+        log('[LocalModels] %s', line.slice(0, 200))
       })
       this.process.on('exit', (code) => {
         log('[LocalModels] server exited code=%s', code)
@@ -258,8 +329,17 @@ class LocalModelManager {
         this.process = null
       })
       const up = await this.waitForHealth(STARTUP_TIMEOUT_MS)
-      if (!up) { this.lastError = 'server did not become healthy'; this.killProcess(); return false }
-      log('[LocalModels] ready port=%d model=%s threads=%d', this.port, this.modelSize, threads)
+      if (!up) {
+        this.killProcess()
+        // Vulkan не поднялся (нет карты / старый драйвер) — тихо пробуем CPU.
+        if (flavor === 'vulkan') return this.fallbackToCpu('server did not become healthy')
+        this.lastError = 'server did not become healthy'
+        return false
+      }
+      // Устройство подтверждено: vulkan — адаптер был найден и сервер жив,
+      // cpu — либо выбрано явно, либо после отката.
+      this.activeDevice = flavor === 'vulkan' ? 'gpu' : 'cpu'
+      log('[LocalModels] ready port=%d model=%s device=%s threads=%d', this.port, this.modelSize, this.activeDevice, threads)
       return true
     } catch (err) {
       this.lastError = (err as Error).message
@@ -267,9 +347,50 @@ class LocalModelManager {
     }
   }
 
+  /** Откат Vulkan→CPU: запоминаем и перезапускаемся на CPU-сборке. */
+  private fallbackToCpu(reason: string): Promise<boolean> {
+    log('[LocalModels] GPU недоступен (%s) — откат на CPU', reason)
+    this.gpuUnavailable = true
+    this.activeDevice = 'cpu'
+    return this.spawnServer('cpu')
+  }
+
+  /**
+   * Есть ли GPU-адаптер: `llama-server --list-devices` печатает по строке на
+   * бэкенд («Vulkan0: NVIDIA GeForce GTX 1660 (… MiB …)»). Пустой список или
+   * падение процесса = GPU нет. CPU-сборка флага не достигает — проверяется
+   * только Vulkan-бинарь.
+   */
+  private detectVulkanDevice(binary: string): Promise<boolean> {
+    return new Promise((resolve) => {
+      let out = ''
+      let settled = false
+      let child: ChildProcess | null = null
+      const done = (ok: boolean) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        try { child?.kill() } catch { /* already dead */ }
+        resolve(ok)
+      }
+      const timer = setTimeout(() => done(false), 15_000)
+      child = spawn(binary, ['--list-devices'], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
+      child.stdout?.on('data', (d: Buffer) => { out += d.toString() })
+      child.stderr?.on('data', (d: Buffer) => { out += d.toString() })
+      child.on('error', () => done(false))
+      child.on('exit', () => {
+        const devices = out.split('\n').filter(l => /^(Vulkan|CUDA|SYCL|ROCm|Metal)\d?\s*[:=]/.test(l.trim()))
+        done(devices.length > 0)
+      })
+    })
+  }
+
   private async waitForHealth(timeoutMs: number): Promise<boolean> {
     const start = Date.now()
     while (Date.now() - start < timeoutMs) {
+      // Сервер умер до готовности (например, Vulkan без адаптера) — ждём
+      // таймаут бессмысленно: сразу отдаём неудачу, fallback начнётся раньше.
+      if (!this.process) return false
       try {
         const res = await fetch(`${this.getBaseUrl()}/health`)
         if (res.ok) return true
@@ -305,6 +426,7 @@ class LocalModelManager {
     this.killProcess()
     this.restarts = 0
     this.idleUnloaded = true
+    this.activeDevice = null
     return true
   }
 

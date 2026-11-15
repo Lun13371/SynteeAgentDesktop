@@ -101,6 +101,8 @@ function applyModelSize(): void {
   // Контекст — аргумент запуска сервера: применяем здесь же, чтобы смена
   // настройки не ждала следующего рестарта.
   localModels.setCtxSetting(globalSettings.ctxSize)
+  // Устройство (auto/cpu/gpu) — тоже аргумент запуска; смена рестартит сервер.
+  localModels.setDevice(globalSettings.device)
 }
 
 export type { SetupProgress }

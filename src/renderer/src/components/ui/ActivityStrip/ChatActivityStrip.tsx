@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { motion } from 'framer-motion'
 import ActivityStrip, { type ActivityItem } from './ActivityStrip'
+import { useChatStore } from '../../../store/chat.store'
 import type { CodeMapProgress } from '../../../../../shared/projectMap'
 
 const ASSIST_LABELS: Record<string, string> = {
@@ -15,6 +16,7 @@ const MAP_LABELS: Record<string, string> = {
   scanning: 'Сканирую файлы',
   parsing: 'Разбираю код',
   resolving: 'Строю связи',
+  semantic: 'Индексирую семантику',
   ready: 'Карта готова',
   error: 'Ошибка карты',
 }
@@ -31,6 +33,30 @@ export default function ChatActivityStrip() {
   const [assistVisible, setAssistVisible] = useState(false)
   const [map, setMap] = useState<CodeMapProgress | null>(null)
   const [mapVisible, setMapVisible] = useState(false)
+  // Активный проект открытого чата: чужие проекты не перебивают уведомлениями,
+  // пока идёт его индексация (карта и/или семантика). Когда у активного всё
+  // готово — прогресс других проектов снова показывается.
+  const activeProjectId = useChatStore(s => s.activeProjectId)
+  // Стартуем с false: чужие скрыты, пока статус активного не подтверждён —
+  // иначе стартовый флуд событий чужих проектов успевает прорваться.
+  const activeDoneRef = useRef(false)
+
+  useEffect(() => {
+    // Смена активного проекта: пока не знаем его состояние — чужие скрыты,
+    // статус запрашиваем у main (карта + семантика). Без проекта — показываем всё.
+    activeDoneRef.current = !activeProjectId
+    if (!activeProjectId) return
+    let cancelled = false
+    Promise.all([
+      window.syntee.projectMap.getStatus(activeProjectId),
+      window.syntee.projectMap.getSemanticStatus(activeProjectId),
+    ]).then(([st, sem]) => {
+      if (cancelled) return
+      activeDoneRef.current = st.state === 'ready'
+        && (sem.totalDocs === 0 || sem.state === 'ready' || sem.state === 'off')
+    }).catch(() => { activeDoneRef.current = true })
+    return () => { cancelled = true }
+  }, [activeProjectId])
 
   useEffect(() => {
     const unsub = window.syntee.assistants.onSetupProgress(p => {
@@ -44,16 +70,25 @@ export default function ChatActivityStrip() {
 
   useEffect(() => {
     const unsub = window.syntee.projectMap.onProgress(p => {
+      // Чужие проекты не перебивают: показываем только если у активного
+      // проекта карта и семантика полностью готовы (или чат без проекта).
+      if (activeProjectId && p.projectId !== activeProjectId && !activeDoneRef.current) return
       // Мелкие быстрые правки (инкрементал на пару файлов) — молча, чтобы
       // полоска не надоедала. Показываем только заметные синки/сборки.
       if (p.incremental && (p.changedFiles ?? 0) < 20) return
+      // Трекинг готовности активного проекта по его же событиям.
+      if (p.projectId === activeProjectId) {
+        if (p.semantic) activeDoneRef.current = p.semantic.state === 'ready'
+        else if (p.phase === 'ready' && !p.semantic) activeDoneRef.current = true
+        else if (p.phase !== 'ready') activeDoneRef.current = false
+      }
       setMap(p)
       setMapVisible(true)
       if (p.phase === 'ready') setTimeout(() => setMapVisible(false), 3000)
       if (p.phase === 'error') setTimeout(() => setMapVisible(false), 6000)
     })
     return unsub
-  }, [])
+  }, [activeProjectId])
 
   const items: ActivityItem[] = []
 

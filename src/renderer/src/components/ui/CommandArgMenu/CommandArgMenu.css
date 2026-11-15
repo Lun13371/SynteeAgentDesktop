@@ -20,12 +20,12 @@
 .cmdarg-menu::-webkit-scrollbar { width: 3px; }
 .cmdarg-menu::-webkit-scrollbar-thumb { background: var(--overlay-4); border-radius: 2px; }
 
+/* ── Хедер: команда + шаги уровней + бейдж обязательности ─────────────────── */
 .cmdarg-menu-header {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 4px 10px 6px;
-  border-bottom: 1px solid var(--border);
+  padding: 4px 10px 2px;
   flex-shrink: 0;
 }
 
@@ -33,25 +33,34 @@
   font-size: 12px;
   font-weight: 700;
   color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 26%, transparent);
+  border-radius: 6px;
+  padding: 1px 7px;
 }
 
-.cmdarg-menu-argname {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-secondary);
-  background: var(--overlay-3);
-  border-radius: 4px;
-  padding: 1px 6px;
+/* Шаги многоуровневого пикера: пройден / текущий / впереди */
+.cmdarg-menu-steps {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
-
-.cmdarg-menu-argdesc {
-  font-size: 11px;
-  color: var(--text-muted);
-  flex: 1;
-  font-style: italic;
+.cmdarg-menu-step {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--overlay-4);
+  border: 1px solid transparent;
+}
+.cmdarg-menu-step--done { background: var(--accent); opacity: 0.75; }
+.cmdarg-menu-step--cur {
+  background: transparent;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent);
 }
 
 .cmdarg-menu-required {
+  margin-left: auto;
   font-size: 9px;
   font-weight: 700;
   color: #f87171;
@@ -63,6 +72,7 @@
 }
 
 .cmdarg-menu-optional {
+  margin-left: auto;
   font-size: 9px;
   font-weight: 700;
   color: var(--text-muted);
@@ -73,6 +83,36 @@
   text-transform: uppercase;
 }
 
+/* ── Подзаголовок: имя аргумента чипом + описание ─────────────────────────── */
+.cmdarg-menu-sub {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 2px 10px 6px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.cmdarg-menu-argname {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: var(--overlay-3);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 1px 7px;
+  white-space: nowrap;
+}
+
+.cmdarg-menu-argdesc {
+  font-size: 11px;
+  color: var(--text-muted);
+  flex: 1;
+  min-width: 120px;
+}
+
+/* ── Список опций (enum-аргументы) ────────────────────────────────────────── */
 .cmdarg-menu-items {
   display: flex;
   flex-direction: column;
@@ -92,7 +132,6 @@
   text-align: left;
   transition: background 0.1s;
 }
-
 .cmdarg-menu-item:hover { background: var(--overlay-3); }
 .cmdarg-menu-item--active { background: color-mix(in srgb, var(--accent) 16%, transparent) !important; }
 
@@ -113,13 +152,17 @@
 }
 
 .cmdarg-menu-choice {
+  font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
   font-size: 13px;
   color: var(--text-secondary);
   font-weight: 500;
   flex: 1;
 }
+/* Совпавший с вводом префикс опции — акцентом */
+.cmdarg-menu-choice-match { color: var(--accent); font-weight: 700; }
 
 .cmdarg-menu-item--active .cmdarg-menu-choice { color: var(--accent); }
+.cmdarg-menu-item--active .cmdarg-menu-choice-match { color: var(--text-primary, var(--accent)); }
 
 .cmdarg-menu-default-tag {
   font-size: 10px;
@@ -128,6 +171,29 @@
   border-radius: 4px;
   padding: 1px 5px;
   font-weight: 600;
+}
+
+.cmdarg-menu-check {
+  flex-shrink: 0;
+  color: var(--accent);
+}
+
+/* ── Free-text аргумент: подсказка-карточка вместо списка ─────────────────── */
+.cmdarg-menu-free {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  margin: 2px 0;
+  border-radius: 8px;
+  background: var(--overlay-2, var(--overlay-3));
+  border: 1px dashed var(--border);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.cmdarg-menu-free-icon {
+  flex-shrink: 0;
+  color: var(--accent);
 }
 
 .cmdarg-menu-footer {

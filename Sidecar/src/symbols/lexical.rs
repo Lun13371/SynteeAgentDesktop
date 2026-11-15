@@ -17,6 +17,11 @@ pub struct SymbolDef {
     pub signature: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_name: Option<String>,
+    /// Natural-language context above/inside the definition: docstring (Python),
+    /// JSDoc/XML-doc comments, decorators with routes (`@router.post("/login")`).
+    /// Feeds semantic-search documents — E5 needs words, not just identifiers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc: Option<String>,
 }
 
 /// A structured import: the module specifier plus the bindings it introduces.
@@ -68,7 +73,7 @@ fn is_false(value: &bool) -> bool {
 /// Languages where a leading `#` starts a comment. It must not include C#:
 /// `#region`/`#if` there are directives, and treating them as comments hid real
 /// declarations that followed on the same line.
-fn hash_starts_comment(language: &str) -> bool {
+pub(crate) fn hash_starts_comment(language: &str) -> bool {
     matches!(
         language,
         "python" | "ruby" | "bash" | "yaml" | "toml" | "php" | "perl" | "elixir" | "make"
@@ -112,6 +117,7 @@ pub fn extract_symbols(source: &str, language: &str, skip_references: bool) -> F
                     line_end: line_number,
                     signature,
                     parent_name,
+                    doc: None,
                 });
             }
             if is_container(kind) && clean.contains('{') {

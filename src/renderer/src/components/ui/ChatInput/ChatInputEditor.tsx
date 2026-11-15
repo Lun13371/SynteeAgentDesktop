@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef } from 'react'
 import type { Attachment } from '../../../../../shared/types'
 import { splitByAttachTokens } from '../../../../../shared/attachmentMarkdown'
+import { SLASH_COMMANDS } from '../../../../../shared/slashCommands'
+import type { SlashCommand } from '../../../../../shared/slashCommands'
 
 // ── contentEditable-редактор с inline-вложениями ───────────────────────────
 //
@@ -383,6 +385,181 @@ function createReplyChipEl(
   return span
 }
 
+// ── Инлайн-подсветка слеш-команды и enum-аргументов (Discord-стиль) ─────────
+//
+// Ведущий токен `/name` оборачивается в .ce-cmd, завершённые аргументы,
+// совпавшие с choices своей позиции, — в .ce-arg. Обёртки — обычные
+// inline-спаны: serializeEditor/nodeLength/caret-хелперы спускаются внутрь
+// и считают текст как есть, поэтому сериализация НЕ меняется (value остаётся
+// чистым текстом — черновик, отправка и парсер команд ничего о декорации
+// не знают).
+//
+// Правила стабильности: подсвечивается только ПОЛНОЕ имя команды (`/compact`,
+// `/compact args…`); частичное `/comp` остаётся текстом — перестройка ведущего
+// участка выполняется одной мутацией со старой кареткой, восстановленной по
+// сериализованному оффсету (декорация текст не меняет — оффсет валиден до и
+// после). Пока структура совпадает с ожидаемой, мутаций нет вовсе: набор
+// текста после команды декорацию не трогает.
+
+const CMD_DECOR_CLASS = 'ce-cmd'
+const ARG_DECOR_CLASS = 'ce-arg'
+const DECOR_NAME_RE = /^\/([a-z0-9_-]+)/i
+
+/** Кусок ведущей строки: существующая декор-обёртка или текстовый узел. */
+interface DecorPiece {
+  node: HTMLElement | Text
+  span: HTMLElement | null
+  /** Текст до '\n'. */
+  text: string
+  /** Остаток узла С '\n' включительно ('' — переноса нет). Только у последнего куска. */
+  tail: string
+}
+
+/** Ведущая строка редактора: куски до первого '\n'/BR/чипа/блока. */
+function collectDecorPieces(el: HTMLElement): { pieces: DecorPiece[]; line: string } {
+  const pieces: DecorPiece[] = []
+  let node: Node | null = el.firstChild
+  // Реплай-чипы — визуальный слой ПЕРЕД текстом, не контент строки.
+  while (node && node.nodeType === Node.ELEMENT_NODE && (node as HTMLElement).classList.contains('ce-reply')) {
+    node = node.nextSibling
+  }
+  let line = ''
+  while (node) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      const t = node as Text
+      const data = t.data ?? ''
+      const nl = data.indexOf('\n')
+      const text = nl === -1 ? data : data.slice(0, nl)
+      pieces.push({ node: t, span: null, text, tail: nl === -1 ? '' : data.slice(nl) })
+      line += text
+      if (nl !== -1) break
+      node = node.nextSibling
+      continue
+    }
+    if (node.nodeType === Node.ELEMENT_NODE) {
+      const elm = node as HTMLElement
+      const cls = elm.classList.contains(CMD_DECOR_CLASS) ? CMD_DECOR_CLASS
+        : elm.classList.contains(ARG_DECOR_CLASS) ? ARG_DECOR_CLASS : null
+      if (cls) {
+        const data = elm.textContent ?? ''
+        const nl = data.indexOf('\n')
+        const text = nl === -1 ? data : data.slice(0, nl)
+        pieces.push({ node: elm, span: elm, text, tail: nl === -1 ? '' : data.slice(nl) })
+        line += text
+        if (nl !== -1) break
+        node = node.nextSibling
+        continue
+      }
+      break // чип вложения / BR / неизвестный или блочный элемент — строка кончилась
+    }
+    break
+  }
+  return { pieces, line }
+}
+
+/** Ожидаемые декор-участки строки: команда + совпавшие enum-аргументы. */
+interface DecorSeg { cls: string; start: number; end: number }
+
+function buildDecorSegs(line: string, customCommands: SlashCommand[]): DecorSeg[] {
+  const m = DECOR_NAME_RE.exec(line)
+  if (!m) return []
+  const name = m[1].toLowerCase()
+  // Приоритет builtin — как в parseSlashCommandWithCustom.
+  const command = SLASH_COMMANDS.find(c => c.name === name) ?? customCommands.find(c => c.name === name)
+  if (!command) return []
+  const segs: DecorSeg[] = [{ cls: CMD_DECOR_CLASS, start: 0, end: m[0].length }]
+  // Аргументы — только структурированные (у синтезированного из placeholder
+  // choices нет, подсвечивать нечего). Токен на позиции аргумента i
+  // подсвечивается, только если совпал с одним из choices[i].
+  const args = command.arguments
+  let pos = m[0].length
+  let idx = 0
+  while (args && idx < args.length) {
+    const ws = /^\s+/.exec(line.slice(pos))
+    if (!ws) break
+    pos += ws[0].length
+    const tok = /^\S+/.exec(line.slice(pos))
+    if (!tok) break
+    if (!args[idx].choices?.some(c => c.toLowerCase() === tok[0].toLowerCase())) break
+    segs.push({ cls: ARG_DECOR_CLASS, start: pos, end: pos + tok[0].length })
+    pos += tok[0].length
+    idx++
+  }
+  return segs
+}
+
+/** Совпадает ли текущая структура ведущего участка с ожидаемой. */
+function decorStructureMatches(pieces: DecorPiece[], segs: DecorSeg[], line: string): boolean {
+  type Cur = { cls: string | null; text: string }
+  const cur: Cur[] = []
+  for (const p of pieces) {
+    const cls = p.span
+      ? (p.span.classList.contains(CMD_DECOR_CLASS) ? CMD_DECOR_CLASS
+        : p.span.classList.contains(ARG_DECOR_CLASS) ? ARG_DECOR_CLASS : null)
+      : null
+    const last = cur[cur.length - 1]
+    // Подряд идущие текстовые узлы схлопываем (браузер их дробит).
+    if (cls === null && last && last.cls === null) last.text += p.text
+    else cur.push({ cls, text: p.text })
+  }
+  const exp: Array<{ cls: string | null; text: string }> = []
+  let pos = 0
+  for (const s of segs) {
+    if (s.start > pos) exp.push({ cls: null, text: line.slice(pos, s.start) })
+    exp.push({ cls: s.cls, text: line.slice(s.start, s.end) })
+    pos = s.end
+  }
+  if (pos < line.length) exp.push({ cls: null, text: line.slice(pos) })
+  if (cur.length !== exp.length) return false
+  for (let i = 0; i < cur.length; i++) {
+    if (cur[i].cls !== exp[i].cls || cur[i].text !== exp[i].text) return false
+  }
+  return true
+}
+
+/** Перестройка ведущего участка под ожидаемую декорацию (сохраняя каретку). */
+function applyDecor(el: HTMLElement, pieces: DecorPiece[], segs: DecorSeg[], line: string): void {
+  const sel = window.getSelection()
+  const hadCaret = !!sel && sel.rangeCount > 0 && el.contains(sel.getRangeAt(0).startContainer)
+  const caret = hadCaret ? getCaretOffsetIn(el) : -1
+
+  // 1. Схлопываем ведущий участок в один текстовый узел (хвост после '\n'
+  //    последнего куска сохраняется — сериализация не меняется).
+  const last = pieces[pieces.length - 1]
+  const merged = document.createTextNode(line + (last?.tail ?? ''))
+  const anchor = pieces[0].node
+  anchor.parentNode?.insertBefore(merged, anchor)
+  for (const p of pieces) p.node.remove()
+
+  // 2. Оборачиваем ожидаемые участки слева направо: splitText возвращает хвост,
+  //    оффсеты последующих сегментов остаются валидными.
+  let remaining: Text = merged
+  let offset = 0
+  for (const s of segs) {
+    const token = remaining.data.slice(s.start - offset, s.end - offset)
+    if (!token) continue
+    const after = remaining.splitText(s.end - offset)
+    const tokNode = remaining.splitText(s.start - offset)
+    const span = document.createElement('span')
+    span.className = s.cls
+    span.textContent = token
+    tokNode.replaceWith(span)
+    remaining = after
+    offset = s.end
+  }
+
+  if (caret >= 0) setCaretOffsetIn(el, caret)
+}
+
+/** Применяет декорацию команды, если структура ведущей строки изменилась. */
+function decorateSlashTokens(el: HTMLElement, customCommands: SlashCommand[]): void {
+  const { pieces, line } = collectDecorPieces(el)
+  if (pieces.length === 0) return
+  const segs = buildDecorSegs(line, customCommands)
+  if (decorStructureMatches(pieces, segs, line)) return
+  applyDecor(el, pieces, segs, line)
+}
+
 interface ChatInputEditorProps {
   value: string
   onChange: (text: string) => void
@@ -407,6 +584,9 @@ interface ChatInputEditorProps {
   replies?: EditorReplyChip[]
   /** Удаление реплая (крестик на чипе ИЛИ Backspace по чипу). */
   onRemoveReply?: (id: string) => void
+  /** Кастомные slash-команды (.md) — участвуют в распознавании `/name` для
+   *  инлайн-подсветки команды и enum-аргументов (builtin уже включены). */
+  customCommands?: SlashCommand[]
   editorApiRef: React.MutableRefObject<EditorApi | null>
   editorRef: React.RefObject<HTMLDivElement>
   placeholder: string
@@ -428,6 +608,7 @@ export function ChatInputEditor({
   onPreviewAttachment,
   replies,
   onRemoveReply,
+  customCommands = [],
   editorApiRef,
   editorRef,
   placeholder,
@@ -449,6 +630,11 @@ export function ChatInputEditor({
   const onUserInputRef = useRef(onUserInput)
   useEffect(() => {
     onUserInputRef.current = onUserInput
+  })
+  // Свежие custom-команды для декорации (emitChange живёт дольше рендера).
+  const customCommandsRef = useRef(customCommands)
+  useEffect(() => {
+    customCommandsRef.current = customCommands
   })
   // Что мы отдали в onChange последним. Пока родитель не переопределил value,
   // DOM уже соответствует этому тексту — сравнивать сериализацию (полный
@@ -478,6 +664,10 @@ export function ChatInputEditor({
     lastEmittedRef.current = serialized
     el.dataset.empty = serialized === '' ? '1' : ''
     onChangeRef.current(serialized)
+    // Декорация команды ПОСЛЕ сериализации: обёртки текст не меняют, serialized
+    // остаётся истиной. Мутация DOM безопасна — value уже ушёл родителю
+    // (быстрый путь rebuild-эффекта сравнивает строки, не DOM).
+    decorateSlashTokens(el, customCommandsRef.current)
     // Синхронизация вложений — ТОЛЬКО на пользовательский ввод (Backspace по
     // чипу). Внешние правки value (отправка: onChangeValue('')) сюда не
     // попадают — вложения не затираются до завершения chat.send.
@@ -543,6 +733,8 @@ export function ChatInputEditor({
     }
     placeCaretEnd(el)
     el.dataset.empty = value === '' ? '1' : ''
+    // Восстановить декорацию команды после пересборки DOM из value.
+    decorateSlashTokens(el, customCommandsRef.current)
     // DOM собран ровно из value — фиксируем, чтобы следующие рендеры с тем же
     // value (attachment-массив, реплаи) не пересобирали редактор заново.
     lastEmittedRef.current = value

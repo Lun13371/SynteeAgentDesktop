@@ -205,6 +205,21 @@ export interface AgentCallbacks {
     error?: string
   }>
   /**
+   * project_map-тул: чтение графа кода (code_map_* + семантика). Round-trip
+   * в main-процесс: в worker-потоке БД не инициализирована (getDB бросает
+   * «DB not initialized»). Возвращает готовый ToolResult — вся логика тула
+   * (mapStore/mapSemantic/sidecar) выполняется в main.
+   */
+  onProjectMap?: (args: {
+    action: 'search' | 'semantic' | 'callers' | 'callees' | 'file' | 'overview'
+    query?: string
+    path?: string
+    nodeId?: string
+    limit?: number
+    /** Проект чата — тул работает только в контексте проекта. */
+    projectId?: string
+  }) => Promise<{ success: boolean; output: string; error?: string }>
+  /**
    * manage_dots-тул: управление Dot'ами (always-on фоновые агенты).
    * Round-trip в main-процесс, где живёт DotManager. Возвращает
    * готовый текстовый отчёт для модели (форматирование в main).

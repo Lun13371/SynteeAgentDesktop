@@ -28,6 +28,8 @@ export function registerAssistantsIPC(): void {
       modelSize: s.modelSize,
       ctxSize: s.ctxSize,
       ctxSetting: s.ctxSetting,
+      device: s.device,
+      activeDevice: s.activeDevice,
       modelDownloaded: s.modelDownloaded,
       binaryReady: s.binaryReady,
       restarts: s.restarts,

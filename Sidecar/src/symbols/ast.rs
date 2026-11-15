@@ -303,7 +303,7 @@ pub fn extract(source: &str, language_name: &str, skip_references: bool) -> Opti
         }
         let parser = parsers.get_mut(language_name)?;
         let tree = parser.parse(source, None)?;
-        let mut symbols = walk(&tree, source, skip_references);
+        let mut symbols = walk(&tree, source, language_name, skip_references);
         symbols.imports.truncate(100);
         Some(symbols)
     })
@@ -318,7 +318,7 @@ enum Scope {
     Function,
 }
 
-fn walk(tree: &tree_sitter::Tree, source: &str, skip_references: bool) -> FileSymbols {
+fn walk(tree: &tree_sitter::Tree, source: &str, language_name: &str, skip_references: bool) -> FileSymbols {
     let mut definitions: Vec<SymbolDef> = Vec::new();
     let mut imports: Vec<String> = Vec::new();
     let mut references: Vec<String> = Vec::new();
@@ -326,6 +326,8 @@ fn walk(tree: &tree_sitter::Tree, source: &str, skip_references: bool) -> FileSy
     let mut call_sites: Vec<CallSite> = Vec::new();
     let mut seen_call_sites: HashSet<(String, usize, Option<String>)> = HashSet::new();
     let mut seen_references: HashSet<String> = HashSet::new();
+    // Строки файла один раз: capture_doc ходит вверх от каждого определения.
+    let lines: Vec<&str> = source.lines().collect();
     // (node, parent container name, scope) — explicit stack, no recursion, so a
     // deeply nested file cannot blow the sidecar's stack.
     let mut stack: Vec<(Node<'_>, Option<String>, Scope)> =
@@ -367,6 +369,7 @@ fn walk(tree: &tree_sitter::Tree, source: &str, skip_references: bool) -> FileSy
                         line_end: node.end_position().row + 1,
                         signature: signature(node, source),
                         parent_name: parent.clone(),
+                        doc: capture_doc(node, source, language_name, &lines),
                     });
                     let child_scope = if is_container { Scope::Container } else { Scope::Function };
                     push_children(&mut stack, node, Some(name), child_scope);
@@ -863,6 +866,111 @@ fn signature(node: Node<'_>, source: &str) -> String {
         .unwrap_or_default()
 }
 
+// ─── Doc-контекст определения ────────────────────────────────────────────────
+
+/// Cap of the captured doc text: it goes into a semantic-search document which
+/// is short by design (MAX_DOC_CHARS on the caller side too).
+const MAX_DOC_CHARS: usize = 240;
+
+/// `@decorator` (py/ts/java/kotlin), `#[...]` (rust/php), `[Attr]` (C#).
+fn is_decorator_line(line: &str) -> bool {
+    line.starts_with('@')
+        || line.starts_with("#[")
+        || (line.starts_with('[') && line.ends_with(']') && line.len() > 2)
+}
+
+/// Текст строки-документации, если это она. None — строка не комментарий.
+/// Обычные `//` тоже включаем: чаще всего это пояснение к коду под ними.
+fn doc_comment_text(line: &str, language_name: &str) -> Option<String> {
+    if line.starts_with("///") {
+        return Some(line[3..].trim().to_string());
+    }
+    if line.starts_with("//") {
+        return Some(line[2..].trim().to_string());
+    }
+    if line.starts_with("/*") || line.starts_with('*') {
+        let t = line
+            .trim_start_matches("/*")
+            .trim_start_matches('*')
+            .trim_end_matches("*/")
+            .trim();
+        return Some(t.to_string());
+    }
+    if line.starts_with('#') && !line.starts_with("#[") && crate::symbols::lexical::hash_starts_comment(language_name) {
+        return Some(line.trim_start_matches('#').trim().to_string());
+    }
+    None
+}
+
+/// Docstring питон-функции/класса: первый string-statement в теле.
+fn python_docstring(node: Node<'_>, source: &str) -> Option<String> {
+    let body = node.child_by_field_name("body")?;
+    let first = body.child(0)?;
+    let stmt = if first.kind() == "expression_statement" { first.child(0)? } else { first };
+    if stmt.kind() != "string" {
+        return None;
+    }
+    let text = node_text(stmt, source)?.trim().to_string();
+    let stripped = text
+        .strip_prefix("\"\"\"")
+        .or_else(|| text.strip_prefix("'''"))
+        .unwrap_or(&text);
+    let stripped = stripped
+        .strip_suffix("\"\"\"")
+        .or_else(|| stripped.strip_suffix("'''"))
+        .unwrap_or(stripped);
+    let joined = stripped.split_whitespace().collect::<Vec<_>>().join(" ");
+    if joined.is_empty() {
+        None
+    } else {
+        Some(joined.chars().take(MAX_DOC_CHARS).collect())
+    }
+}
+
+/// Собрать doc-контекст: комментарии-документация и декораторы подряд над
+/// определением (до пустой строки или кода) + docstring для Python.
+/// Порядок — как в исходнике: комментарии, декораторы, docstring.
+fn capture_doc(node: Node<'_>, source: &str, language_name: &str, lines: &[&str]) -> Option<String> {
+    let mut decorators: Vec<String> = Vec::new();
+    let mut comments: Vec<String> = Vec::new();
+    let mut row = node.start_position().row;
+    while row > 0 {
+        row -= 1;
+        let Some(raw) = lines.get(row) else { break };
+        let line = raw.trim();
+        if line.is_empty() {
+            break;
+        }
+        if is_decorator_line(line) {
+            decorators.push(line.to_owned());
+            continue;
+        }
+        if let Some(text) = doc_comment_text(line, language_name) {
+            if !text.is_empty() {
+                comments.push(text);
+            }
+            continue;
+        }
+        break;
+    }
+    // Собрано снизу вверх — разворачиваем в порядок исходника.
+    let mut parts: Vec<String> = Vec::new();
+    parts.extend(comments.into_iter().rev());
+    parts.extend(decorators.into_iter().rev());
+    if language_name == "python" {
+        if let Some(docstring) = python_docstring(node, source) {
+            parts.push(docstring);
+        }
+    }
+    let joined = parts.join(" ");
+    let joined = joined.trim();
+    if joined.is_empty() {
+        None
+    } else {
+        Some(joined.chars().take(MAX_DOC_CHARS).collect())
+    }
+}
+
 fn kind_category(kind: &str) -> &'static str {
     if kind.contains("function") || kind.contains("method") {
         "function"
@@ -1033,5 +1141,42 @@ mod tests {
         let symbols = extract("source ./lib.sh\n. ./other.sh\necho hi\n", "bash", false).expect("bash grammar");
         assert!(symbols.import_details.iter().any(|i| i.source == "./lib.sh"));
         assert!(symbols.import_details.iter().any(|i| i.source == "./other.sh"));
+    }
+
+    #[test]
+    fn python_definition_carries_docstring_and_decorator() {
+        let source = "# Логин пользователя\n@router.post(\"/login\")\nasync def login(req: LoginRequest):\n    \"\"\"Логин по email и паролю, выдача токенов.\"\"\"\n    return authorize(req)\n";
+        let symbols = extract(source, "python", true).expect("python grammar");
+        let login = symbols.definitions.iter().find(|d| d.name == "login").expect("login");
+        let doc = login.doc.as_deref().expect("doc captured");
+        assert!(doc.contains("@router.post"), "decorator in doc: {doc}");
+        assert!(doc.contains("Логин по email"), "docstring in doc: {doc}");
+        assert!(doc.contains("Логин пользователя"), "comment above in doc: {doc}");
+    }
+
+    #[test]
+    fn python_definition_without_doc_has_none() {
+        let source = "def alpha(x):\n    return x + 1\n";
+        let symbols = extract(source, "python", true).expect("python grammar");
+        let alpha = symbols.definitions.iter().find(|d| d.name == "alpha").expect("alpha");
+        assert!(alpha.doc.is_none(), "нечего захватывать — doc пуст: {:?}", alpha.doc);
+    }
+
+    #[test]
+    fn typescript_definition_carries_jsdoc() {
+        let source = "/**\n * Does the thing well\n * @param id user id\n */\nexport function doThing(id: string) {}\n";
+        let symbols = extract(source, "typescript", true).expect("ts grammar");
+        let def = symbols.definitions.iter().find(|d| d.name == "doThing").expect("doThing");
+        let doc = def.doc.as_deref().expect("doc captured");
+        assert!(doc.contains("Does the thing well"), "JSDoc text in doc: {doc}");
+    }
+
+    #[test]
+    fn csharp_definition_carries_xml_doc_and_attribute() {
+        let source = "public class AuthController {\n  /// <summary>Логин по email</summary>\n  [HttpPost(\"/login\")]\n  public IActionResult Login(LoginRequest req) { return Ok(); }\n}\n";
+        let symbols = extract(source, "c_sharp", true).expect("csharp grammar");
+        let def = symbols.definitions.iter().find(|d| d.name == "Login").expect("Login");
+        let doc = def.doc.as_deref().unwrap_or("");
+        assert!(doc.contains("Логин по email"), "XML doc in doc: {doc}");
     }
 }

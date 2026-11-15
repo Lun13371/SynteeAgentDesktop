@@ -116,6 +116,48 @@
   white-space: nowrap;
 }
 
+/* ── Инлайн-чипы слеш-команды в тексте сообщения (Discord-стиль) ────────────
+   Команда — акцентная пилюля, совпавшие enum-аргументы — нейтральный чип;
+   остальной текст рендерится как был. */
+.inline-cmd {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  padding: 1px 8px 1px 6px;
+  margin: 0 3px 0 0;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 32%, transparent);
+  color: color-mix(in srgb, var(--accent) 88%, var(--text-primary));
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
+  white-space: nowrap;
+  vertical-align: baseline;
+}
+.inline-cmd-slash {
+  opacity: 0.7;
+  font-weight: 700;
+}
+.inline-cmd-arg {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  margin: 0 3px 0 0;
+  border-radius: 7px;
+  background: var(--overlay-3);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.5;
+  white-space: nowrap;
+  vertical-align: baseline;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 
 
 @keyframes msg-dot-pulse {

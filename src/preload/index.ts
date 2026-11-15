@@ -1345,12 +1345,16 @@ const synteeAPI = {
       ipcRenderer.invoke('projectMap:getFileGraph', projectId, filePath) as Promise<import('../../shared/projectMap').CodeMapGraph>,
     getStatus: (projectId: string) =>
       ipcRenderer.invoke('projectMap:getStatus', projectId) as Promise<import('../../shared/projectMap').CodeMapStatus>,
+    getSemanticStatus: (projectId: string) =>
+      ipcRenderer.invoke('projectMap:getSemanticStatus', projectId) as Promise<import('../../shared/projectMap').CodeMapSemanticStatus>,
     getStats: (projectId: string) =>
       ipcRenderer.invoke('projectMap:getStats', projectId) as Promise<import('../../shared/projectMap').CodeMapStatus & { files: number }>,
     listStats: () =>
       ipcRenderer.invoke('projectMap:listStats') as Promise<import('../../shared/projectMap').ProjectMapProjectStats[]>,
     getAutoInfo: () =>
       ipcRenderer.invoke('projectMap:getAutoInfo') as Promise<import('../../shared/projectMap').ProjectMapAutoInfo>,
+    getSemanticDevice: () =>
+      ipcRenderer.invoke('projectMap:getSemanticDevice') as Promise<{ requested: string; active: string | null }>,
     findNodes: (projectId: string, query: string, limit?: number) =>
       ipcRenderer.invoke('projectMap:findNodes', projectId, query, limit) as Promise<import('../../shared/projectMap').CodeMapNode[]>,
     getNeighbors: (projectId: string, nodeId: string) =>
