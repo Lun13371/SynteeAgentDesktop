@@ -21,7 +21,6 @@ import { useChatEditor } from '../../hooks/useChatEditor'
 import LiveTodoBar from '../../components/ui/LiveTodoBar/LiveTodoBar'
 import GitTools from '../../components/ui/GitTools/GitTools'
 import GoalCard from '../../components/ui/GoalCard/GoalCard'
-import AssistantsBanner from '../../components/ui/AssistantsBanner/AssistantsBanner'
 import ChatFilesPopover from '../../components/ui/ChatFilesPopover/ChatFilesPopover'
 import AnimatedBackground from '../../components/ui/AnimatedBackground/AnimatedBackground'
 import AppIcon from '../../components/ui/AppIcon/AppIcon'
@@ -2712,7 +2711,6 @@ const chatId = compactingCurrentChatIdRef.current
           onExtensionInstalled={handleExtensionInstalled}
         />
         <main className="chat-main">
-          <AssistantsBanner />
           {chatGoal && chatGoal.chatId === currentChatId && !isIncognito && <div className="chat-goal-top">
             <GoalCard key={chatGoal.id} goal={chatGoal} running={liveIsAgentRunning || liveIsTyping || runStatus?.status === 'running'}
               onCommand={handleSend}

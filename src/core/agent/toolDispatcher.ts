@@ -13,6 +13,7 @@ import {
   searchWeb, generateImage, analyzeImageFile, analyzeVideoFile, analyzeAudioFile,
   readFiles, searchCode,
   fetchPage, searchImages, getDiagnostics,
+  projectMapQuery,
   type SearchImagesOpts,
   type ToolResult, editFile,
 } from '../tools'
@@ -423,6 +424,17 @@ export class ToolDispatcher {
             maxChars: resolvedArgs.max_chars as number | undefined,
             workdir: this.workdir,
           }
+        )
+      case 'project_map':
+        return projectMapQuery(
+          {
+            action: resolvedArgs.action as 'search' | 'callers' | 'callees' | 'file' | 'overview',
+            query: resolvedArgs.query as string | undefined,
+            nodeId: resolvedArgs.nodeId as string | undefined,
+            path: resolvedArgs.path as string | undefined,
+            limit: resolvedArgs.limit as number | undefined,
+          },
+          this.projectId,
         )
       case 'spawn_agent': {
         if (!callbacks?.onSpawnAgent) {

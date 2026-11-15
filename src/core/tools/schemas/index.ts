@@ -94,6 +94,7 @@ export function getToolSchemas(options: Partial<ToolSettings> & {
     'read_files',
     'find_files',
     'search_code',
+    'project_map',
     'list_directory',
     // Code mode — обычный тул, доступный во ВСЕХ режимах (research и normal):
     // сам по себе он ничего не меняет, его возможности = набор тулов текущего

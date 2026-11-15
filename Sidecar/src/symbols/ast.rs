@@ -13,7 +13,7 @@ use std::collections::{HashMap, HashSet};
 
 use tree_sitter::{Language, Node, Parser};
 
-use crate::symbols::{FileSymbols, SymbolDef};
+use crate::symbols::{CallSite, FileSymbols, ImportDetail, SymbolDef};
 
 /// Node kinds that represent a definition.
 ///
@@ -120,6 +120,8 @@ const IMPORT_NODE_TYPES: &[&str] = &[
     "require_statement",
     "require_expression",
     "from_import_statement",
+    "using_directive",
+    "namespace_use_declaration",
 ];
 
 /// Cap on visited AST nodes. Large generated/minified files would otherwise
@@ -129,6 +131,10 @@ const MAX_NODES: usize = 20_000;
 const MAX_DEFINITIONS: usize = 300;
 /// Cap on collected references.
 const MAX_REFERENCES: usize = 200;
+/// Cap on positioned call sites (project-map call edges).
+const MAX_CALL_SITES: usize = 500;
+/// Cap on structured imports.
+const MAX_IMPORT_DETAILS: usize = 100;
 /// Minimum identifier length for a call-site reference.
 const MIN_REFERENCE_LEN: usize = 4;
 
@@ -316,6 +322,9 @@ fn walk(tree: &tree_sitter::Tree, source: &str, skip_references: bool) -> FileSy
     let mut definitions: Vec<SymbolDef> = Vec::new();
     let mut imports: Vec<String> = Vec::new();
     let mut references: Vec<String> = Vec::new();
+    let mut import_details: Vec<ImportDetail> = Vec::new();
+    let mut call_sites: Vec<CallSite> = Vec::new();
+    let mut seen_call_sites: HashSet<(String, usize, Option<String>)> = HashSet::new();
     let mut seen_references: HashSet<String> = HashSet::new();
     // (node, parent container name, scope) — explicit stack, no recursion, so a
     // deeply nested file cannot blow the sidecar's stack.
@@ -373,7 +382,34 @@ fn walk(tree: &tree_sitter::Tree, source: &str, skip_references: bool) -> FileSy
                     imports.push(first.chars().take(120).collect());
                 }
             }
+            if import_details.len() < MAX_IMPORT_DETAILS {
+                for detail in import_details_from_node(node, source) {
+                    if import_details.len() >= MAX_IMPORT_DETAILS {
+                        break;
+                    }
+                    import_details.push(detail);
+                }
+            }
             continue;
+        }
+
+        // Positioned call sites for the project map. Collected under the same
+        // gate as references: outline-only callers pass skip_references=true
+        // and should not pay for call extraction.
+        if !skip_references && call_sites.len() < MAX_CALL_SITES && is_call_kind(kind) {
+            if let Some(site) = call_site(node, source, parent.clone()) {
+                let key = (site.name.clone(), site.line, site.parent_name.clone());
+                if seen_call_sites.insert(key) {
+                    call_sites.push(site);
+                }
+            }
+        }
+
+        // Bash `source ./lib.sh` / `. ./lib.sh` is an import, not a call.
+        if !skip_references && kind == "command" && import_details.len() < MAX_IMPORT_DETAILS {
+            if let Some(detail) = bash_source_import(node, source) {
+                import_details.push(detail);
+            }
         }
 
         if !skip_references && is_identifier_kind(kind) && references.len() < MAX_REFERENCES * 2 {
@@ -396,7 +432,7 @@ fn walk(tree: &tree_sitter::Tree, source: &str, skip_references: bool) -> FileSy
     references.retain(|reference| !local.contains(reference.as_str()));
     references.truncate(MAX_REFERENCES);
 
-    FileSymbols { definitions, imports, references, truncated }
+    FileSymbols { definitions, imports, references, import_details, call_sites, truncated }
 }
 
 fn push_children<'tree>(
@@ -447,6 +483,317 @@ fn is_identifier_kind(kind: &str) -> bool {
             | "namespace_identifier"
             | "constant"
     )
+}
+
+// ─── Call sites (project-map call edges) ─────────────────────────────────────
+
+fn is_call_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "call_expression"
+            | "call"
+            | "new_expression"
+            | "method_invocation"
+            | "invocation_expression"
+            | "function_call_expression"
+            | "member_call_expression"
+            | "macro_invocation"
+            | "command"
+    )
+}
+
+fn call_site(node: Node<'_>, source: &str, parent: Option<String>) -> Option<CallSite> {
+    let callee = ["function", "constructor", "method", "macro", "name"]
+        .iter()
+        .find_map(|field| node.child_by_field_name(field))?;
+    let (name, mut receiver) = callee_name(callee, source)?;
+    if receiver.is_none() {
+        // Java/C#/PHP/Ruby keep the object in a separate field.
+        receiver = ["object", "receiver", "value"]
+            .iter()
+            .find_map(|field| node.child_by_field_name(field))
+            .and_then(|n| node_text(n, source))
+            .map(|t| t.trim().to_owned())
+            .filter(|t| is_name_like(t));
+    }
+    Some(CallSite {
+        name,
+        line: node.start_position().row + 1,
+        parent_name: parent,
+        receiver,
+    })
+}
+
+/// Callee text → (last segment, first segment). `store.load` → ("load",
+/// Some("store")); `fmt::Println` → ("Println", Some("fmt")). Text-based so it
+/// works across grammars with different member-node shapes.
+fn callee_name(node: Node<'_>, source: &str) -> Option<(String, Option<String>)> {
+    let text = node_text(node, source)?.trim();
+    if text.is_empty() || text.len() > 200 {
+        return None;
+    }
+    let base = text.split('(').next()?.trim();
+    if base.contains('/') || base.contains('\\') {
+        return None; // a path, not a name
+    }
+    let normalized = base.replace("::", ".").replace("->", ".");
+    let mut parts = normalized.split('.').map(str::trim).filter(|p| !p.is_empty());
+    let name = parts.next_back()?.to_owned();
+    if !is_name_like(&name) {
+        return None;
+    }
+    let receiver = parts.next().filter(|r| is_name_like(r)).map(str::to_owned);
+    Some((name, receiver))
+}
+
+fn is_name_like(text: &str) -> bool {
+    !text.is_empty()
+        && text.len() <= 120
+        && text.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '$')
+}
+
+// ─── Structured imports ──────────────────────────────────────────────────────
+
+fn import_details_from_node(node: Node<'_>, source: &str) -> Vec<ImportDetail> {
+    let line = node.start_position().row + 1;
+    let kind = node.kind();
+    let Some(text) = node_text(node, source) else { return Vec::new() };
+    let text = text.trim();
+    if text.is_empty() {
+        return Vec::new();
+    }
+
+    // Go import lists: one detail per spec.
+    if kind == "import_declaration" {
+        let specs = collect_nodes(node, "import_spec");
+        if !specs.is_empty() {
+            return specs
+                .iter()
+                .filter_map(|spec| {
+                    let path = spec.child_by_field_name("path").and_then(|n| node_text(n, source))?;
+                    let module = unquote(path);
+                    if module.is_empty() {
+                        return None;
+                    }
+                    let names = spec
+                        .child_by_field_name("name")
+                        .and_then(|n| node_text(n, source))
+                        .map(|t| vec![t.trim().to_owned()])
+                        .unwrap_or_default();
+                    Some(ImportDetail { source: module, names, line })
+                })
+                .collect();
+        }
+    }
+
+    // String-literal module source: JS/TS, C/C++ includes, require/include.
+    if let Some(string_node) = find_string_descendant(node) {
+        if let Some(raw) = node_text(string_node, source) {
+            let module = unquote(raw);
+            if !module.is_empty() {
+                let names = collect_binding_identifiers(node, source);
+                return vec![ImportDetail { source: module, names, line }];
+            }
+        }
+    }
+
+    // Path-based imports: Python, Rust, Java, C#, PHP use, mod/package.
+    let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let cleaned = strip_import_keywords(&collapsed);
+    if cleaned.is_empty() {
+        return Vec::new();
+    }
+
+    match kind {
+        "import_from_statement" => {
+            // from MODULE import NAME [, NAME…]
+            if let Some(idx) = cleaned.find(" import ") {
+                let module = cleaned[..idx].trim().to_owned();
+                let names = cleaned[idx + " import ".len()..]
+                    .split(',')
+                    .flat_map(|n| {
+                        n.trim()
+                            .trim_matches(|c| c == '(' || c == ')')
+                            .split(" as ")
+                            .map(|part| part.trim().to_owned())
+                            .collect::<Vec<_>>()
+                    })
+                    .filter(|n| !n.is_empty())
+                    .collect();
+                vec![ImportDetail { source: module, names, line }]
+            } else {
+                vec![ImportDetail { source: cleaned, names: Vec::new(), line }]
+            }
+        }
+        "import_statement" => {
+            // Python `import a.b, c` — one detail per module.
+            cleaned
+                .split(',')
+                .map(|m| m.trim().split(" as ").next().unwrap_or("").trim().to_owned())
+                .filter(|m| !m.is_empty())
+                .map(|module| ImportDetail { source: module, names: Vec::new(), line })
+                .collect()
+        }
+        "use_declaration" | "namespace_use_declaration" => {
+            // Rust `use a::b::{C, D}` / PHP `use Foo\Bar;`
+            let names = if let Some(open) = cleaned.find('{') {
+                cleaned[open + 1..]
+                    .trim_end_matches('}')
+                    .split(',')
+                    .map(|n| n.trim().split(" as ").next().unwrap_or("").trim().to_owned())
+                    .filter(|n| !n.is_empty() && n != "*")
+                    .collect()
+            } else {
+                last_path_segment(&cleaned).map(|n| vec![n]).unwrap_or_default()
+            };
+            vec![ImportDetail { source: cleaned, names, line }]
+        }
+        _ => {
+            // Java `import a.b.C`, C# `using A.B`, `mod x`, `extern crate x`.
+            let head = cleaned.split('{').next().unwrap_or("").trim().to_owned();
+            let names = last_path_segment(&head).map(|n| vec![n]).unwrap_or_default();
+            vec![ImportDetail { source: head, names, line }]
+        }
+    }
+}
+
+/// Bash `source ./lib.sh` / `. ./lib.sh`.
+fn bash_source_import(node: Node<'_>, source: &str) -> Option<ImportDetail> {
+    let name = node.child_by_field_name("name")?;
+    let name_text = node_text(name, source)?.trim();
+    if name_text != "source" && name_text != "." {
+        return None;
+    }
+    let mut cursor = node.walk();
+    let arg = node
+        .children(&mut cursor)
+        .find(|child| child.kind() != "command_name" && !child.is_extra())?;
+    let module = unquote(node_text(arg, source)?);
+    if module.is_empty() {
+        return None;
+    }
+    Some(ImportDetail { source: module, names: Vec::new(), line: node.start_position().row + 1 })
+}
+
+fn find_string_descendant<'tree>(node: Node<'tree>) -> Option<Node<'tree>> {
+    let mut stack = vec![node];
+    while let Some(current) = stack.pop() {
+        if matches!(
+            current.kind(),
+            "string"
+                | "string_literal"
+                | "interpreted_string_literal"
+                | "raw_string_literal"
+                | "system_lib_string"
+                | "encapsed_string"
+        ) {
+            return Some(current);
+        }
+        for index in (0..current.child_count()).rev() {
+            if let Some(child) = current.child(index) {
+                stack.push(child);
+            }
+        }
+    }
+    None
+}
+
+fn collect_nodes<'tree>(node: Node<'tree>, kind: &str) -> Vec<Node<'tree>> {
+    let mut found = Vec::new();
+    let mut stack = vec![node];
+    while let Some(current) = stack.pop() {
+        if current.kind() == kind {
+            found.push(current);
+            continue;
+        }
+        for index in (0..current.child_count()).rev() {
+            if let Some(child) = current.child(index) {
+                stack.push(child);
+            }
+        }
+    }
+    found
+}
+
+fn collect_binding_identifiers(node: Node<'_>, source: &str) -> Vec<String> {
+    const IMPORT_KEYWORDS: &[&str] = &[
+        "import", "from", "as", "use", "type", "require", "include", "pub", "mod",
+        "crate", "extern", "package", "namespace", "using", "default", "static",
+    ];
+    let mut names = Vec::new();
+    let mut seen = HashSet::new();
+    let mut stack = vec![node];
+    while let Some(current) = stack.pop() {
+        if is_identifier_kind(current.kind()) {
+            if let Some(text) = node_text(current, source) {
+                let name = text.trim();
+                if !name.is_empty()
+                    && !IMPORT_KEYWORDS.contains(&name)
+                    && seen.insert(name.to_owned())
+                {
+                    names.push(name.to_owned());
+                    if names.len() >= 50 {
+                        break;
+                    }
+                }
+            }
+        }
+        for index in (0..current.child_count()).rev() {
+            if let Some(child) = current.child(index) {
+                stack.push(child);
+            }
+        }
+    }
+    names
+}
+
+fn unquote(text: &str) -> String {
+    let t = text.trim();
+    let bytes = t.as_bytes();
+    if bytes.len() >= 2 {
+        let first = bytes[0];
+        let last = bytes[bytes.len() - 1];
+        if (first == b'\'' && last == b'\'')
+            || (first == b'"' && last == b'"')
+            || (first == b'`' && last == b'`')
+            || (first == b'<' && last == b'>')
+        {
+            return t[1..t.len() - 1].to_owned();
+        }
+    }
+    t.to_owned()
+}
+
+fn strip_import_keywords(text: &str) -> String {
+    const KEYWORDS: &[&str] = &[
+        "import", "from", "use", "using", "require", "require_once", "include",
+        "include_once", "extern", "crate", "mod", "package", "namespace", "pub", "static",
+    ];
+    let mut rest = text.trim().trim_end_matches(';').trim();
+    loop {
+        let before = rest;
+        for keyword in KEYWORDS {
+            if let Some(tail) = rest.strip_prefix(keyword) {
+                if tail.starts_with(char::is_whitespace) {
+                    rest = tail.trim_start();
+                    break;
+                }
+            }
+        }
+        if rest == before {
+            break;
+        }
+    }
+    rest.to_owned()
+}
+
+fn last_path_segment(path: &str) -> Option<String> {
+    let normalized = path.replace("::", ".").replace('\\', ".");
+    normalized
+        .rsplit('.')
+        .next()
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty() && s != "*")
 }
 
 /// Definition name: the reliable `name` field first, then a declarator chain,
@@ -596,5 +943,95 @@ mod tests {
 
         let go = extract("package main\n\nfunc Run() {}\n", "go", true).expect("go grammar");
         assert!(go.definitions.iter().any(|d| d.name == "Run"));
+    }
+
+    #[test]
+    fn call_sites_carry_position_parent_and_receiver() {
+        let source = "import { load } from './store'\n\nfunction alpha() {\n  load(1)\n  betaService.run(2)\n}\n\nbetaService.stop()\n";
+        let symbols = extract(source, "typescript", false).expect("typescript grammar");
+        let load = symbols.call_sites.iter().find(|c| c.name == "load").expect("load call");
+        assert_eq!(load.parent_name.as_deref(), Some("alpha"));
+        assert_eq!(load.line, 4);
+        assert!(load.receiver.is_none());
+        let run = symbols.call_sites.iter().find(|c| c.name == "run").expect("run call");
+        assert_eq!(run.parent_name.as_deref(), Some("alpha"));
+        assert_eq!(run.receiver.as_deref(), Some("betaService"));
+        let stop = symbols.call_sites.iter().find(|c| c.name == "stop").expect("stop call");
+        assert!(stop.parent_name.is_none());
+        assert_eq!(stop.receiver.as_deref(), Some("betaService"));
+    }
+
+    #[test]
+    fn call_sites_inside_methods_and_arrow_functions() {
+        let source = "class Store {\n  async load(id) {\n    helper(id)\n  }\n}\n\nconst run = async () => {\n  helper(2)\n}\n";
+        let symbols = extract(source, "typescript", false).expect("typescript grammar");
+        let calls: Vec<_> = symbols.call_sites.iter().filter(|c| c.name == "helper").collect();
+        assert_eq!(calls.len(), 2);
+        assert!(calls.iter().any(|c| c.parent_name.as_deref() == Some("load")));
+        assert!(calls.iter().any(|c| c.parent_name.as_deref() == Some("run")));
+    }
+
+    #[test]
+    fn call_sites_skipped_when_references_skipped() {
+        let source = "function alpha() { beta() }\n";
+        let symbols = extract(source, "typescript", true).expect("typescript grammar");
+        assert!(symbols.call_sites.is_empty());
+    }
+
+    #[test]
+    fn python_calls_and_imports() {
+        let source = "from pkg.store import load, save as persist\nimport os.path\n\ndef alpha():\n    load(1)\n    os.path.join('a')\n";
+        let symbols = extract(source, "python", false).expect("python grammar");
+        let from = symbols.import_details.iter().find(|i| i.source == "pkg.store").expect("from import");
+        assert!(from.names.contains(&"load".to_owned()));
+        assert!(from.names.contains(&"persist".to_owned()));
+        assert!(symbols.import_details.iter().any(|i| i.source == "os.path"));
+        let load = symbols.call_sites.iter().find(|c| c.name == "load").expect("load call");
+        assert_eq!(load.parent_name.as_deref(), Some("alpha"));
+        let join = symbols.call_sites.iter().find(|c| c.name == "join").expect("join call");
+        assert_eq!(join.receiver.as_deref(), Some("os"));
+    }
+
+    #[test]
+    fn typescript_import_details() {
+        let source = "import { readFile, writeFile as wf } from 'fs'\nimport path from 'path'\nimport * as utils from './utils'\nimport './side-effect'\n";
+        let symbols = extract(source, "typescript", true).expect("typescript grammar");
+        let fs = symbols.import_details.iter().find(|i| i.source == "fs").expect("fs import");
+        assert!(fs.names.contains(&"readFile".to_owned()));
+        assert!(fs.names.contains(&"wf".to_owned()));
+        let path = symbols.import_details.iter().find(|i| i.source == "path").expect("path import");
+        assert!(path.names.contains(&"path".to_owned()));
+        let utils = symbols.import_details.iter().find(|i| i.source == "./utils").expect("utils import");
+        assert!(utils.names.contains(&"utils".to_owned()));
+        let side = symbols.import_details.iter().find(|i| i.source == "./side-effect").expect("side-effect import");
+        assert!(side.names.is_empty());
+    }
+
+    #[test]
+    fn rust_go_c_import_details() {
+        let rust = extract("use std::collections::HashMap;\nuse crate::store::{Store, load};\nmod helpers;\n", "rust", true)
+            .expect("rust grammar");
+        let std = rust.import_details.iter().find(|i| i.source.contains("std::collections")).expect("std import");
+        assert!(std.names.contains(&"HashMap".to_owned()));
+        let crate_import = rust.import_details.iter().find(|i| i.source.contains("crate::store")).expect("crate import");
+        assert!(crate_import.names.contains(&"Store".to_owned()));
+        assert!(crate_import.names.contains(&"load".to_owned()));
+        assert!(rust.import_details.iter().any(|i| i.source == "helpers"));
+
+        let go = extract("package main\n\nimport (\n  \"fmt\"\n  f \"os\"\n)\n", "go", true).expect("go grammar");
+        assert!(go.import_details.iter().any(|i| i.source == "fmt"));
+        let os = go.import_details.iter().find(|i| i.source == "os").expect("os import");
+        assert!(os.names.contains(&"f".to_owned()));
+
+        let c = extract("#include <stdio.h>\n#include \"local.h\"\n", "c", true).expect("c grammar");
+        assert!(c.import_details.iter().any(|i| i.source == "stdio.h"));
+        assert!(c.import_details.iter().any(|i| i.source == "local.h"));
+    }
+
+    #[test]
+    fn bash_source_is_an_import() {
+        let symbols = extract("source ./lib.sh\n. ./other.sh\necho hi\n", "bash", false).expect("bash grammar");
+        assert!(symbols.import_details.iter().any(|i| i.source == "./lib.sh"));
+        assert!(symbols.import_details.iter().any(|i| i.source == "./other.sh"));
     }
 }

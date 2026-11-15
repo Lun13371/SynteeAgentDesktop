@@ -16,8 +16,10 @@ import {
   cleanupWorktree,
   hasWorktreeChanges,
   cleanupAbandonedWorktree,
+  stripIgnoredHeavyDirs,
   type WorktreeInfo,
 } from './WorktreeIsolation'
+import { sweepStaleWorktrees } from './WorktreeGC'
 import { saveSubagent, loadAllSubagents, deleteSubagentsByChat, type SubagentRow } from '../../core/db/subagents'
 import { getChatBrowserMode } from '../../core/db/chats'
 import { getSubagentRole, buildSubagentSystemPrompt } from '../../shared/subagent-roles'
@@ -196,6 +198,12 @@ class AgentManager {
   init(store: Store) {
     this.store = store
     this.loadPersisted()
+    // §worktree-gc — фоновой свип stale/осиротевших worktree. Строго после
+    // loadPersisted(): он ремонтирует running/pending → cancelled, и всё, что
+    // осталось в userData/worktrees, становится keep-нутым или сиротой.
+    void sweepStaleWorktrees().catch((e) => {
+      console.warn(`[WorktreeGC] sweep failed: ${e?.message ?? e}`)
+    })
   }
 
   /**
@@ -459,6 +467,9 @@ class AgentManager {
     try {
       const hasChanges = await hasWorktreeChanges(record.worktreeInfo.worktreePath)
       if (hasChanges) {
+        // §worktree-gc — сразу сносим build-артефакты: сохранённый для разбора
+        // worktree должен весить мегабайты правок, а не гигабайты target/node_modules.
+        await stripIgnoredHeavyDirs(record.worktreeInfo.worktreePath)
         record.summary += `\n\n[Суб-агент завершился с ошибкой, но успел изменить файлы — правки сохранены в worktree: ${record.worktreeInfo.worktreePath}]`
       } else {
         await discardWorktree(record.workdir, record.worktreeInfo)
@@ -904,9 +915,15 @@ class AgentManager {
                   }
                   if (!mergeResult.worktreeKept) {
                     try { await cleanupWorktree(record.workdir!, record.worktreeInfo!) } catch { /* noop */ }
+                  } else {
+                    // §worktree-gc — keep-нутый worktree (конфликт/ошибка merge):
+                    // build-артефакты данным не являются — сносим сразу, чтобы
+                    // «сохранён для разбора» не весил гигабайты до GC-свипа.
+                    void stripIgnoredHeavyDirs(record.worktreeInfo!.worktreePath).catch(() => {})
                   }
                  } catch (e: any) {
                    record.summary += `\n\n[Необработанная ошибка merge worktree: ${e.message}. Worktree сохранён: ${record.worktreeInfo!.worktreePath}]`
+                   void stripIgnoredHeavyDirs(record.worktreeInfo!.worktreePath).catch(() => {})
                  }
                 this.persistNow(record)
                 this.broadcast('agent:update', record)

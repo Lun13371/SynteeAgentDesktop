@@ -4,6 +4,8 @@ import { AnimatePresence, motion } from 'framer-motion'
 import AppIcon from '../AppIcon/AppIcon'
 import type { Project, ProjectIcon } from '../../../../../shared/types'
 import { PROJECT_COLORS, PROJECT_ICONS, defaultProjectColor } from '../../../../../shared/projectAppearance'
+import ProjectMapModal from '../ProjectMapModal/ProjectMapModal'
+import type { CodeMapStatus } from '../../../../../shared/projectMap'
 import './ProjectSettingsModal.css'
 
 interface FsEntry {
@@ -72,6 +74,20 @@ export function ProjectSettingsModal({ open, project, onClose, onSaved, onInit }
   const [discoveredFiles, setDiscoveredFiles] = useState<string[]>([])
   const [discoveryExpanded, setDiscoveryExpanded] = useState(false)
   const [discoveryLoading, setDiscoveryLoading] = useState(false)
+
+  // ── Карта проекта ──
+  const [mapOpen, setMapOpen] = useState(false)
+  const [mapStatus, setMapStatus] = useState<CodeMapStatus | null>(null)
+  useEffect(() => {
+    if (!open || !project) return
+    window.syntee.projectMap.getStatus(project.id).then(setMapStatus).catch(() => {})
+    const unsub = window.syntee.projectMap.onProgress((p) => {
+      if (p.projectId === project.id && p.phase === 'ready') {
+        window.syntee.projectMap.getStatus(project.id).then(setMapStatus).catch(() => {})
+      }
+    })
+    return unsub
+  }, [open, project?.id])
 
   // Сброс state при смене проекта (когда открывают настройки другого проекта)
   /* eslint-disable react-hooks/set-state-in-effect */
@@ -287,6 +303,30 @@ export function ProjectSettingsModal({ open, project, onClose, onSaved, onInit }
                       <span className="psm-field-hint">Запускается после серии правок для проверки</span>
                     </div>
                   </div>
+
+              {/* Секция: Карта проекта */}
+              <div className="psm-section">
+                <div className="psm-section-label">Карта проекта</div>
+                <span className="psm-section-hint">
+                  Граф файлов, функций, классов и вызовов. Строится в фоне, обновляется при изменениях
+                </span>
+                <div className="psm-workdir-row">
+                  <span className="psm-workdir-path">
+                    {mapStatus?.state === 'ready'
+                      ? `${mapStatus.totalNodes} узлов · ${mapStatus.totalEdges} связей · ${mapStatus.indexedFiles} файлов`
+                      : mapStatus?.state === 'building' ? 'Строится…'
+                      : mapStatus?.state === 'error' ? `Ошибка: ${mapStatus.error ?? ''}`
+                      : 'Ещё не построена'}
+                  </span>
+                  <button
+                    className="psm-btn psm-btn--ghost"
+                    onClick={() => { setMapOpen(true); window.syntee.projectMap.ensure(displayProject.id) }}
+                  >
+                    <AppIcon name="gitBranch" size="xs" />
+                    Открыть карту
+                  </button>
+                </div>
+              </div>
 
               {/* Секция: Файлы контекста */}
               <div className="psm-section">
@@ -515,6 +555,16 @@ export function ProjectSettingsModal({ open, project, onClose, onSaved, onInit }
           )}
         </AnimatePresence>,
         document.body
+      )}
+
+      {displayProject && (
+        <ProjectMapModal
+          open={mapOpen}
+          onClose={() => setMapOpen(false)}
+          projectId={displayProject.id}
+          projectName={displayProject.name}
+          workdir={displayProject.workdir}
+        />
       )}
     </>
   )

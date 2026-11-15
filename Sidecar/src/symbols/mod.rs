@@ -8,4 +8,4 @@ pub mod ast;
 pub mod language;
 pub mod lexical;
 
-pub use lexical::{extract_symbols, FileSymbols, SymbolDef};
+pub use lexical::{extract_symbols, CallSite, FileSymbols, ImportDetail, SymbolDef};

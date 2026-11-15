@@ -43,6 +43,32 @@ interface IndexEntry {
 
 const _indexes = new Map<string, IndexEntry>()
 
+// ─── Подписка на изменения файлов (для project map и др. потребителей) ───────
+type FileChangeCallback = (relPaths: string[]) => void
+const _changeListeners = new Map<string, Set<FileChangeCallback>>()
+
+/** Подписаться на изменения файлов workdir. Возвращает функцию отписки. */
+export function subscribeFileChanges(workdir: string, cb: FileChangeCallback): () => void {
+  let set = _changeListeners.get(workdir)
+  if (!set) {
+    set = new Set()
+    _changeListeners.set(workdir, set)
+  }
+  set.add(cb)
+  return () => {
+    set!.delete(cb)
+    if (set!.size === 0) _changeListeners.delete(workdir)
+  }
+}
+
+function emitFileChanges(workdir: string, relPaths: string[]): void {
+  const set = _changeListeners.get(workdir)
+  if (!set || relPaths.length === 0) return
+  for (const cb of set) {
+    try { cb(relPaths) } catch (e) { console.warn('[fileIndexer] change listener error:', e) }
+  }
+}
+
 // Игнорируемые директории (синхронно с fs.ipc.DEFAULT_IGNORE_DIRS).
 // Дополнительно — типичные мусорные папки.
 const IGNORED_DIRS = new Set([
@@ -51,6 +77,9 @@ const IGNORED_DIRS = new Set([
   '.gradle', '.idea', '.vscode', '.hermes', '.mimocode', '.playwright-mcp',
   '.planning', 'logs', 'tmp', 'tmp_out', '.opencode', '.syntee',
   '.angular', '.svelte-kit', '.nuxt', '.expo', 'Pods', 'vendor',
+  'venv', '.pytest_cache', '.mypy_cache', '.ruff_cache', '.tox', '.vite',
+  'obj', 'release', 'storybook-static', '.docusaurus',
+  'cmake-build-debug', 'cmake-build-release',
 ])
 
 const IGNORED_EXTS = new Set([
@@ -218,8 +247,10 @@ export async function startIndexing(workdir: string): Promise<void> {
     const paths = Array.from(pendingPaths)
     pendingPaths.clear()
     if (paths.length === 0) return
+    const changedRel: string[] = []
     for (const fullPath of paths) {
       const relPath = relative(workdir, fullPath).split(sep).join('/')
+      changedRel.push(relPath)
       const name = basename(fullPath)
       if (isIgnored(relPath, name, gitignore)) {
         // игнорируемый файл — удаляем из кэша если был
@@ -251,6 +282,7 @@ export async function startIndexing(workdir: string): Promise<void> {
     }
     // re-sort — дёшево даже для 10к (ms), зато порядок mtime актуален.
     entry.files.sort((a, b) => b.mtime - a.mtime)
+    emitFileChanges(workdir, changedRel)
   }
   const scheduleRescan = (fullPath: string): void => {
     pendingPaths.add(fullPath)

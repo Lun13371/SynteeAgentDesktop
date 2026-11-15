@@ -41,6 +41,11 @@ function readAccColor(): [number, number, number] {
 export default function AnimatedBackground({ onReady }: AnimatedBackgroundProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const workerRef = useRef<Worker | null>(null)
+  // Canvas нельзя перевести в OffscreenCanvas дважды. StrictMode в dev делает
+  // mount→unmount→mount: без этого guard повторный mount звал бы
+  // transferControlToOffscreen на уже переведённом canvas → InvalidStateError
+  // и краш всего renderer в RootErrorBoundary.
+  const transferredRef = useRef(false)
   const colorRef = useRef<[number, number, number]>(readAccColor())
   // Готовность фона для boot-gate: шлём onReady максимум один раз.
   // Через ref, чтобы смена колбэка не пересоздавала worker (и не зависела от
@@ -88,7 +93,7 @@ export default function AnimatedBackground({ onReady }: AnimatedBackgroundProps)
   //    а просто шлём 'disable'/'enable' в тот же worker.
   useEffect(() => {
     const canvas = canvasRef.current
-    if (!canvas || workerRef.current) return
+    if (!canvas || workerRef.current || transferredRef.current) return
     colorRef.current = readAccColor()
     workerRef.current = new Worker(new URL('./bg.worker.ts', import.meta.url), { type: 'module' })
     // Worker сообщает о первом отрисованном кадре — это и есть готовность
@@ -96,7 +101,16 @@ export default function AnimatedBackground({ onReady }: AnimatedBackgroundProps)
     workerRef.current.onmessage = (e: MessageEvent<BgReadyMessage>) => {
       if (e.data?.type === 'ready') notifyReady()
     }
-    const offscreen = canvas.transferControlToOffscreen()
+    let offscreen: OffscreenCanvas
+    try {
+      offscreen = canvas.transferControlToOffscreen()
+      transferredRef.current = true
+    } catch {
+      // Canvas уже переведён (StrictMode remount) — worker не пересоздаём.
+      workerRef.current.terminate()
+      workerRef.current = null
+      return
+    }
     // Размер буфера — в физических пикселях (CSS-px * dpr), иначе на
     // HiDPI-экранах эффект мыльный. dpr ограничен 2 — больше не даёт
     // видимой чёткости для мягких фоновых эффектов, но грузит GPU.
@@ -236,11 +250,11 @@ export default function AnimatedBackground({ onReady }: AnimatedBackgroundProps)
     }
   }, [])
 
-  useEffect(() => () => {
-    workerRef.current?.postMessage({ type: 'destroy' } as BgMessage)
-    workerRef.current?.terminate()
-    workerRef.current = null
-  }, [])
+  // Worker НЕ терминируется на unmount: canvas уже переведён в OffscreenCanvas
+  // и не может быть переведён повторно, поэтому пересоздать worker на remount
+  // невозможно. AnimatedBackground живёт всё время жизни окна (root App),
+  // worker освобождается при закрытии renderer. StrictMode remount переиспользует
+  // существующий worker через guard workerRef/transferredRef в mount-эффекте.
 
   // Opacity применяется ТОЛЬКО в шейдере (u_opacity). Раньше она же стояла
   // и в CSS canvas → двойное затемнение (0.6 * 0.6 = 0.36).

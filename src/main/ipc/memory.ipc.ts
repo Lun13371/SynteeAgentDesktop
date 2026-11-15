@@ -29,6 +29,7 @@ import {
 } from '../../core/memory/graphStore'
 import { buildProjectGraph } from '../../core/memory/graphBuilder'
 import { startSemanticIndexer, setSemanticIndexerForegroundPredicate } from '../../core/memory/semanticIndex'
+import { projectMapManager } from '../../core/projectMap/mapBuilder'
 import { activeRuns, activeRunMeta, compactRuns } from './chatShared'
 import { setGlobalMemorySettingsStore } from '../../core/memory/globalMemorySettings'
 
@@ -70,6 +71,9 @@ export function registerMemoryIPC(_store: Store): void {
   // manual compaction, both of which also compete for CPU/SQLite.
   setSemanticIndexerForegroundPredicate(() => activeRuns.size > 0 || activeRunMeta.size > 0 || compactRuns.size > 0)
   startSemanticIndexer()
+
+  // Карта проекта уступает foreground так же, как semantic-индексация.
+  projectMapManager.setForegroundPredicate(() => activeRuns.size > 0 || activeRunMeta.size > 0 || compactRuns.size > 0)
 
   // Список с фильтрами (замена memory:getAll)
   ipcMain.handle('memory:getAll', (_, filter?: {

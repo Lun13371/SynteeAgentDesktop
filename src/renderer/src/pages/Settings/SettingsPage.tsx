@@ -17,6 +17,7 @@ import AISettingsTab from '../../components/settings/AISettingsTab/AISettingsTab
 import ContextSettingsTab from '../../components/settings/ContextSettingsTab/ContextSettingsTab'
 import ToolsSettingsTab from '../../components/settings/ToolsSettingsTab/ToolsSettingsTab'
 import AssistantsSettingsTab from '../../components/settings/AssistantsSettingsTab/AssistantsSettingsTab'
+import ProjectMapSettingsTab from '../../components/settings/ProjectMapSettingsTab/ProjectMapSettingsTab'
 import ChangelogSettingsTab from '../../components/settings/ChangelogSettingsTab/ChangelogSettingsTab'
 import ProfileSection from '../../components/settings/ProfileSection/ProfileSection'
 import ModelStatusSection from '../../components/settings/ModelStatusSection/ModelStatusSection'
@@ -58,7 +59,7 @@ import './SettingsPage.css'
 type Section =
   | 'profile' | 'general' | 'ai' | 'voice' | 'hotkeys' | 'modelStatus'
   | 'agent' | 'security' | 'data' | 'appearance' | 'integrations' | 'context'
-|  'changelog' | 'notifications' | 'stats' | 'tools' | 'assistants'
+|  'changelog' | 'notifications' | 'stats' | 'tools' | 'assistants' | 'projectMap'
 
 interface SectionDef { id: Section; label: string; icon: IconName; keywords?: string[] }
 interface SectionGroup { title: string; items: SectionDef[] }
@@ -89,6 +90,7 @@ const SECTION_GROUPS: SectionGroup[] = [
       { id: 'tools',      label: 'Инструменты',    icon: 'wrench', keywords: ['tools', 'тулы', 'встроенные', 'дополнительные'] },
       { id: 'agent',      label: 'Агент',          icon: 'bot',    keywords: ['агент', 'инструменты', 'суб-агент', 'циклы'] },
       { id: 'assistants', label: 'Мини-агенты',   icon: 'bot',    keywords: ['мини-агенты', 'помощники', 'watcher', 'janitor', 'локальная', 'llm', 'подсказки', 'сжатие'] },
+      { id: 'projectMap', label: 'Карта проекта', icon: 'gauge',  keywords: ['карта', 'граф', 'код', 'зависимости', 'индексация', 'скорость', 'символы', 'вызовы'] },
       { id: 'security',   label: 'Безопасность',   icon: 'shield', keywords: ['безопасность', 'права', 'подтверждение', 'approval', 'запрещённые', 'опасные'] },
     ],
   },
@@ -683,6 +685,7 @@ export default function SettingsPage() {
             )}
             {section === 'tools' && <ToolsSettingsTab />}
             {section === 'assistants' && <AssistantsSettingsTab />}
+            {section === 'projectMap' && <ProjectMapSettingsTab />}
             {section === 'appearance' && (
               <AppearanceSection settings={settings} onSet={handleSet} />
             )}
