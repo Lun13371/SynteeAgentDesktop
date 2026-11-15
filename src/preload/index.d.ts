@@ -597,6 +597,16 @@ declare const synteeAPI: {
         redo: (chatId: string, rewindMessageId: string) => Promise<any>;
         canRedo: (chatId: string, rewindMessageId: string) => Promise<any>;
         getLastTurnChanges: (chatId: string) => Promise<import("../../shared/types").LastTurnChanges | null>;
+        getTurnChanges: (chatId: string, userMessageId?: string) => Promise<import("../../shared/types").LastTurnChanges | null>;
+        getSessionTurnChanges: (chatId: string) => Promise<Record<string, import("../../shared/types").LastTurnChanges>>;
+        getCheckpointFileDiffs: (chatId: string, userMessageId: string) => Promise<Array<{
+            filePath: string;
+            original: string;
+            modified: string;
+            added: number;
+            deleted: number;
+            created: boolean;
+        }>>;
         undoLastTurnFiles: (chatId: string) => Promise<{
             restored?: number;
             failed?: string[];

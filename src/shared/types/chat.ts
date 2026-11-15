@@ -206,6 +206,13 @@ export interface LastTurnFileChange {
   path: string
   added: number
   deleted: number
+  /** Файл создан этим запросом (contentBefore=null в снапшоте). */
+  created?: boolean
+  /** Файла нет на диске в момент подсчёта — удалён в ходе/после запроса.
+   *  «Создан и удалён» (created && removed): кумулятивный дифф снапшотов для
+   *  такого файла пуст (до=пусто, после=пусто), цифры достаются из шагов
+   *  сообщения — те же, что у чипов в конце ответа. */
+  removed?: boolean
 }
 export interface LastTurnChanges {
   files: LastTurnFileChange[]

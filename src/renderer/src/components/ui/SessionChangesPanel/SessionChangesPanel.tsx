@@ -8,7 +8,7 @@ import FileIcon from '../FileIcon/FileIcon'
 import SafeDiffEditor from '../SafeDiffEditor/SafeDiffEditor'
 import { getLanguage } from '../CodePreview/CodePreview'
 import { parseUnifiedDiff, basename, dirname, type ParsedFileDiff } from '../../../utils/diffParser'
-import type { CheckpointMeta, RewindResult, LastTurnChanges } from '../../../../../shared/types'
+import type { CheckpointMeta, RewindResult, LastTurnChanges, LastTurnFileChange } from '../../../../../shared/types'
 import { useChatStore } from '../../../store/chat.store'
 import { useUIStore } from '../../../store/ui.store'
 import { whileHoverSm, whileTapSm, whileHoverTiny, whileTapTiny, whileHoverListItem, whileTapListItem, springHover } from '../../../utils/motionPresets'
@@ -30,6 +30,17 @@ function normalizeDiffPath(p: string): string {
   return p.replace(/^"|"$/g, '').replace(/\\/g, '/').replace(/^[ab]\//, '')
 }
 
+/** Пометка состояния файла: «создан и удалён» / «удалён» / «создан».
+ *  Файл, созданный запросом и удалённый в нём же (временный скрипт), иначе
+ *  выглядел бы как «без изменений» — снапшотный дифф у него пустой. */
+function fileStateLabel(f?: { created?: boolean; removed?: boolean } | null): string | null {
+  if (!f) return null
+  if (f.created && f.removed) return 'создан и удалён'
+  if (f.removed) return 'удалён'
+  if (f.created) return 'создан'
+  return null
+}
+
 export default function SessionChangesPanel({ chatId }: SessionChangesPanelProps) {
   const [checkpoints, setCheckpoints] = useState<CheckpointMeta[]>([])
   const [loading, setLoading] = useState(false)
@@ -45,6 +56,13 @@ export default function SessionChangesPanel({ chatId }: SessionChangesPanelProps
   const [diffLoading, setDiffLoading] = useState(false)
   const [rewinding, setRewinding] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  // ── Единый источник статистики правок ВСЕХ чекпоинтов сессии ──
+  // chat:getSessionTurnChanges → core/db/turnChanges.ts (кумулятивный дифф
+  // снапшотов, fallback — collectFileChanges). Ключ — userMessageId. Отсюда
+  // +/- берут таймлайн и чипы файлов ЛЮБОГО запроса; store lastTurnChanges
+  // остаётся мгновенным fallback для последнего turn'а до прихода карты.
+  const [turnStats, setTurnStats] = useState<Record<string, LastTurnChanges>>({})
 
   // ── Redo-баннер: отмена отката ──
   const [lastRewind, setLastRewind] = useState<{ rewindMessageId: string; createdAt: number } | null>(null)
@@ -97,6 +115,12 @@ export default function SessionChangesPanel({ chatId }: SessionChangesPanelProps
     try {
       const result = await window.syntee.chat.getSessionTimeline(chatId) as CheckpointMeta[]
       setCheckpoints(result)
+      // Статистика правок всех чекпоинтов (единый модуль turnChanges).
+      // Отдельный try — карта не должна ломать таймлайн, если IPC недоступен.
+      try {
+        const statsMap = await window.syntee.chat.getSessionTurnChanges?.(chatId) as Record<string, LastTurnChanges> | undefined
+        setTurnStats(statsMap ?? {})
+      } catch { setTurnStats({}) }
       const rewind = await window.syntee.chat.getLastRewind(chatId) as { rewindMessageId: string; createdAt: number } | null
       setLastRewind(rewind)
       if (rewind) {
@@ -131,6 +155,7 @@ export default function SessionChangesPanel({ chatId }: SessionChangesPanelProps
       setParsedDiffs([])
       setSelectedFilePath(null)
       setUndoneFiles(new Set())
+      setTurnStats({})
     } else {
       setCheckpoints([])
       setSelectedCheckpoint(null)
@@ -139,6 +164,7 @@ export default function SessionChangesPanel({ chatId }: SessionChangesPanelProps
       setCanRedo(false)
       setSelectedFilePath(null)
       setUndoneFiles(new Set())
+      setTurnStats({})
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatId])
@@ -231,10 +257,17 @@ export default function SessionChangesPanel({ chatId }: SessionChangesPanelProps
         if (Array.isArray(cum)) parsed = cum
       } catch { /* снапшотов нет / IPC упал — fallback ниже */ }
 
-      // ── Fallback: старые turn'ы без снапшотов — step-диффы из БД ──
+      // ── Fallback/дополнение: step-диффы из БД ──
+      // Нужен в двух случаях: (а) старые turn'ы без снапшотов (parsed пуст);
+      // (б) файлы с ПУСТЫМ кумулятивным диффом — «создан и удалён» (временный
+      // скрипт: write_file + удаление через run_command): снапшот даёт 0/0 и
+      // пустой Monaco, шаги восстанавливают реальный дифф создания.
       // NB: parseUnifiedDiff мерджит повторные правки одного файла (остаётся
       // последняя) — для старых данных полного содержимого нет, это потолок.
-      if (parsed.length === 0) {
+      const isEmptyDiff = (d: ParsedFileDiff): boolean =>
+        d.added === 0 && d.deleted === 0 && !d.original && !d.modified
+      const needsSteps = parsed.length === 0 || parsed.some(isEmptyDiff)
+      if (needsSteps) {
         const messages = await window.syntee.chat.getMessages(chatId) as Array<{
           id: string
           toolSteps?: Array<{ type: string; diff?: string; toolName?: string }>
@@ -247,7 +280,19 @@ export default function SessionChangesPanel({ chatId }: SessionChangesPanelProps
               diffs.push(step.diff)
             }
           }
-          if (diffs.length > 0) parsed = parseUnifiedDiff(diffs.join('\n\n'))
+          if (diffs.length > 0) {
+            const stepParsed = parseUnifiedDiff(diffs.join('\n\n'))
+            if (parsed.length === 0) {
+              parsed = stepParsed
+            } else {
+              // Подмешиваем только в пустые файлы — кумулятив авторитетнее.
+              parsed = parsed.map(d => {
+                if (!isEmptyDiff(d)) return d
+                const want = normalizeDiffPath(d.filePath)
+                return stepParsed.find(s => normalizeDiffPath(s.filePath) === want) ?? d
+              })
+            }
+          }
         }
       }
 
@@ -442,23 +487,33 @@ export default function SessionChangesPanel({ chatId }: SessionChangesPanelProps
     setConfirmTarget(null)
   }, [chatId, rewinding, refresh])
 
-  // ── +N -M для конкретного файла (только последнего чекпоинта) ──
-  // lastTurnChanges теперь кумулятивный (из снапшотов, те же пути, что у
-  // чекпоинта), но на всякий случай матчим нормализованно — не строгим ===.
-  const getFileStats = useCallback((filePath: string): { added: number; deleted: number } | null => {
-    if (!lastTurnChanges || !selectedCheckpoint) return null
-    if (lastCheckpointWithFiles?.id !== selectedCheckpoint.id) return null
+  // ── Изменения turn'а чекпоинта — ЛЮБОГО, не только последнего ──
+  // Источник: turnStats (карта из chat:getSessionTurnChanges, единый модуль
+  // core/db/turnChanges.ts). Fallback на lastTurnChanges из store — пока
+  // карта не доехала (store наполняется сразу на CHAT_STREAM_DONE), и только
+  // для последнего чекпоинта. Матчинг путей нормализованный: пути
+  // снапшотов/чекпоинта/шагов могут отличаться кавычками и слешами.
+  const getTurnStatsFor = useCallback((cp: CheckpointMeta): LastTurnChanges | null => {
+    const stats = turnStats[cp.userMessageId]
+      ?? (lastCheckpointWithFiles?.id === cp.id ? lastTurnChanges : undefined)
+    return stats ?? null
+  }, [turnStats, lastCheckpointWithFiles, lastTurnChanges])
+
+  // ── Изменение конкретного файла чекпоинта (цифры + состояние created/removed) ──
+  const getFileStats = useCallback((filePath: string): LastTurnFileChange | null => {
+    if (!selectedCheckpoint) return null
+    const changes = getTurnStatsFor(selectedCheckpoint)
+    if (!changes) return null
     const want = normalizeDiffPath(filePath)
-    const fc = lastTurnChanges.files.find(f => normalizeDiffPath(f.path) === want)
-    if (!fc) return null
-    return { added: fc.added, deleted: fc.deleted }
-  }, [lastTurnChanges, selectedCheckpoint, lastCheckpointWithFiles])
+    return changes.files.find(f => normalizeDiffPath(f.path) === want) ?? null
+  }, [getTurnStatsFor, selectedCheckpoint])
 
   // ── Mini diff-stat bar для чекпоинта ──
   const getCheckpointStats = useCallback((cp: CheckpointMeta): { added: number; deleted: number } | null => {
-    if (!lastTurnChanges || lastCheckpointWithFiles?.id !== cp.id) return null
-    return { added: lastTurnChanges.totalAdded, deleted: lastTurnChanges.totalDeleted }
-  }, [lastTurnChanges, lastCheckpointWithFiles])
+    const changes = getTurnStatsFor(cp)
+    if (!changes) return null
+    return { added: changes.totalAdded, deleted: changes.totalDeleted }
+  }, [getTurnStatsFor])
 
   // ── Уникальное кол-во файлов (бэкенд может считать каждый edit_file вызов отдельно) ──
   const uniqueFileCount = useCallback((cp: CheckpointMeta): number => {
@@ -631,6 +686,9 @@ export default function SessionChangesPanel({ chatId }: SessionChangesPanelProps
                 const isLast = idx === 0
                 const isSelected = selectedCheckpoint?.id === cp.id
                 const cpStats = getCheckpointStats(cp)
+                // Изменения turn'а этого чекпоинта — теперь для любого, не
+                // только последнего (turnStats из getSessionTurnChanges).
+                const cpChanges = getTurnStatsFor(cp)
                 return (
                   <div
                     key={cp.id}
@@ -675,9 +733,7 @@ export default function SessionChangesPanel({ chatId }: SessionChangesPanelProps
                           {[...new Set(cp.filePaths)].map((p, i) => {
                             const fileName = basename(p)
                             const dir = dirname(p)
-                            const stats = lastCheckpointWithFiles?.id === cp.id && lastTurnChanges
-                              ? lastTurnChanges.files.find(f => normalizeDiffPath(f.path) === normalizeDiffPath(p))
-                              : null
+                            const stats = cpChanges?.files.find(f => normalizeDiffPath(f.path) === normalizeDiffPath(p)) ?? null
                             return (
                               <motion.button
                                 key={`${p}-${i}`}
@@ -691,10 +747,15 @@ export default function SessionChangesPanel({ chatId }: SessionChangesPanelProps
                                 <FileIcon name={fileName} size={12} />
                                 <span className="session-checkpoint__path-name">{fileName}</span>
                                 {stats && (
-                                  <span className="session-checkpoint__path-stats">
-                                    <span className="session-checkpoint__path-added">+{stats.added}</span>
-                                    <span className="session-checkpoint__path-deleted">-{stats.deleted}</span>
-                                  </span>
+                                  <>
+                                    <span className="session-checkpoint__path-stats">
+                                      <span className="session-checkpoint__path-added">+{stats.added}</span>
+                                      <span className="session-checkpoint__path-deleted">-{stats.deleted}</span>
+                                    </span>
+                                    {fileStateLabel(stats) && (
+                                      <span className="session-checkpoint__path-state">{fileStateLabel(stats)}</span>
+                                    )}
+                                  </>
                                 )}
                                 {dir && <span className="session-checkpoint__path-dir">{dir}</span>}
                               </motion.button>
@@ -879,6 +940,9 @@ export default function SessionChangesPanel({ chatId }: SessionChangesPanelProps
                               <span className="session-file-chip__added">+{stats?.added ?? fileDiff?.added ?? 0}</span>
                               <span className="session-file-chip__deleted">-{stats?.deleted ?? fileDiff?.deleted ?? 0}</span>
                             </span>
+                          )}
+                          {fileStateLabel(stats) && (
+                            <span className="session-file-chip__state">{fileStateLabel(stats)}</span>
                           )}
                           {isUndone && <span className="session-file-chip__undone-tag">восстановлено</span>}
                         </div>

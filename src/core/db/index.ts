@@ -12,6 +12,7 @@
 //   memory.ts          — clipboard/agent_logs/working_memory/summaries
 //                         (memory CRUD перенесён в memory/MemoryStore.ts)
 //   checkpoints.ts     — file_snapshots/context_snapshots/checkpoints/rewind_history
+//   turnChanges.ts     — ЕДИНЫЙ подсчёт правок запроса (кумулятивный дифф) для всех UI
 
 export * from './handle'
 export * from './migrations'
@@ -22,6 +23,7 @@ export * from './streamingBuffers'
 export * from './attachments'
 export * from './memory'
 export * from './checkpoints'
+export * from './turnChanges'
 export * from './snapshotPaths'
 export * from './snapshotMerge'
 export * from './subagents'

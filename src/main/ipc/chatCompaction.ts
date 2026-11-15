@@ -1,6 +1,7 @@
 import type { BrowserWindow } from 'electron'
 import { v4 as uuid } from 'uuid'
 import { deleteMessageById } from '../../core/db'
+import { updateMessageToolSteps } from '../../core/db/messages'
 import { IPC_EVENTS } from '../../shared/constants'
 import type { Message } from '../../shared/types'
 import type { ChatMessage } from '../../core/context/contextManager'
@@ -136,6 +137,10 @@ export function getLiveMessages(history: Message[]): Message[] {
  * попадает (middle его исключает) — последние сообщения исчезают из контекста
  * модели молча.
  *
+ * Tail теперь выбирается по целым Message (сегментам), поэтому boundary всегда
+ * совпадает с первым tail-Message: округления вверх (и дублирования
+ * «часть хода в summary И в live») больше не возникает.
+ *
  * Пустой tail (история из одного сообщения) — divider уходит в конец ленты:
  * сохранять нечего, всё ушло в summary.
  */
@@ -143,4 +148,72 @@ export function compactDividerCreatedAt(tail: ChatMessage[], liveMessages: Messa
   const firstTailMsgId = tail.find(m => m.messageId)?.messageId
   const boundaryMsg = firstTailMsgId ? liveMessages.find(m => m.id === firstTailMsgId) : undefined
   return boundaryMsg ? boundaryMsg.createdAt - 1 : Date.now()
+}
+
+/**
+ * Применяет ужатые содержимые к шагам tool_result одного Message
+ * (маппинг callId → content). Мутирует переданный массив; возвращает true,
+ * если что-то изменилось. Чистая функция — вынесена для теста.
+ */
+export function applyToolTrimToSteps(
+  steps: Array<{ type: string; callId?: string; content?: string }>,
+  trimByCallId: Map<string, string>,
+): boolean {
+  let changed = false
+  for (const step of steps) {
+    if (step.type !== 'tool_result') continue
+    const next = trimByCallId.get(step.callId ?? '')
+    if (next !== undefined && step.content !== next) {
+      step.content = next
+      changed = true
+    }
+  }
+  return changed
+}
+
+/**
+ * Персистентный трим tail'а: переписывает tool_steps tail-Message'ей в БД.
+ *
+ * In-memory трим в applyRollingWindowAsync живёт только в текущем запросе:
+ * следующий chat:send пересобирает историю из БД (getMessagesAfterLatestCompact
+ * → messageToContextMessages) и вернул бы полный вес мега-хода — кольцо
+ * осциллировало бы, как у джанитора до persistHistoryCompression. Поэтому
+ * ужатые содержимые tool-результатов записываются обратно в tool_steps:
+ * меняется ТОЛЬКО content шагов tool_result (пары call→result, thinking,
+ * todo, imagePaths не трогаются — провайдерная валидация не ломается).
+ *
+ * Вызывать ВНУТРИ транзакции setChatSummary + saveMessage(divider): saveMessage
+ * дёргает saved-callback → invalidateHistoryCache → следующий запрос перечитает
+ * уже ужатые шаги. Возвращает кол-во обновлённых Message.
+ */
+export function persistTailToolTrim(tailMessages: ChatMessage[], liveMessages: Message[]): number {
+  // Ужатые содержимые, сгруппированные по родительскому Message:
+  // messageId → (callId → ужатый content)
+  const edits = new Map<string, Map<string, string>>()
+  for (const cm of tailMessages) {
+    if (cm.role !== 'tool' || !cm.messageId || !cm.tool_call_id) continue
+    if (typeof cm.content !== 'string') continue
+    let byCall = edits.get(cm.messageId)
+    if (!byCall) {
+      byCall = new Map()
+      edits.set(cm.messageId, byCall)
+    }
+    byCall.set(cm.tool_call_id, cm.content)
+  }
+  if (edits.size === 0) return 0
+
+  const rowsById = new Map(liveMessages.map(m => [m.id, m]))
+  let updated = 0
+  for (const [msgId, trimByCallId] of edits) {
+    const row = rowsById.get(msgId)
+    if (!row?.toolSteps?.length) continue
+    // Клонируем: rows — объекты из кэша getMessagesCached, мутация затронула
+    // бы других потребителей кэша.
+    const cloned = JSON.parse(JSON.stringify(row.toolSteps)) as NonNullable<Message['toolSteps']>
+    if (applyToolTrimToSteps(cloned, trimByCallId)) {
+      updateMessageToolSteps(msgId, cloned, row.iterations)
+      updated++
+    }
+  }
+  return updated
 }

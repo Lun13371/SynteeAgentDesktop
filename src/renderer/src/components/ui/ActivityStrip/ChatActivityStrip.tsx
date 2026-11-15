@@ -44,6 +44,9 @@ export default function ChatActivityStrip() {
 
   useEffect(() => {
     const unsub = window.syntee.projectMap.onProgress(p => {
+      // Мелкие быстрые правки (инкрементал на пару файлов) — молча, чтобы
+      // полоска не надоедала. Показываем только заметные синки/сборки.
+      if (p.incremental && (p.changedFiles ?? 0) < 20) return
       setMap(p)
       setMapVisible(true)
       if (p.phase === 'ready') setTimeout(() => setMapVisible(false), 3000)

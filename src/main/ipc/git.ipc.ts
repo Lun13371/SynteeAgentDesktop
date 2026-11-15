@@ -84,15 +84,18 @@ function parseLog(raw: string): GitLogEntry[] {
 }
 
 /**
- * Строки в новых (untracked) файлах: `git diff HEAD --numstat` их не показывает.
- * Потолки — чтобы один сгенерированный артефакт на 200k строк не подвесил статус.
+ * Строки в новых (untracked) файлах ПОФАЙЛОВО: `git diff HEAD --numstat` их
+ * не показывает, из-за чего новые файлы оставались без +N и в «Проверке», и
+ * в «Обзоре». Потолки — чтобы один сгенерированный артефакт на 200k строк
+ * не подвесил статус. Пустые значения у файла (skip/бинарник/потолок) —
+ * ключа в карте нет.
  */
-async function countUntrackedLines(workdir: string, files: string[]): Promise<number> {
+async function untrackedLineCounts(workdir: string, files: string[]): Promise<Map<string, number>> {
   const MAX_FILES = 200
   const MAX_FILE_BYTES = 512 * 1024
   // Артефакты сборки/зависимостей новых файлов не должны раздувать счётчик.
   const SKIP = /(^|\/)(node_modules|dist|build|out)\/|\.(lock|map|min\.js|min\.css)$|package-lock\.json$|pnpm-lock\.yaml$|yarn\.lock$/i
-  let total = 0
+  const counts = new Map<string, number>()
   let counted = 0
   for (const rel of files) {
     if (counted >= MAX_FILES) break
@@ -108,11 +111,19 @@ async function countUntrackedLines(workdir: string, files: string[]): Promise<nu
       let lines = 0
       for (let i = 0; i < buf.length; i++) if (buf[i] === 10) lines++
       if (buf.length > 0 && buf[buf.length - 1] !== 10) lines++
-      total += lines
+      counts.set(rel, lines)
     } catch {
       /* файл исчез между вызовами — не повод падать */
     }
   }
+  return counts
+}
+
+/** Сумма пофайловых строк untracked — для totals «Обзора». */
+async function countUntrackedLines(workdir: string, files: string[]): Promise<number> {
+  const counts = await untrackedLineCounts(workdir, files)
+  let total = 0
+  for (const v of counts.values()) total += v
   return total
 }
 
@@ -253,6 +264,24 @@ export function registerGitIPC(): void {
           stats.push({ path: parts[2], added: parseInt(parts[0], 10) || 0, deleted: parseInt(parts[1], 10) || 0 })
         }
       }
+
+      // ── Untracked (новые) файлы: numstat их не видит, а в «Проверке» новый
+      // файл оставался без +N (расходился с чипами сообщения и «Сессией»).
+      // Считаем строки сами, с теми же потолками, что в repoSummary.
+      // staged-режим не трогаем: untracked по определению вне индекса.
+      if (!params.staged) {
+        const untrackedRaw = await runGit(params.workdir, ['ls-files', '--others', '--exclude-standard']).catch(() => '')
+        let untracked = untrackedRaw.split('\n').map(l => l.trim()).filter(Boolean)
+        if (params.file) {
+          const want = params.file.replace(/\\/g, '/')
+          untracked = untracked.filter(u => u === want)
+        }
+        const counts = await untrackedLineCounts(params.workdir, untracked)
+        for (const [path, added] of counts) {
+          stats.push({ path, added, deleted: 0 })
+        }
+      }
+
       return { success: true, stats }
     } catch (e) {
       return { success: false, error: String((e as Error)?.message ?? e), stats: [] }

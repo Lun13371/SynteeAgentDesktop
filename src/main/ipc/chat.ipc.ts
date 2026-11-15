@@ -49,7 +49,7 @@ import {} from '../managers/GitSyncManager'
 import { v4 as uuid } from 'uuid'
 import {
   applyRollingWindowAsync, getContextSettings, estimateMessagesTokensAsync,
-  getModelContextWindow,
+  estimateTokens, getModelContextWindow,
   type ChatMessage,
 } from '../../core/context/contextManager'
 import { buildSnapshotFromEstimate, buildSnapshotFromReal, getSessionCost, resetSessionCost, getModelPriceInfo } from '../../core/tokens/usageTracker'
@@ -87,7 +87,7 @@ import { registerTaskSummaryIPC } from './taskSummary.ipc'
 import { getSystemPrompt } from './chatSystemPrompt'
 import { processAttachmentsAndStream } from './chatAttachments'
 import { runChatSend, chatSendHandler } from './chatSendEngine'
-import { compactDividerCreatedAt, createCompactDivider, emitChatCompacted, getLiveMessages } from './chatCompaction'
+import { compactDividerCreatedAt, createCompactDivider, emitChatCompacted, getLiveMessages, persistTailToolTrim } from './chatCompaction'
 import {
   broadcastGoal, buildFinalIters, buildLiveIters, cancelledDelegatedStarts,
   
@@ -830,8 +830,11 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
    * chat:compact — ручное сжатие контекста чата через slash-команду /compact.
    *
    * Аргументы команды: `[full|last] [фокус...]` (разбор — parseCompactArgs).
-   *   full — сжать всё, кроме последних rollingKeepLast сообщений (дефолт);
-   *   last — сжать всё, кроме последнего сообщения;
+   *   full — сжать ВСЮ live-историю в summary: tail пустой, модель начинает
+   *          с «нового чата + резюме» (фокус-текст без режима — тоже full);
+   *   last — сжать всё, кроме последнего сообщения (сегмента); если это
+   *          мега-ход — его tool-результаты ужимаются токен-капом (10% окна,
+   *          последние 8 дословно) и персистентно пишутся в БД;
    *   фокус — свободный текст, приоритет при отборе деталей в резюме.
    *
    * Делает то же, что и авто-компакция внутри chat:send, но с
@@ -955,10 +958,10 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       }
 
       // forceCompress=true — форсируем сжатие даже если порог токенов
-      // не достигнут (пользователь явно попросил /compact). applyRollingWindowAsync
-      // адаптирует keepLast/keepFirst для коротких историй, чтобы middle
-      // был непустым. Если совсем нечего сжимать (1-2 сообщения) —
-      // вернёт compressed=false → сообщим пользователю.
+      // не достигнут (пользователь явно попросил /compact). Tail выбирается
+      // по целым обменам (не разрезая Message); если вся live-история —
+      // свежий хвост (1 сообщение, повторный /compact, /compact last на
+      // одном обмене) — вернёт compressed=false → сообщим пользователю.
       const tokensBefore = await estimateMessagesTokensAsync(rawHistory)
       // /compact [full|last] [фокус...] — режим + свободный фокус для резюме.
       const { mode: compactMode, focus } = parseCompactArgs(args)
@@ -966,10 +969,14 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       const result = await applyRollingWindowAsync(rawHistory, rollingSettings, summaryFn, storedSummary || undefined, true, compactMode, focus || undefined)
       if (!result.compressed) {
         compactOutcome = 'error'
-        return { error: 'Недостаточно сообщений для сжатия (нужно больше 2).' }
+        return { error: 'Сжимать нечего — вся история уже в свежем хвосте контекста.' }
       }
 
+      // Пост-сжатый footprint = tail + summary (summary живёт в system prompt
+      // следующих запросов). Без слагаемого summary «сэкономлено ~X» в
+      // divider'е и toast'е завышено.
       const tokensAfter = await estimateMessagesTokensAsync(result.messages)
+        + (result.summaryContent ? estimateTokens(result.summaryContent) : 0)
 
       // ═══════ Guard от user-initiated cancel ═══════
       // Если пользователь нажал Stop во время LLM-стрима summaryFn,
@@ -994,7 +1001,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       // внутри runChatSend. Раньше здесь стоял createdAt = Date.now(): следующее
       // чтение live-истории (created_at > divider.created_at) отсекало ВСЁ,
       // включая tail, который applyRollingWindowAsync только что сохранил
-      // (/compact last → 1 сообщение, /compact → rollingKeepLast = 20).
+      // (/compact last → последний обмен, /compact → свежий хвост).
       // При этом в summary tail тоже не попадал (middle его исключает) —
       // последние сообщения исчезали из контекста модели молча. Теперь:
       //   middle → summary (в system prompt)
@@ -1014,6 +1021,13 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       const db = getDB()
       const tx = db.transaction(() => {
         if (result.summaryContent) setChatSummary(chatId, result.summaryContent)
+        // Персистентный трим tail'а: без него ужатые tool-результаты жили бы
+        // только в текущем контексте — следующий chat:send пересобрал бы из БД
+        // полный вес мега-хода. saveMessage ниже инвалидирует кэш истории.
+        const trimmedMsgs = persistTailToolTrim(result.messages, liveMessages)
+        if (trimmedMsgs > 0) {
+          log('[chat:compact] chatId=%s: персистентный трим tool_steps в %d Message', chatId, trimmedMsgs)
+        }
         saveMessage(divider)
       })
       if (controller.signal.aborted) {
@@ -1054,8 +1068,8 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
 
       // Сообщения НЕ удаляем из БД. AI-контекст ограничен live-подмножеством
       // (после divider'а) + summary в system prompt.
-      log('[chat:compact] chatId=%s: removed=%d ChatMessage, tokens %d→%d (saved %d)',
-        chatId, result.removedCount, tokensBefore, tokensAfter, tokensBefore - tokensAfter)
+      log('[chat:compact] chatId=%s: removed=%d сообщ., trimmed=%d tool-рез., tokens %d→%d (saved %d)',
+        chatId, result.removedCount, result.trimmedToolResults ?? 0, tokensBefore, tokensAfter, tokensBefore - tokensAfter)
 
       // Сброс last_usage — иначе context:calculate пересоберёт real-снапшот
       // из устаревшего promptTokens (до-сжатия), и индикатор контекста

@@ -625,9 +625,17 @@ const synteeAPI = {
     canRedo: (chatId: string, rewindMessageId: string) => ipcRenderer.invoke('chat:canRedo', chatId, rewindMessageId),
     // ── ChangesBadge: изменения последнего запроса + undo файлов ──
     // getLastTurnChanges — per-file added/deleted для последнего turn'а с правками.
+    // getTurnChanges — то же для ЛЮБОГО turn'а по userMessageId (панель «Сессия»).
+    // getSessionTurnChanges — карта изменений всех чекпоинтов сессии одним вызовом.
     // undoLastTurnFiles — откатить все файлы последнего turn'а (без удаления сообщений).
     // undoFile — откатить один файл последнего turn'а.
     getLastTurnChanges: (chatId: string) => ipcRenderer.invoke('chat:getLastTurnChanges', chatId) as Promise<import('../../shared/types').LastTurnChanges | null>,
+    getTurnChanges: (chatId: string, userMessageId?: string) => ipcRenderer.invoke('chat:getTurnChanges', chatId, userMessageId) as Promise<import('../../shared/types').LastTurnChanges | null>,
+    getSessionTurnChanges: (chatId: string) => ipcRenderer.invoke('chat:getSessionTurnChanges', chatId) as Promise<Record<string, import('../../shared/types').LastTurnChanges>>,
+    // getCheckpointFileDiffs — кумулятивные per-file диффы с содержимым «до/после»
+    // (diff-панель «Сессии»). Раньше не был проброшен через preload: панель
+    // молча падала в fallback-парсинг step-диффов.
+    getCheckpointFileDiffs: (chatId: string, userMessageId: string) => ipcRenderer.invoke('chat:getCheckpointFileDiffs', chatId, userMessageId) as Promise<Array<{ filePath: string; original: string; modified: string; added: number; deleted: number; created: boolean }>>,
     undoLastTurnFiles: (chatId: string) => ipcRenderer.invoke('chat:undoLastTurnFiles', chatId) as Promise<{ restored?: number; failed?: string[]; error?: string }>,
     undoFile: (chatId: string, path: string) => ipcRenderer.invoke('chat:undoFile', chatId, path) as Promise<{ success?: boolean; error?: string }>,
     // ── Undo файлов любого чекпоинта (правая панель «Сессия») ──
