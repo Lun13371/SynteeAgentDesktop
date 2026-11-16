@@ -125,7 +125,7 @@ const SECTION_LOOKUP = Object.fromEntries(
 const FIELD_INDEX: { section: Section; id: string; label: string; keywords?: string[] }[] = [
   // Общие
   { section: 'general', id: 'userName', label: 'Имя пользователя', keywords: ['имя', 'ник', 'nickname'] },
-  { section: 'general', id: 'autostart', label: 'Запуск с Windows', keywords: ['автозапуск', 'автостарт', 'старт'] },
+  { section: 'general', id: 'autostart', label: 'Запуск при входе в систему', keywords: ['автозапуск', 'автостарт', 'старт'] },
   { section: 'general', id: 'gitSyncEnabled', label: 'Git Sync Monitor', keywords: ['git', 'github', 'fetch', 'репозиторий', 'коммиты', 'синхронизация'] },
   { section: 'general', id: 'language', label: 'Язык интерфейса', keywords: ['язык', 'english', 'русский', 'language'] },
   { section: 'general', id: 'closeAction', label: 'При закрытии окна', keywords: ['трей', 'закрытие', 'выход', 'quit'] },
@@ -740,23 +740,25 @@ export default function SettingsPage() {
 // Примитивы (SectionTitle, GroupHeader, Field, Group, ConfirmButton) —
 // в components/settings/SettingsPrimitives.tsx, общие с саб-табами.
 
-const GeneralSection = memo(function GeneralSection({ settings, onSet }: { settings: Record<string, unknown>; onSet: (k: string, v: unknown) => void }) {
-  // Автозагрузка: чекбокс показывает РЕАЛЬНОЕ состояние ОС (реестр Windows),
-  // а не значение из config.json — они могут расходиться (Диспетчер задач,
-  // сброс настроек, ручное редактирование Run-ключа).
+const GeneralSection = memo(function GeneralSection({ settings, onSet }: { settings: Record<string, unknown>; onSet: (k: string, v: unknown) => Promise<void> }) {
+  const { add: toast } = useToast()
   const [autostart, setAutostart] = useState<boolean>(!!settings['autostart'])
+  const [autostartBusy, setAutostartBusy] = useState(false)
 
   useEffect(() => {
-    // Живой опрос при монтировании секции (один registry read — дёшево)
     window.syntee.settings.getAutostartStatus().then(setAutostart).catch(() => {})
   }, [])
 
-  const toggleAutostart = (v: boolean) => {
-    setAutostart(v) // оптимистично
-    onSet('autostart', v) // settings:set → main применяет в реестр
-    // Перечитываем реальное состояние: если apply не удался (main вернулся
-    // без сохранения настройки) — чекбокс откатится к правде.
-    window.syntee.settings.getAutostartStatus().then(setAutostart).catch(() => {})
+  const toggleAutostart = async (v: boolean) => {
+    setAutostartBusy(true)
+    try {
+      await onSet('autostart', v)
+      setAutostart(await window.syntee.settings.getAutostartStatus())
+    } catch (error) {
+      toast(error instanceof Error ? error.message : 'Не удалось изменить автозапуск', 'error')
+    } finally {
+      setAutostartBusy(false)
+    }
   }
 
   return (
@@ -774,8 +776,8 @@ const GeneralSection = memo(function GeneralSection({ settings, onSet }: { setti
             placeholder="Введите имя..."
           />
         </Field>
-        <Field id="autostart" label="Запуск с Windows">
-          <Toggle value={autostart} onChange={toggleAutostart} />
+        <Field id="autostart" label="Запуск при входе в систему">
+          <Toggle value={autostart} onChange={toggleAutostart} disabled={autostartBusy} />
         </Field>
         <Field id="gitSyncEnabled" label="Git Sync Monitor" description="Проверять Git-репозитории при запуске и каждые 15 минут; показывать новые remote-коммиты над полем ввода">
           <Toggle value={(settings['gitSyncEnabled'] as boolean) ?? true} onChange={v => onSet('gitSyncEnabled', v)} />

@@ -65,9 +65,24 @@ $ npm run build:win
 # For macOS
 $ npm run build:mac
 
-# For Linux
+# For Linux x86_64 (unpacked Electron app in dist/linux-unpacked)
 $ npm run build:linux
 ```
+
+### Arch Linux x86_64 package
+
+From the checkout, install the dependencies listed in `packaging/arch/PKGBUILD`
+and `base-devel`. Build as a regular user on Arch Linux.
+
+```bash
+npm ci
+mkdir -p dist
+(cd packaging/arch && PKGDEST="$PWD/../../dist" makepkg)
+sudo pacman -U dist/syntee-helper-1.1.4-2-x86_64.pkg.tar.zst
+```
+
+The Linux port review, measured memory usage and remaining runtime checks are in
+[docs/arch-review.md](docs/arch-review.md).
 
 ## Examples
 

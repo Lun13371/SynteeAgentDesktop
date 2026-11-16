@@ -32,6 +32,7 @@ import {
   type SidecarSemanticHit,
 } from '../sidecar/sidecarClient'
 import { perfMark, perfEvent } from '../performanceDiagnostics'
+import { getDB } from '../db/handle'
 
 // ─── Типы ────────────────────────────────────────────────────────────────────
 
@@ -153,6 +154,18 @@ export async function runSemanticIndexingOnce(): Promise<void> {
   _running = true
   const cycleStarted = perfMark()
   try {
+    // An empty profile needs neither the model download nor an ONNX session.
+    // Existing vectors still require a cycle so deleted source rows get pruned.
+    const work = getDB().prepare(`
+      SELECT EXISTS(SELECT 1 FROM memory_items)
+        OR EXISTS(SELECT 1 FROM messages WHERE role IN ('user', 'assistant'))
+        OR EXISTS(SELECT 1 FROM chat_summaries)
+        OR EXISTS(SELECT 1 FROM agent_logs)
+        OR EXISTS(SELECT 1 FROM pinned_messages pm JOIN messages m ON m.id = pm.message_id)
+        OR EXISTS(SELECT 1 FROM semantic_embeddings) AS hasWork
+    `).get() as { hasWork: number }
+    if (!work.hasWork) return
+
     if (!await ensureModelFiles()) {
       console.log('[semanticIndex] E5 model unavailable — skipping cycle (lexical search unaffected)')
       return

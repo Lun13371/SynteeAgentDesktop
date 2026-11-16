@@ -208,6 +208,7 @@ export async function downloadUpdater(dst = defaultUpdaterDst()): Promise<string
  * Returns the path to the updater, or null if it couldn't be found/downloaded.
  */
 export async function ensureUpdater(): Promise<string | null> {
+  if (process.platform !== 'win32') return null
   // 1. Fix a stale update_server first — this alone revives old binaries.
   healLauncherJson()
 

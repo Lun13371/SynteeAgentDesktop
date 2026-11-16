@@ -1,7 +1,7 @@
 import { existsSync } from 'fs'
 import { readdir as fsReaddir, stat as fsStat, readFile as fsReadFile } from 'fs/promises'
 import { join } from 'path'
-import { execAsync, DEFAULT_IGNORE_DIRS, resolveToolPath, type ToolResult } from './_shared'
+import { execFileAsync, DEFAULT_IGNORE_DIRS, resolveToolPath, type ToolResult } from './_shared'
 
 // ── analyze_project — полный анализ проекта ──────────────────────────────
 export async function analyzeProject(projectPath: string, workdir?: string): Promise<ToolResult> {
@@ -17,12 +17,21 @@ export async function analyzeProject(projectPath: string, workdir?: string): Pro
 
   // 2. File tree (2 levels, without node_modules/dist/etc)
   try {
-    const ignoreRegex = DEFAULT_IGNORE_DIRS.map(d => d.replace(/\./g, '\\.')).join('|')
-    const treeCmd = process.platform === 'win32'
-      ? `powershell -Command "Get-ChildItem -Path '${projectPath}' -Recurse -Depth 2 | Where-Object { $_.FullName -notmatch '${ignoreRegex}' } | ForEach-Object { $_.FullName.Replace('${projectPath}', '') }"`
-      : `find "${projectPath}" -maxdepth 3 ${DEFAULT_IGNORE_DIRS.map(d => `-not -path "*/${d}/*"`).join(' ')}`
-    const { stdout: tree } = await execAsync(treeCmd, { timeout: 10000 })
-    const lines = tree.trim().split('\n').slice(0, 80)
+    const lines = [projectPath]
+    const collectTree = async (directory: string, depth: number): Promise<void> => {
+      const entries = await fsReaddir(directory, { withFileTypes: true })
+      entries.sort((a, b) => a.name.localeCompare(b.name))
+      for (const entry of entries) {
+        if (lines.length >= 80) return
+        if (entry.isDirectory() && DEFAULT_IGNORE_DIRS.includes(entry.name)) continue
+        const path = join(directory, entry.name)
+        lines.push(path)
+        if (entry.isDirectory() && depth < 2) {
+          try { await collectTree(path, depth + 1) } catch { /* inaccessible subtree */ }
+        }
+      }
+    }
+    await collectTree(projectPath, 0)
     sections.push(`## File structure\n${lines.join('\n')}${lines.length >= 80 ? '\n...[truncated]' : ''}`)
   } catch (e: any) {
     sections.push(`## File structure\n[Error: ${e.message}]`)
@@ -70,18 +79,12 @@ export async function analyzeProject(projectPath: string, workdir?: string): Pro
 
   // 6. Git статус
   try {
-    const { stdout: gitLog } = await execAsync(
-      `git -C "${projectPath}" log --oneline -5 2>&1`,
-      { timeout: 5000 }
-    )
-    const { stdout: gitStatus } = await execAsync(
-      `git -C "${projectPath}" status --short 2>&1`,
-      { timeout: 5000 }
-    )
-    const { stdout: gitBranch } = await execAsync(
-      `git -C "${projectPath}" branch --show-current 2>&1`,
-      { timeout: 5000 }
-    )
+    const options = { timeout: 5000 }
+    const [{ stdout: gitLog }, { stdout: gitStatus }, { stdout: gitBranch }] = await Promise.all([
+      execFileAsync('git', ['-C', projectPath, 'log', '--oneline', '-5'], options),
+      execFileAsync('git', ['-C', projectPath, 'status', '--short'], options),
+      execFileAsync('git', ['-C', projectPath, 'branch', '--show-current'], options)
+    ])
     sections.push(`## Git\nBranch: ${gitBranch.trim()}\n\nRecent commits:\n${gitLog.trim()}\n\nChanges:\n${gitStatus.trim() || 'No changes'}`)
   } catch { /* ignore — not a git repo */ }
 

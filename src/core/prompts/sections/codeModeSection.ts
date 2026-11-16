@@ -13,6 +13,13 @@ export function buildCodeModeBlock(workdir?: string, projectContext?: string, pr
     : platform === 'darwin' ? 'macOS'
     : platform === 'linux' ? 'Linux'
     : platform
+  const shellInstructions = platform === 'win32'
+    ? `- use PowerShell-compatible commands by default
+- paths can use \\ or /
+- use cmd.exe only if explicitly needed via shell:"cmd"`
+    : `- use Bash-compatible commands by default
+- use / in paths and quote paths containing spaces
+- use the system package manager and command syntax for ${osName}`
 
   // Нормализуем в массив — поддерживаем старый одиночный формат и новый массив
   const instructions: ProjectInstructions[] = projectInstructions
@@ -41,9 +48,7 @@ If you need to work with code or a project:
 
 You are running on ${osName}.
 When using run_command:
-- use PowerShell-compatible commands by default
-- paths can use \\ or /
-- use cmd.exe only if explicitly needed via shell:"cmd"
+${shellInstructions}
 
 ## Encodings on Windows
 

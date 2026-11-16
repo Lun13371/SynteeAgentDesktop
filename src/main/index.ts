@@ -8,6 +8,7 @@ import { join, relative, isAbsolute } from 'path'
 // выполниться ДО импорта tokenStore/gatewayClient (они создают Store при
 // импорте). Поэтому setPath — первое что выполняется в модуле.
 app.setName('SynteeHelper')
+if (process.platform === 'linux') app.setDesktopName('com.synteehelper.app.desktop')
 // SYNTEE_USER_DATA_DIR — изоляция профиля для тестов запусков (QA/CI):
 // позволяет поднять второй инстанс с отдельным userData, не конфликтуя
 // с singleton-lock и данными живого инстанса юзера.
@@ -44,6 +45,7 @@ import { TrayManager } from './tray/TrayManager'
 import { HotkeyManager } from './hotkeys/HotkeyManager'
 import { registerAllIPC } from './ipc'
 import { initAssistants } from './assistants/bridge'
+import { localModels } from './localModels/LocalModelManager'
 import { registerChatIPC, flushAllActiveRuns } from './ipc/chat.ipc'
 import { registerOverlayIPC } from './ipc/overlay.ipc'
 import { registerVoiceIPC } from './ipc/voice.ipc'
@@ -628,11 +630,13 @@ process.on('uncaughtException', (err) => {
 })
 
 app.on('before-quit', () => {
+  mainWindow?.allowCloseOnQuit()
   // Флешим все активные стримящиеся ответы в БД — ПЕРВЫМ, до любых cleanup,
   // чтобы частичный ответ ассистента не потерялся при резком выходе.
   try { flushAllActiveRuns() } catch { /* ok — best-effort */ }
   mainWindow?.flushBounds()
   ptyManager.killAll()
+  localModels.shutdown()
   // Останавливаем опрос обновлений и Git Sync Monitor.
   stopUpdatePolling()
   gitSyncManager?.stop()

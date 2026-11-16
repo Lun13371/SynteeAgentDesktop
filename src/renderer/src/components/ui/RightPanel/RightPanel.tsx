@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo, lazy, Suspense } from 'react'
 import { createPortal } from 'react-dom'
 import { motion, useMotionValue, animate, AnimatePresence } from 'framer-motion'
 import { useShallow } from 'zustand/react/shallow'
@@ -7,7 +7,6 @@ import FileIcon from '../FileIcon/FileIcon'
 import ResizeHandle from '../ResizeHandle/ResizeHandle'
 import AgentPanel from '../AgentPanel/AgentPanel'
 import FileExplorer from '../FileExplorer/FileExplorer'
-import FileEditorPane from '../FileEditorPane/FileEditorPane'
 import GitPanel from '../GitPanel/GitPanel'
 import SessionChangesPanel from '../SessionChangesPanel/SessionChangesPanel'
 import SideChatPanel from '../SideChatPanel/SideChatPanel'
@@ -24,6 +23,8 @@ import PluginIframe from '../PluginSlot/PluginIframe'
 import type { PluginRuntime, PluginUiContribution } from '@shared/types/plugin'
 import type { MenuPos } from '../../../utils/contextMenuPosition'
 import './RightPanel.css'
+
+const FileEditorPane = lazy(() => import('../FileEditorPane/FileEditorPane'))
 
 export type { RightPanelTab }
 
@@ -617,12 +618,14 @@ export default function RightPanel({ open, onClose, focusAgentId, currentChatId,
                     /* File view: редактор слева + tree справа */
                     <div className="rp-file-view">
                       <div className="rp-file-view__editor" style={{ display: 'flex', flex: 1, minWidth: 0 }}>
-                        <FileEditorPane
-                          key={activeFileTab.id}
-                          tab={activeFileTab}
-                          treeOpen={treeOpen}
-                          onToggleTree={() => setTreeOpen(v => !v)}
-                        />
+                        <Suspense fallback={<div style={{ display: 'grid', placeItems: 'center', width: '100%', height: '100%' }}><AppIcon name="loader" size="md" animation="spin" /></div>}>
+                          <FileEditorPane
+                            key={activeFileTab.id}
+                            tab={activeFileTab}
+                            treeOpen={treeOpen}
+                            onToggleTree={() => setTreeOpen(v => !v)}
+                          />
+                        </Suspense>
                       </div>
                       <AnimatePresence initial={false}>
                         {treeOpen && (
