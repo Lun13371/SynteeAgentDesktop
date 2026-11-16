@@ -1,5 +1,5 @@
-import { Watcher, type WatcherTrigger, type Capability, prefilterCapabilities, hashContext } from '../../core/agent/watcher'
-import { DEFAULT_ASSISTANTS_SETTINGS, type AssistantsSettings, type HintCandidate, type AssistantLogEntry, type AgentStatsMap, ASSISTANTS_LOG_MAX_ENTRIES, ASSISTANTS_LOG_RETENTION_MS } from '../../shared/assistants'
+import { Watcher, type WatcherTrigger, type Capability, prefilterCapabilities, scoreCapabilitiesSemantic, hashContext } from '../../core/agent/watcher'
+import { DEFAULT_ASSISTANTS_SETTINGS, type AssistantsSettings, type AssistantsWeights, type HintCandidate, type AssistantLogEntry, type AgentStatsMap, ASSISTANTS_LOG_MAX_ENTRIES, ASSISTANTS_LOG_RETENTION_MS } from '../../shared/assistants'
 import { log } from '../../core/logger'
 import { judgeRelevance, judgeDrift, distillSession, extractConstraints, summarizeTool, judgeCapability } from './llmClient'
 import { getServerState } from './llmServer'
@@ -29,6 +29,36 @@ const sourceWeights = new Map<string, number>()
 const capabilityWeights = new Map<string, number>()
 const injectedHints = new Map<string, Array<{ id: string; source: string; capId?: string }>>()
 
+// Дедуп хинтов по тексту per chat: navigator/capability шлют одно и то же
+// («Возвращайся к цели: X») каждые N раундов — для модели шум, для контекста
+// мусор. Нормализованный текст не инжектится повторно в пределах чата
+// (пересекает и следующие запросы — watcher/Agent свежие, а мост живой).
+const recentHintTexts = new Map<string, Set<string>>()
+function normalizeHintText(s: string): string {
+  return s.toLowerCase().replace(/\s+/g, ' ').trim().slice(0, 120)
+}
+/** true — текст впервые (можно инжектить), false — дубль. */
+function markHintText(chatId: string, content: string): boolean {
+  let set = recentHintTexts.get(chatId)
+  if (!set) { set = new Set(); recentHintTexts.set(chatId, set) }
+  const key = normalizeHintText(content)
+  if (set.has(key)) return false
+  set.add(key)
+  if (set.size > 40) {
+    const oldest = set.values().next().value
+    if (oldest) set.delete(oldest)
+  }
+  return true
+}
+
+// Персист W1-весов: без него feedback-петля обнуляется каждым рестартом.
+let persistWeightsFn: ((w: AssistantsWeights) => void) | null = null
+function clampWeight(v: number): number { return Math.min(1.5, Math.max(0.5, v)) }
+function persistWeights(): void {
+  if (!persistWeightsFn) return
+  try { persistWeightsFn({ sources: Object.fromEntries(sourceWeights), capabilities: Object.fromEntries(capabilityWeights) }) } catch { /* не критично */ }
+}
+
 let globalSettings: AssistantsSettings = { ...DEFAULT_ASSISTANTS_SETTINGS }
 let dbPathResolver: (() => string) | null = null
 let persistFn: ((s: AssistantsSettings) => void) | null = null
@@ -53,7 +83,7 @@ function bumpSaved(role: string, tokens: number): void {
 }
 export function getAgentStats(): AgentStatsMap { return agentStats }
 
-export function initAssistants(opts: { load: () => Partial<AssistantsSettings> | undefined; persist: (s: AssistantsSettings) => void; dbPath: () => string; loadStats?: () => AgentStatsMap | undefined; persistStats?: (s: AgentStatsMap) => void }): void {
+export function initAssistants(opts: { load: () => Partial<AssistantsSettings> | undefined; persist: (s: AssistantsSettings) => void; dbPath: () => string; loadStats?: () => AgentStatsMap | undefined; persistStats?: (s: AgentStatsMap) => void; loadWeights?: () => AssistantsWeights | undefined; persistWeights?: (w: AssistantsWeights) => void }): void {
   const saved = opts.load()
   if (saved) globalSettings = { ...DEFAULT_ASSISTANTS_SETTINGS, ...saved }
   persistFn = opts.persist
@@ -61,6 +91,12 @@ export function initAssistants(opts: { load: () => Partial<AssistantsSettings> |
   const savedStats = opts.loadStats?.()
   if (savedStats) Object.assign(agentStats, savedStats)
   persistStatsFn = opts.persistStats ?? null
+  const savedWeights = opts.loadWeights?.()
+  if (savedWeights) {
+    for (const [k, v] of Object.entries(savedWeights.sources ?? {})) if (typeof v === 'number') sourceWeights.set(k, clampWeight(v))
+    for (const [k, v] of Object.entries(savedWeights.capabilities ?? {})) if (typeof v === 'number') capabilityWeights.set(k, clampWeight(v))
+  }
+  persistWeightsFn = opts.persistWeights ?? null
   if (globalSettings.enabled) {
     applyModelSize()
     void localModels.ensureReady()
@@ -162,6 +198,8 @@ export function attachAssistants(chatId: string, worker: Worker, opts: { project
 
 export function detachAssistants(chatId: string): void {
   active.delete(chatId)
+  recentHintTexts.delete(chatId)
+  injectedHints.delete(chatId)
 }
 
 export async function onAgentEvent(chatId: string, trigger: WatcherTrigger): Promise<void> {
@@ -185,18 +223,28 @@ export async function onAgentEvent(chatId: string, trigger: WatcherTrigger): Pro
     const ready = await serverReadyOrWake()
     if (ready) {
       // Capability router: prefilter каталога → точный структурный вердикт.
-      const caps = prefilterCapabilities(a.capabilities, ctx, 10)
-        .sort((x, y) => (capabilityWeights.get(y.id) ?? 1) - (capabilityWeights.get(x.id) ?? 1))
-      const verdict = await judgeCapability(ctx, caps)
+      let caps = prefilterCapabilities(a.capabilities, ctx, 10)
+      if (caps.length === 0 && a.capabilities.length > 0) {
+        // Keyword-overlap пуст (RU-запрос против EN-имён скиллов). Семантический
+        // скоринг вместо «первых 10 по порядку» — порядок кандидатов для судьи.
+        const semantic = await scoreCapabilitiesSemantic(a.capabilities, ctx)
+        caps = semantic.filter(s => s.score >= 0.1).slice(0, 10).map(s => s.cap)
+      }
+      const verdict = await judgeCapability(ctx, caps.sort((x, y) => (capabilityWeights.get(y.id) ?? 1) - (capabilityWeights.get(x.id) ?? 1)))
       if (verdict.helpful && verdict.confidence >= 0.6) {
         const cap = a.capabilities.find(c => c.id === verdict.id)
         const hint: HintCandidate = { id: `cap-${verdict.id}-${Date.now()}`, source: 'capability', content: verdict.action, score: verdict.confidence, title: cap?.name ?? verdict.id }
-        a.worker?.postMessage({ type: 'hint', hint })
-        const inj = injectedHints.get(chatId) ?? []
-        inj.push({ id: hint.id, source: hint.source, capId: verdict.id })
-        injectedHints.set(chatId, inj.slice(-20))
-        appendLog({ ts: Date.now(), role: 'watcher', kind: 'hint_injected', detail: `[capability:${hint.title}] ${hint.content.slice(0, 80)}` })
-        bump('watcher', 'fired')
+        if (markHintText(chatId, hint.content)) {
+          a.worker?.postMessage({ type: 'hint', hint })
+          const inj = injectedHints.get(chatId) ?? []
+          inj.push({ id: hint.id, source: hint.source, capId: verdict.id })
+          injectedHints.set(chatId, inj.slice(-20))
+          appendLog({ ts: Date.now(), role: 'watcher', kind: 'hint_injected', detail: `[capability:${hint.title}] ${hint.content.slice(0, 80)}` })
+          bump('watcher', 'fired')
+        } else {
+          appendLog({ ts: Date.now(), role: 'watcher', kind: 'skip', detail: `дубль текста хинта — не инжектится: ${hint.content.slice(0, 60)}` })
+          bump('watcher', 'skipped')
+        }
       } else {
         appendLog({ ts: Date.now(), role: 'watcher', kind: 'skip', detail: 'нет уверенной рекомендации — пропуск' })
         bump('watcher', 'skipped')
@@ -205,6 +253,7 @@ export async function onAgentEvent(chatId: string, trigger: WatcherTrigger): Pro
       // Fallback без LLM: память/скиллы, не более одной подсказки.
       const hints = await a.watcher.onTrigger(trigger)
       for (const hint of hints.slice(0, 1)) {
+        if (!markHintText(chatId, hint.content)) { bump('watcher', 'skipped'); continue }
         a.worker?.postMessage({ type: 'hint', hint })
         appendLog({ ts: Date.now(), role: 'watcher', kind: 'hint_injected', detail: `[${hint.source}] ${hint.title ?? hint.id}: ${hint.content.slice(0, 80)}` })
         bump('watcher', 'fired')
@@ -249,6 +298,15 @@ export function onJanitorAction(chatId: string, kind: string, description: strin
   else bump('janitor', 'skipped')
 }
 
+// Детерминированная классификация факта Archivist: 0.8–1.2B модели часто
+// пишут мусорный kind, а от него зависит тип записи в памяти. Эвристика по
+// формулировке — приоритетнее вердикта модели.
+function classifyFact(content: string, modelKind: string): 'project' | 'feedback' | 'user' {
+  if (/(?:пользовател[ья]?|юзер|\buser\b)[^.\n]{0,60}(?:просит|просил|предпочитает|хочет|сказал)|я (?:предпочитаю|всегда)/i.test(content)) return 'user'
+  if (/(?:в проекте|у нас) (?:принято|используется)|конвенц|convention|правило проекта|всегда используем|always use/i.test(content)) return 'feedback'
+  return (['project', 'feedback', 'user'] as const).includes(modelKind as 'project') ? modelKind as 'project' : 'project'
+}
+
 // E5-дедуп Archivist: почти-дубль уже в памяти (cosine ≥ 0.9) → не плодим записи.
 async function isE5Duplicate(content: string, projectId?: string): Promise<boolean> {
   const paths = resolveSemanticModelPaths()
@@ -281,10 +339,15 @@ export async function onAssistantEvent(chatId: string, evt: Record<string, unkno
   const s = a.settings
   const ready = await serverReadyOrWake()
   const kind = String(evt.kind ?? '')
-  const post = (hint: HintCandidate) => {
-    a.worker?.postMessage({ type: 'hint', hint })
+  const post = (hint: HintCandidate): boolean => {
     const role: AssistantLogEntry['role'] = (hint.source === 'memory' || hint.source === 'skill' || hint.source === 'constitution' || hint.source === 'capability') ? 'watcher' : (hint.source as AssistantLogEntry['role'])
+    if (!markHintText(chatId, hint.content)) {
+      appendLog({ ts: Date.now(), role, kind: 'skip', detail: `дубль текста хинта — не инжектится: ${hint.content.slice(0, 60)}` })
+      return false
+    }
+    a.worker?.postMessage({ type: 'hint', hint })
     appendLog({ ts: Date.now(), role, kind: 'hint_injected', detail: `[${hint.source}] ${hint.content.slice(0, 80)}` })
+    return true
   }
   try {
     switch (kind) {
@@ -299,13 +362,13 @@ export async function onAssistantEvent(chatId: string, evt: Record<string, unkno
       }
       case 'navigator': {
         if (!s.navigatorEnabled || !ready) return
-        const verdict = await judgeDrift(String(evt.objective ?? ''), String(evt.transcript ?? ''), Array.isArray(evt.constraints) ? evt.constraints as string[] : [])
+        const verdict = await judgeDrift(String(evt.objective ?? ''), String(evt.transcript ?? ''), Array.isArray(evt.constraints) ? evt.constraints as string[] : [], String(evt.todo ?? ''))
         if (verdict.drift || verdict.violation) {
           const content = verdict.violation
             ? `Нарушаешь ограничение: ${verdict.reason || 'соблюдай закреплённые правила.'}`
             : `Возвращайся к цели: ${verdict.reason || 'текущие шаги уходят в сторону.'}`
-          post({ id: `nav-${Date.now()}`, source: 'navigator', content, score: 1 })
-          bump('navigator', 'fired')
+          if (post({ id: `nav-${Date.now()}`, source: 'navigator', content, score: 1 })) bump('navigator', 'fired')
+          else bump('navigator', 'skipped')
         } else {
           bump('navigator', 'skipped')
         }
@@ -321,7 +384,8 @@ export async function onAssistantEvent(chatId: string, evt: Record<string, unkno
           bump('archivist', 'skipped')
           break
         }
-        const facts = await distillSession(transcript)
+        const files = Array.isArray(evt.modifiedFiles) ? (evt.modifiedFiles as unknown[]).filter((f): f is string => typeof f === 'string').slice(0, 10) : []
+        const facts = await distillSession(transcript, files)
         let savedCount = 0
         for (const f of facts) {
           if (await isE5Duplicate(f.content, evt.projectId as string | undefined)) {
@@ -330,7 +394,7 @@ export async function onAssistantEvent(chatId: string, evt: Record<string, unkno
           }
           const kindMap: Record<string, 'project_decision' | 'convention' | 'user_fact'> = { project: 'project_decision', feedback: 'convention', user: 'user_fact' }
           await saveMemoryItem({
-            title: f.content.slice(0, 60), content: f.content, kind: kindMap[f.kind] ?? 'project_decision',
+            title: f.content.slice(0, 60), content: f.content, kind: kindMap[classifyFact(f.content, f.kind)] ?? 'project_decision',
             scope: evt.projectId ? 'project' : 'global', projectId: (evt.projectId as string) ?? undefined,
             chatId: (evt.chatId as string) ?? undefined, source: 'auto_extract', importance: 0.6,
           })
@@ -369,8 +433,10 @@ export async function onAssistantEvent(chatId: string, evt: Record<string, unkno
   }
 }
 
-/** W1 feedback: после рана спрашиваем судью, какие хинты помогли, и корректируем веса. */
-export async function onRunDone(chatId: string, transcriptTail: string): Promise<void> {
+/** W1 feedback: после рана спрашиваем судью, какие хинты помогли, и корректируем веса.
+ *  `invoked` — реально вызванные тулы/скиллы рана (из collectedSteps): точный
+ *  сигнал «возможность использована» вместо хрупкого includes по транскрипту. */
+export async function onRunDone(chatId: string, transcriptTail: string, invoked?: { tools: string[]; skills: string[] }): Promise<void> {
   const inj = injectedHints.get(chatId) ?? []
   injectedHints.delete(chatId)
   if (inj.length === 0 || !globalSettings.enabled || !serverReady()) return
@@ -378,15 +444,20 @@ export async function onRunDone(chatId: string, transcriptTail: string): Promise
     const list = inj.map(h => h.id).join(', ')
     const verdict = await judgeRelevance(`session transcript: ${transcriptTail.slice(0, 400)}`, `hints used: ${list}`)
     // Простая эвристика: если судья считает контекст релевантным — поднимаем веса источников.
+    const invokedSet = new Set([...(invoked?.tools ?? []), ...(invoked?.skills ?? [])])
     for (const h of inj) {
       const w = sourceWeights.get(h.source) ?? 1
-      sourceWeights.set(h.source, Math.min(1.5, Math.max(0.5, w + (verdict.relevant ? 0.05 : -0.05))))
+      sourceWeights.set(h.source, clampWeight(w + (verdict.relevant ? 0.05 : -0.05)))
       if (h.capId) {
-        const used = transcriptTail.includes(h.capId)
+        // Точный сигнал — формальный вызов (get_skill с именем скилла / тул
+        // возможности); includes по транскрипту остаётся фолбэком: модель
+        // может последовать скиллу, не упоминая его имя в шагах.
+        const used = invokedSet.has(h.capId) || transcriptTail.includes(h.capId)
         const cw = capabilityWeights.get(h.capId) ?? 1
-        capabilityWeights.set(h.capId, Math.min(1.5, Math.max(0.5, cw + (used ? 0.1 : -0.05))))
+        capabilityWeights.set(h.capId, clampWeight(cw + (used ? 0.1 : -0.05)))
       }
     }
+    persistWeights()
   } catch { /* feedback не критичен */ }
 }
 

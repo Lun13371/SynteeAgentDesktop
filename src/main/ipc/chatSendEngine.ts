@@ -2372,7 +2372,24 @@ export async function runChatSend(
           break
 
         case 'done':
-          void onRunDone(params.chatId, String((msg as { answer?: unknown; content?: unknown }).answer ?? (msg as { content?: unknown }).content ?? ''))
+          // W1 feedback: реально вызванные тулы/скиллы рана (из шагов) —
+          // точный сигнал для весов возможностей watcher'а.
+          {
+            const runSteps = ((msg.collectedSteps as Array<Record<string, unknown>> | undefined) ?? run.bufferedSteps) as Array<Record<string, unknown>>
+            const invokedTools: string[] = []
+            const invokedSkills: string[] = []
+            for (const s of runSteps ?? []) {
+              if (!s || s.type !== 'tool_call') continue
+              const name = String(s.toolName ?? '')
+              if (!name) continue
+              invokedTools.push(name)
+              if (name === 'get_skill') {
+                const skill = (s.toolArgs as { name?: unknown } | undefined)?.name
+                if (typeof skill === 'string' && skill) invokedSkills.push(skill)
+              }
+            }
+            void onRunDone(params.chatId, String((msg as { answer?: unknown; content?: unknown }).answer ?? (msg as { content?: unknown }).content ?? ''), { tools: invokedTools, skills: invokedSkills })
+          }
           if (msg.updatedProviders) {
             store.set('providers', msg.updatedProviders)
           }

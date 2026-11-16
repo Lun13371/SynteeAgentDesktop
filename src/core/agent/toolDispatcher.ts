@@ -64,6 +64,18 @@ export class ToolDispatcher {
   /** J3: Agent сообщает, лежит ли контент файла ещё в контексте. Если да и файл
    *  не менялся — повторный read подавляется (экономия токенов без потери данных). */
   rereadGuard?: (absPath: string) => boolean
+
+  /** Правка/запись файла инвалидирует кэш чтений. Быстрый путь read_file
+   *  (readFileCache) НЕ проверяет mtime — без сброса модель после правки
+   *  получала бы пре-едит контент, а с rereadGuard «вечно true» это
+   *  маскировалось подавлением перечитываний. fileCache проверяет mtime сам,
+   *  чистим для симметрии (ключи — сырой путь и абсолютный). */
+  private invalidateReadCaches(rawPath: string, absPath: string): void {
+    for (const prefix of [`${rawPath}:`, `${absPath}:`]) {
+      for (const key of [...this.readFileCache.keys()]) if (key.startsWith(prefix)) this.readFileCache.delete(key)
+      for (const key of [...this.fileCache.keys()]) if (key.startsWith(prefix)) this.fileCache.delete(key)
+    }
+  }
   commandsRun: Array<{ command: string; exitCode?: string; success: boolean; cwd?: string }> = []
   lastShellCwd: string | undefined
   pendingDiffEntries: DiffEntry[] = []
@@ -340,6 +352,7 @@ export class ToolDispatcher {
         if (wfResult.success && !dryRun) {
           let absPath: string
           try { absPath = resolve(this.workdir ?? process.cwd(), resolvedArgs.path as string) } catch { absPath = resolvedArgs.path as string }
+          this.invalidateReadCaches(resolvedArgs.path as string, absPath)
           this.onFileChanged?.(absPath)
         }
         return wfResult
@@ -365,6 +378,7 @@ export class ToolDispatcher {
         if (editResult.success && !dryRun) {
           let absPath: string
           try { absPath = resolve(this.workdir ?? process.cwd(), editPath) } catch { absPath = editPath }
+          this.invalidateReadCaches(editPath, absPath)
           this.onFileChanged?.(absPath)
         }
         return editResult

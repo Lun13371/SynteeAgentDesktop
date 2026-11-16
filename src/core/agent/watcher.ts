@@ -1,5 +1,6 @@
 import { sidecarSemanticSearch, resolveSemanticModelPaths, type SidecarSemanticHit } from '../sidecar/sidecarClient'
 import { getSkillManager } from '../skills/skillManager'
+import { getEmbedder, cosineSimilarity, type Embedding } from '../context/embeddings'
 import type { HintCandidate, AssistantsSettings } from '../../shared/assistants'
 import { log } from '../logger'
 
@@ -21,10 +22,14 @@ export interface Capability {
   desc: string
 }
 
-/** Дешёвый детерминированный prefilter: overlap ключевых слов контекста и описания. */
+/**
+ * Дешёвый детерминированный prefilter: overlap ключевых слов контекста и описания.
+ * Пустой результат (RU-запрос против EN-имён скиллов — типовой случай, overlap
+ * не находится) — сигнал вызвать семантический скоринг scoreCapabilitiesSemantic.
+ */
 export function prefilterCapabilities(caps: Capability[], query: string, limit = 10): Capability[] {
   const kw = extractKeywords(query)
-  if (kw.length === 0) return caps.slice(0, limit)
+  if (kw.length === 0) return []
   const scored = caps.map(c => {
     const hay = `${c.name} ${c.desc}`.toLowerCase()
     const hits = kw.filter(k => hay.includes(k)).length
@@ -32,6 +37,42 @@ export function prefilterCapabilities(caps: Capability[], query: string, limit =
   })
   scored.sort((a, b) => b.hits - a.hits)
   return scored.filter(s => s.hits > 0).slice(0, limit).map(s => s.c)
+}
+
+// Кэш эмбеддингов каталога: скиллы меняются редко, а prefilter ходит на каждый
+// триггер. Ключ — id+имя+описание, переименование/правка сбрасывают запись.
+const capEmbeddingCache = new Map<string, Embedding>()
+
+/**
+ * Семантический скоринг каталога (fallback, когда keyword-overlap пуст —
+ * RU-запрос против EN-имён скиллов). TF-IDF/MiniLM косинус; для LLM-судьи
+ * важен порядок кандидатов, а не абсолютная величина скоринга.
+ */
+export async function scoreCapabilitiesSemantic(caps: Capability[], query: string): Promise<Array<{ cap: Capability; score: number }>> {
+  if (caps.length === 0) return []
+  try {
+    const embedder = await getEmbedder()
+    const qv = await embedder.embed(query)
+    const scored: Array<{ cap: Capability; score: number }> = []
+    for (const cap of caps) {
+      const key = `${cap.id}|${cap.name}|${cap.desc}`
+      let cv = capEmbeddingCache.get(key)
+      if (!cv) {
+        cv = await embedder.embed(`${cap.name} ${cap.desc}`)
+        capEmbeddingCache.set(key, cv)
+        if (capEmbeddingCache.size > 200) {
+          const oldest = capEmbeddingCache.keys().next().value
+          if (oldest) capEmbeddingCache.delete(oldest)
+        }
+      }
+      scored.push({ cap, score: cosineSimilarity(qv, cv) })
+    }
+    scored.sort((a, b) => b.score - a.score)
+    return scored
+  } catch (err) {
+    log('[Watcher] semantic capability scoring failed: %s', (err as Error).message)
+    return []
+  }
 }
 
 /** Простой хэш контекста для novelty-gate (не криптостойкий, только дедуп). */

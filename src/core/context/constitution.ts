@@ -26,6 +26,18 @@ function splitSentences(text: string): string[] {
 export class Constitution {
   private items = new Map<string, string>()
 
+  /** Слот для нового пункта: при переполнении вытесняем самый старый
+   *  (Map сохраняет порядок вставки). Без этого конституция однажды
+   *  «застынет» на MAX_ITEMS и новые правила перестанут попадать. */
+  private put(key: string, item: string): void {
+    if (this.items.has(key)) return
+    if (this.items.size >= MAX_ITEMS) {
+      const oldest = this.items.keys().next().value
+      if (oldest !== undefined) this.items.delete(oldest)
+    }
+    this.items.set(key, item)
+  }
+
   /** Извлекает ограничения из пользовательского текста. Возвращает НОВЫЕ пункты. */
   addFromUserText(text: string): string[] {
     const added: string[] = []
@@ -34,9 +46,8 @@ export class Constitution {
       const item = sentence.slice(0, MAX_ITEM_LEN).trim()
       const key = item.toLowerCase().replace(/\s+/g, ' ')
       if (this.items.has(key)) continue
-      this.items.set(key, item)
+      this.put(key, item)
       added.push(item)
-      if (this.items.size >= MAX_ITEMS) break
     }
     return added
   }
@@ -49,11 +60,19 @@ export class Constitution {
       if (!item) continue
       const key = item.toLowerCase().replace(/\s+/g, ' ')
       if (this.items.has(key)) continue
-      this.items.set(key, item)
+      this.put(key, item)
       added.push(item)
-      if (this.items.size >= MAX_ITEMS) break
     }
     return added
+  }
+
+  /** Восстановление из персиста (per chat) — молча, без отчёта о новых. */
+  hydrate(items: string[]): void {
+    for (const raw of items) {
+      const item = String(raw ?? '').slice(0, MAX_ITEM_LEN).trim()
+      if (!item) continue
+      this.put(item.toLowerCase().replace(/\s+/g, ' '), item)
+    }
   }
 
   list(): string[] {

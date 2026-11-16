@@ -191,9 +191,14 @@ export interface JanitorArchiveEntry {
  *  - Активный хвост = последние janitorTailSteps ходов — не трогаем вовсе.
  *  - Заменяется ТОЛЬКО content у tool-результатов (парные tool_call остаются):
  *    структура сообщений валидна для провайдера, кэш инвалидируется минимально.
- *  - Перечитывания сворачиваются диапазонно: старое чтение гибнет, только если
- *    файл после него правился ИЛИ его диапазон строк полностью перекрыт более
- *    поздними чтениями. Иначе — информативное резюме с атрибуцией.
+ *  - Свёрнутые сообщения помечаются janitorCollapsed: rereadGuard не считает
+ *    их «контентом в контексте» — перечитывание после свёртки не блокируется.
+ *  - Свежие чтения (файл не правился, не перекрыт) не трогаем: контент
+ *    актуален, агент опирается на него в следующих правках (old_str).
+ *  - Чтения с активной правкой (последняя правка файла — в активном хвосте)
+ *    не трогаем: это живой срез файла для продолжающейся работы.
+ *  - Перечитывания сворачиваются диапазонно: covered-правило; устаревшие
+ *    чтения с завершённой работой сворачиваются с подсказкой перечитать.
  *  - Дедуп идентичных вызовов валиден, только если между ними не было мутаций.
  *  - Результаты правок (diff) и визуала никогда не сжимаются.
  */
@@ -216,11 +221,15 @@ export class Janitor {
     return currentRound - this.lastScanRound >= this.settings.janitorScanInterval
   }
 
-  scan(messages: ChatMessage[], currentRound: number, mode: 'light' | 'deep' = 'deep'): JanitorReport {
+  scan(messages: ChatMessage[], currentRound: number, mode: 'light' | 'deep' = 'deep', tailStepsOverride?: number): JanitorReport {
     const start = Date.now()
     this.lastScanRound = currentRound
     const total = messages.length
-    const boundary = computeTailBoundary(messages, Math.max(1, this.settings.janitorTailSteps ?? 10))
+    // tailStepsOverride — emergency-режим economist'а (stage 2): активный хвост
+    // режется вдвое, при реальном давлении на окно свежесть хвоста дешевле
+    // переполнения контекста. Emergency также разрешает сжимать свежие чтения.
+    const emergency = tailStepsOverride !== undefined
+    const boundary = computeTailBoundary(messages, Math.max(1, tailStepsOverride ?? this.settings.janitorTailSteps ?? 10))
 
     // callId → аргументы; callId → индекс tool-сообщения. Анализ — по всей
     // истории (чтения в хвосте тоже перекрывают старые), замены — только
@@ -339,22 +348,45 @@ export class Janitor {
       const later = readOccs.slice(k + 1)
       const decisions = occ.sections.map(sec => {
         const laterRanges = later.flatMap(o => o.sections.filter(s => s.path === sec.path && s.range).map(s => s.range!))
-        if (editedAfter(sec.path, occ.idx)) return { sec, kind: 'stale-edit' as const }
         if (sec.range && laterRanges.length && rangesCover(sec.range, laterRanges)) return { sec, kind: 'covered' as const }
+        if (editedAfter(sec.path, occ.idx)) return { sec, kind: 'stale-edit' as const }
         return { sec, kind: 'keep' as const }
       })
-      if (decisions.length && decisions.every(d => d.kind !== 'keep')) {
-        const list = decisions.map(d => `${d.sec.displayPath} (${d.sec.range ? `строки ${d.sec.range.from}-${d.sec.range.to}` : 'часть файла'}) — ${d.kind === 'stale-edit' ? 'устарело: файл правился после чтения' : 'перекрыто свежим чтением ниже'}`).join('; ')
-        put(occ.idx, `Результат чтения свёрнут: ${list}.`, 'collapse_reread', 'перечитывание свёрнуто')
+      const allCovered = decisions.length > 0 && decisions.every(d => d.kind === 'covered')
+      const hasStale = decisions.some(d => d.kind === 'stale-edit')
+
+      if (allCovered) {
+        const list = decisions.map(d => `${d.sec.displayPath} (${d.sec.range ? `строки ${d.sec.range.from}-${d.sec.range.to}` : 'часть файла'}) — перекрыто свежим чтением ниже`).join('; ')
+        put(occ.idx, `Результат чтения свёрнут: ${list}. При необходимости перечитай — свёртка не блокирует перечитывание.`, 'collapse_reread', 'перечитывание свёрнуто')
         continue
       }
-      // Уникальное (не перекрытое) чтение — в deep-режиме сжимаем в резюме
-      // с атрибуцией: что именно прочитано и актуально ли ещё.
-      if (mode === 'deep' && content.length >= STALE_MIN_CHARS) {
+
+      if (hasStale) {
+        // B: правки по файлу продолжаются СЕЙЧАС (последняя — в активном хвосте)
+        // → чтение и есть живой срез файла, патчить/сжимать нельзя: на его
+        // точные строки агент опирается в следующих old_str. Работа с файлом
+        // ушла в историю → свёртка; точный контент агент доберёт перечитыванием
+        // (rereadGuard свёрнутое «контентом» не считает — см. hasReadInContext).
+        let lastEditIdx = -1
+        for (const d of decisions) {
+          for (const ei of editsByPath.get(d.sec.path) ?? []) {
+            if (ei > occ.idx && ei > lastEditIdx) lastEditIdx = ei
+          }
+        }
+        if (lastEditIdx >= boundary) continue // активная правка — не трогаем
+        const list = decisions.map(d => `${d.sec.displayPath} (${d.sec.range ? `строки ${d.sec.range.from}-${d.sec.range.to}` : 'часть файла'}) — устарело: файл правился после чтения`).join('; ')
+        put(occ.idx, `Результат чтения свёрнут: ${list}. При необходимости перечитай — свёртка не блокирует перечитывание.`, 'collapse_reread', 'чтение устарело, работа с файлом завершена')
+        continue
+      }
+
+      // A: свежее чтение (файл не правился, не перекрыто) — контент актуален
+      // на 100%, не трогаем вовсе. Сжимаем только в emergency-скане
+      // (economist stage 2): под реальным давлением экономика важнее.
+      if (emergency && mode === 'deep' && content.length >= STALE_MIN_CHARS) {
         const note = unknownAfter(occ.idx)
           ? 'после чтения выполнялись команды — файл мог измениться'
           : 'правок файла после чтения в истории нет, при необходимости перечитай с нужным offset'
-        put(occ.idx, summarizeToolResult('read_file', content, undefined, note), 'summarize_stale', `чтение → резюме с атрибуцией`)
+        put(occ.idx, summarizeToolResult('read_file', content, undefined, note), 'summarize_stale', `чтение → резюме (emergency)`)
       }
     }
 
@@ -407,7 +439,7 @@ export class Janitor {
         const msg = result[idx]
         if (!msg || msg.role !== 'tool' || typeof msg.content !== 'string') continue
         const text = action.replacement ?? `${JANITOR_MARKER} ${action.description}`
-        result[idx] = { ...msg, content: text }
+        result[idx] = { ...msg, content: text, janitorCollapsed: true }
       }
     }
     return result
@@ -419,6 +451,23 @@ export class Janitor {
 
   getArchiveSize(): number {
     return this.archive.size
+  }
+
+  /** Снимок архива для персиста (recorder пишет per chat — worker живёт
+   *  один запрос, без этого [recall:id] в истории БД теряют источник). */
+  getArchiveEntries(): JanitorArchiveEntry[] {
+    return [...this.archive.values()]
+  }
+
+  /** Восстановление архива из персиста. Дедуп по id, счётчик jan-N
+   *  отводится дальше восстановленных, чтобы новые id не пересекались. */
+  hydrateArchive(entries: JanitorArchiveEntry[]): void {
+    for (const e of entries ?? []) {
+      if (!e?.id || this.archive.has(e.id)) continue
+      this.archive.set(e.id, e)
+      const m = /^jan-(\d+)-/.exec(e.id)
+      if (m) this.archiveCounter = Math.max(this.archiveCounter, Number(m[1]))
+    }
   }
 
   pruneArchive(maxAgeMs: number): void {

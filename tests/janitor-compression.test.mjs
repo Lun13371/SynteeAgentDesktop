@@ -142,17 +142,31 @@ test('перечитывание перекрыто свежим чтением 
   assert.equal(plans.has('m2'), false, 'хвост не трогается')
 })
 
-test('перечитывание НЕ перекрыто (диапазоны врозь) → резюме с атрибуцией, не полный снос', () => {
+test('перечитывание НЕ перекрыто (диапазоны врозь) → свежее чтение не сжимается', () => {
   const p = 'C:/__janitor_test__/gap.ts'
   const messages = [
     msg('m1', [callStep(1, 'read_file', { path: p }), resultStep(1, readResult(p, 1, 400, 900))]),
     msg('m2', [callStep(2, 'read_file', { path: p }), resultStep(2, readResult(p, 500, 900, 900))]),
   ]
   const plans = compressStoredMessages(messages, { minSavingsTokens: 0, tailKeep: 1 })
+  // A: файл не правился, диапазон не перекрыт → контент актуален на 100%,
+  // агент опирается на его точные строки в следующих old_str. Не трогаем.
+  assert.equal(plans.has('m1'), false, 'свежее уникальное чтение должно остаться дословным')
+})
+
+test('правка файла между чтениями, перекрытия нет → старое чтение свёрнуто как устаревшее', () => {
+  const p = 'C:/__janitor_test__/edit-unique.ts'
+  const messages = [
+    msg('m1', [callStep(1, 'read_file', { path: p }), resultStep(1, readResult(p, 1, 400, 900))]),
+    msg('m2', [callStep(2, 'edit_file', { path: p }), resultStep(2, 'Updated 3 lines in ' + p)]),
+    // 500-900 не перекрывает 1-400 → единственная причина сноса — правка файла
+    msg('m3', [callStep(3, 'read_file', { path: p }), resultStep(3, readResult(p, 500, 900, 900))]),
+  ]
+  const plans = compressStoredMessages(messages, { minSavingsTokens: 0, tailKeep: 1 })
   assert.ok(plans.has('m1'))
-  const summarized = stepOf(plans.get('m1'), 'call1')
-  assert.ok(summarized.content.includes('строки 1-400 из 900'), summarized.content)
-  assert.ok(!summarized.content.includes('перекрыто свежим чтением'), summarized.content)
+  const collapsed = stepOf(plans.get('m1'), 'call1')
+  assert.ok(collapsed.content.includes('правился после чтения'), collapsed.content)
+  assert.equal(plans.has('m2'), false)
 })
 
 test('правка файла между чтениями → старое чтение устарело и свёрнуто', () => {
@@ -165,7 +179,9 @@ test('правка файла между чтениями → старое чт�
   const plans = compressStoredMessages(messages, { minSavingsTokens: 0, tailKeep: 1 })
   assert.ok(plans.has('m1'))
   const collapsed = stepOf(plans.get('m1'), 'call1')
-  assert.ok(collapsed.content.includes('правился после чтения'), collapsed.content)
+  // m3 прочитан ПОСЛЕ правки и перекрывает диапазон → свежее чтение ниже,
+  // это точнее, чем «устарело»: актуальный контент в истории есть.
+  assert.ok(collapsed.content.includes('перекрыто свежим чтением'), collapsed.content)
   // результат правки не тронут (короткий) и ход m3 в хвосте
   assert.equal(plans.has('m2'), false)
 })
@@ -303,6 +319,19 @@ test('in-run: ходов меньше хвоста → ничего не сво�
   assert.equal(report.actions.length, 0)
 })
 
+test('in-run: свежее уникальное чтение вне хвоста не сжимается (не emergency)', () => {
+  const p = 'C:/__janitor_test__/fresh.ts'
+  const messages = flatten(
+    runMsg(1, 'read_file', { path: p }, readResult(p, 1, 400, 900)),
+    runMsg(2, 'read_file', { path: p }, readResult(p, 500, 900, 900)), // диапазоны врозь
+  )
+  const j = new Janitor({ ...SETTINGS, janitorTailSteps: 1 })
+  const report = j.scan(messages, 8, 'deep')
+  // A: файл не правился и не перекрыт → контент актуален, old_str агент берёт
+  // из него. Экономия тут дороже потери точности.
+  assert.equal(report.actions.filter(a => a.kind === 'summarize_stale').length, 0)
+})
+
 test('in-run: summarize_stale архивирует оригинал и recall возвращает его', () => {
   const p = 'C:/__janitor_test__/unique.ts'
   const original = readResult(p, 1, 400, 900)
@@ -311,7 +340,9 @@ test('in-run: summarize_stale архивирует оригинал и recall в
     runMsg(2, 'read_file', { path: p }, readResult(p, 500, 900, 900)), // не перекрывает 1-400
   )
   const j = new Janitor({ ...SETTINGS, janitorTailSteps: 1 })
-  const report = j.scan(messages, 8, 'deep')
+  // Свежее уникальное чтение сжимается только в emergency-скане (economist
+  // stage 2: tailStepsOverride — активный хвост вдвое короче, давление на окно).
+  const report = j.scan(messages, 8, 'deep', 1)
   const stale = report.actions.find(a => a.kind === 'summarize_stale')
   assert.ok(stale, 'уникальное чтение должно уйти в резюме')
   assert.ok(stale.description.includes('−'), 'описание несёт экономию')

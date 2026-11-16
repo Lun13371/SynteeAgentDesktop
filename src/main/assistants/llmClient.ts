@@ -93,13 +93,17 @@ function parseJsonArray(text: string): Array<Record<string, unknown>> | null {
   return null
 }
 
-/** Navigator: drift-судья + нарушения закреплённых ограничений (бинарные вердикты). */
-export async function judgeDrift(objective: string, transcript: string, constraints: string[] = []): Promise<{ drift: boolean; violation: boolean; reason: string }> {
+/** Navigator: drift-судья + нарушения закреплённых ограничений (бинарные вердикты).
+ *  `todo` — актуальный todo-лист: сверка «уход от плана», не только цели. */
+export async function judgeDrift(objective: string, transcript: string, constraints: string[] = [], todo = ''): Promise<{ drift: boolean; violation: boolean; reason: string }> {
   const goalPart = objective ? `Goal: ${objective.slice(0, 300)}` : 'Goal: (none — check constraints only)'
   const rules = constraints.length ? `\nPinned user constraints:\n${constraints.slice(0, 8).map(c => `- ${c.slice(0, 150)}`).join('\n')}\n` : ''
-  const prompt = `${goalPart}\n${rules}\nRecent agent actions:\n${transcript.slice(0, 900)}\n\nAnswer exactly:\nDRIFT: YES or NO (unrelated work / scope creep vs the goal; NO when no goal)\nVIOLATION: YES or NO (agent breaks a pinned constraint; NO when none listed)\nREASON: one short sentence`
+  const todoPart = todo ? `\nTodo plan:\n${todo.slice(0, 400)}\n` : ''
+  const prompt = `${goalPart}\n${rules}${todoPart}\nRecent agent actions:\n${transcript.slice(0, 900)}\n\nAnswer exactly:\nDRIFT: YES or NO (unrelated work / scope creep vs the goal and todo plan; NO when no goal)\nVIOLATION: YES or NO (agent breaks a pinned constraint; NO when none listed)\nREASON: one short sentence`
   try {
-    const text = await enqueue(prompt, 'janitor', 60)
+    // Mid-run advisory — приоритет выше janitor'а: судья полезен только пока
+    // ран идёт, а janitor-задачи в очереди спокойно ждут.
+    const text = await enqueue(prompt, 'default', 60)
     return {
       drift: /DRIFT:\s*YES/i.test(text),
       violation: /VIOLATION:\s*YES/i.test(text),
@@ -108,9 +112,12 @@ export async function judgeDrift(objective: string, transcript: string, constrai
   } catch { return { drift: false, violation: false, reason: '' } }
 }
 
-/** Archivist: дистиллировать сессию в 1-3 факта для долгосрочной памяти (JSON). */
-export async function distillSession(transcript: string): Promise<Array<{ content: string; kind: string }>> {
-  const prompt = `From this coding session transcript, extract 1-3 durable facts worth remembering (decisions, gotchas, user constraints, project conventions). The transcript contains tool-call noise — ignore it. If there is nothing durable, return [].\n\n${transcript.slice(0, 1500)}\n\nOutput JSON array: [{"content":"...","kind":"project"}] where kind is project|feedback|user. Only JSON.`
+/** Archivist: дистиллировать сессию в 1-3 факта для долгосрочной памяти (JSON).
+ *  `modifiedFiles` — файлы, правленные в ране: дешёвый сигнал дистилляции,
+ *  какие области проекта «горячие» (раньше передавался, но не использовался). */
+export async function distillSession(transcript: string, modifiedFiles: string[] = []): Promise<Array<{ content: string; kind: string }>> {
+  const filesPart = modifiedFiles.length ? `Files modified this session: ${modifiedFiles.slice(0, 10).join(', ')}\n` : ''
+  const prompt = `From this coding session transcript, extract 1-3 durable facts worth remembering (decisions, gotchas, user constraints, project conventions). The transcript contains tool-call noise — ignore it. If there is nothing durable, return [].\n\n${filesPart}${transcript.slice(0, 1500)}\n\nOutput JSON array: [{"content":"...","kind":"project"}] where kind is project|feedback|user. Only JSON.`
   try {
     // Дистилляция — самое длинное поколение мини-агентов (русский текст в JSON
     // ест токены): дефолтные 15с на CPU-декоде не хватало, вызов молча умирал

@@ -50,6 +50,7 @@ import { sanitizeToolInstructions } from '../prompts/buildSystemPrompt'
 import { executeCode, EphemeralArtifactStore } from '../codeMode'
 import type { CodeTraceEntry } from '../codeMode'
 import { Janitor } from '../context/janitor'
+import { loadAssistantState, saveAssistantState } from '../context/assistantState'
 import { Constitution } from '../context/constitution'
 import { getSkillManager } from '../skills/skillManager'
 import type { Capability } from './watcher'
@@ -84,6 +85,12 @@ const NON_DESTRUCTIVE_TOOLS = new Set([
 // (~50k токенов) с запасом покрывает самый большой легитимный вывод
 // (fetch_page ~50k симв, plugin_docs ~40k) — легитимные тулы его не замечают.
 const TOOL_RESULT_HARD_CEILING = 200_000
+
+// Разговорные формулировки правил, которые детерминированные паттерны
+// конституции (CONSTRAINT_PATTERNS) не ловят: «нам нравится pnpm»,
+// «у нас принято…», «мы используем…». Повод запустить LLM-экстракцию
+// даже там, где regex промахнулся.
+const RULEISH_RE = /(?:нам (?:нравится|нужно|принято)|у нас (?:принято|используется)|мы (?:используем|работаем|не используем)|(?:в|на) проекте (?:принято|используется)|prefer|we (?:use|'re using|always)|our (?:convention|rule|policy)|make sure|keep in mind)/i
 
 // §steer — реплики пользователя, внедрённые в контекст посреди рана: маркер
 // живёт в shared/steer.ts (он же используется при пересборке истории в
@@ -194,8 +201,19 @@ export class Agent {
   private tokenCalibration = 1
   private pendingApproxTokens = 0
   private navigatorRoundCounter = 0
+  /** Probe-флаги navigator'а: свежая ошибка/зацикливание — повод свериться
+   *  с целью и ограничениями раньше обычного интервала (см. блок Navigator). */
+  private navigatorProbe = false
+  private navigatorLastStep = -100
   private briefingDone = false
   private continuityStarted = false
+  /** Персист мини-агентов (конституция + recall-архив per chat).
+   *  Ставится ai-worker'ом: main-чат и не инкогнито. */
+  persistAssistantState = false
+  private assistantStateLoaded = false
+  private lastConstitutionExtractAt = 0
+  /** Актуальный todo-лист (из update_todo) — navigator сверяет «уход от плана». */
+  private currentTodo: Array<{ text: string; status: string }> = []
   /** Ссылка на messages текущего рана — для J3 guard и J4 refine из worker-хендлеров. */
   private liveMessages: AgentMessage[] | null = null
   /** Канал worker→main для LLM-зависимых мини-агентов (navigator/
@@ -264,7 +282,21 @@ export class Agent {
   /** LLM-экстрактор конституции прислал пункты из main — мержим и ре-инжектим. */
   mergeConstitution(items: string[]): void {
     const added = this.constitution.merge(items)
-    if (added.length > 0) log('[Agent] constitution merged %d items (total=%d)', added.length, this.constitution.size)
+    if (added.length > 0) {
+      log('[Agent] constitution merged %d items (total=%d)', added.length, this.constitution.size)
+      this.persistStateNow()
+    }
+  }
+
+  /** Слив состояния мини-агентов на диск (конституция + recall-архив).
+   *  Воркер живёт один запрос — без этого ограничения юзера и архив
+   *  умирают между сообщениями чата. */
+  private persistStateNow(): void {
+    if (!this.persistAssistantState || !this.chatId || !this.userDataPath) return
+    saveAssistantState(this.userDataPath, this.chatId, {
+      constitution: this.constitution.list(),
+      janitorArchive: this.janitor.getArchiveEntries(),
+    })
   }
 
   /** J1: держим конституцию в контексте всегда — после любой компакции/дропа. */
@@ -333,15 +365,34 @@ export class Agent {
         }
       }
     }
+    // Архив вырос — сливаем на диск, чтобы [recall:id] пережил смену воркера.
+    if (report.actions.some(a => a.kind === 'summarize_stale')) this.persistStateNow()
     log('[Agent] janitor: %d actions, %d tokens saved (%dms)', report.actions.length, report.totalTokensSaved, report.durationMs)
   }
 
-  /** J3: контент файла ещё в контексте? (ищем tool-результат read с этим путём). */
+  /** J3: контент файла ещё в контексте? Считаем ТОЛЬКО результаты
+   *  read_file/read_files: любое другое упоминание пути (резюме джанитора,
+   *  diff'ы правок, fileMap) контентом не является. Свёрнутые джанитором
+   *  сообщения (janitorCollapsed / маркер из персист-компрессии) не считаем —
+   *  иначе rereadGuard запрещал перечитывать то, что джанитор сжал. */
   private hasReadInContext(absPath: string): boolean {
     if (!this.liveMessages) return false
+    const readCallIds = new Set<string>()
+    for (const m of this.liveMessages) {
+      if (m.role !== 'assistant' || !m.tool_calls?.length) continue
+      for (const tc of m.tool_calls as Array<{ id?: string; function?: { name?: string } }>) {
+        const n = tc.function?.name ?? ''
+        if (n === 'read_file' || n === 'read_files') { if (tc.id) readCallIds.add(tc.id) }
+      }
+    }
+    if (readCallIds.size === 0) return false
     const base = absPath.replace(/\\/g, '/').split('/').pop() ?? ''
     for (const m of this.liveMessages) {
-      if (m.role !== 'tool' || typeof m.content !== 'string') continue
+      if (m.role !== 'tool' || typeof m.content !== 'string' || !m.tool_call_id) continue
+      if (!readCallIds.has(m.tool_call_id)) continue
+      if ((m as { janitorCollapsed?: boolean }).janitorCollapsed) continue
+      // Сообщения из БД флага не несут — но маркер ужатых текстов остаётся.
+      if (m.content.includes(JANITOR_MARKER)) continue
       if (m.content.includes(absPath) || (base && m.content.includes(base))) return true
     }
     return false
@@ -582,11 +633,30 @@ export class Agent {
 
     if (goalRuntime) messages.push({ role: 'system', content: goalRuntime.instruction() })
 
+    // Персист мини-агентов: восстанавливаем конституцию и recall-архив
+    // предыдущих сообщений этого чата (воркер — один запрос, всё иначе умрёт).
+    if (this.persistAssistantState && this.chatId && this.userDataPath && !this.assistantStateLoaded) {
+      this.assistantStateLoaded = true
+      const st = loadAssistantState(this.userDataPath, this.chatId)
+      if (st) {
+        this.constitution.hydrate(st.constitution ?? [])
+        this.janitor.hydrateArchive(st.janitorArchive ?? [])
+      }
+    }
     // J1: детерминированное извлечение ограничений из нового user-сообщения.
     if (this.assistantsSettings.enabled && typeof userMessage === 'string') {
       const added = this.constitution.addFromUserText(userMessage)
       if (added.length > 0) {
         callbacks.onStep({ type: 'hint', hintSource: 'constitution', content: `Запомнил ограничения: ${added.join('; ')}` })
+        this.persistStateNow()
+      }
+      // LLM-экстракция шире regex: формулировки правил вне CONSTRAINT_PATTERNS
+      // («нам нравится pnpm») иначе не попадут в конституцию никогда.
+      // Троттлинг раз в минуту — advisory, но очередь локальной модели
+      // не нужно звать на каждый длинный вопрос.
+      const ruleish = userMessage.length >= 80 && RULEISH_RE.test(userMessage)
+      if ((added.length > 0 || ruleish) && Date.now() - this.lastConstitutionExtractAt >= 60_000) {
+        this.lastConstitutionExtractAt = Date.now()
         this.onAssistantEvent?.({ kind: 'constitution_extract', text: userMessage.slice(0, 800) })
       }
       this.reinjectConstitution(messages)
@@ -899,6 +969,8 @@ export class Agent {
         fpCounts.set(k, (fpCounts.get(k) ?? 0) + 1)
       }
       const heavyRepeats = [...fpCounts.values()].some(c => c >= 3)
+      // Зацикливание — тоже повод для navigator'а свериться с целью раньше интервала.
+      if (heavyRepeats) this.navigatorProbe = true
       const matureRun = step >= 25
       const janitorDue = typeof this.janitor?.shouldScan === 'function'
         && this.janitor.shouldScan(this.janitorRoundCounter)
@@ -906,7 +978,12 @@ export class Agent {
       if (janitorDue || this.forceJanitorMode) {
         const scanMode = this.forceJanitorMode ?? 'deep'
         this.forceJanitorMode = null
-        const report = this.janitor.scan(messages as ChatMessage[], this.janitorRoundCounter, scanMode)
+        // Emergency (economist stage 2 — ecoStage ещё активен): активный хвост
+        // режется вдвое — свежесть последних 10 ходов дешевле переполнения окна.
+        const tailOverride = this.ecoStage >= 2
+          ? Math.max(4, Math.floor((this.assistantsSettings.janitorTailSteps ?? 10) / 2))
+          : undefined
+        const report = this.janitor.scan(messages as ChatMessage[], this.janitorRoundCounter, scanMode, tailOverride)
         log('[Agent] janitor scan round=%s mode=%s actions=%d saved=%d enabled=%s', this.janitorRoundCounter, scanMode, report.actions.length, report.totalTokensSaved, this.assistantsSettings.enabled)
         // J2: не применяем микро-компакции — они инвалидируют кэш чаще, чем экономят.
         if (report.actions.length > 0 && report.totalTokensSaved >= this.assistantsSettings.janitorMinSavingsTokens) {
@@ -919,8 +996,18 @@ export class Agent {
       const navConstraints = this.constitution.list()
       if (this.assistantsSettings.enabled && this.assistantsSettings.navigatorEnabled && (this.goal || navConstraints.length > 0) && this.onAssistantEvent) {
         this.navigatorRoundCounter++
-        if (this.navigatorRoundCounter % this.assistantsSettings.navigatorInterval === 0) {
-          this.onAssistantEvent({ kind: 'navigator', objective: this.goal?.objective ?? '', constraints: navConstraints, transcript: formatTranscript(messages.slice(-12) as ChatMessage[]).slice(0, 1500) })
+        // Обычный ритм — раз в navigatorInterval раундов. Probe — раньше:
+        // свежая ошибка или зацикливание уводят от цели, ждать 6 раундов
+        // глупо; минимальная пауза 4 шага — от спама при серии ошибок.
+        const dueCounter = this.navigatorRoundCounter % this.assistantsSettings.navigatorInterval === 0
+        const dueProbe = this.navigatorProbe && step - this.navigatorLastStep >= 4
+        if (dueCounter || dueProbe) {
+          if (dueProbe) this.navigatorProbe = false
+          this.navigatorLastStep = step
+          const todoPart = this.currentTodo.length > 0
+            ? this.currentTodo.slice(0, 8).map(t => `[${t.status}] ${t.text}`).join(' | ')
+            : ''
+          this.onAssistantEvent({ kind: 'navigator', objective: this.goal?.objective ?? '', constraints: navConstraints, transcript: formatTranscript(messages.slice(-12) as ChatMessage[]).slice(0, 1500), todo: todoPart })
         }
       }
       // Watcher v2: периодический само-подход раз в 15 раундов + stuck-сигнал.
@@ -1490,6 +1577,17 @@ export class Agent {
                   return
                 }
               }
+            }
+          }
+          // Актуальный todo — navigator'у: сверка «уход от плана», а не только
+          // текстовой цели (judgeDrift иначе план вообще не видит).
+          if (fn.name === 'update_todo') {
+            const todoItems = (args as { items?: Array<{ text?: unknown; status?: unknown }> } | null)?.items
+            if (Array.isArray(todoItems)) {
+              this.currentTodo = todoItems.slice(0, 20).map(x => ({
+                text: String(x?.text ?? '').slice(0, 200),
+                status: String(x?.status ?? 'pending'),
+              }))
             }
           }
           callbacks.onStep({ type: 'tool_call', toolName: fn.name, toolArgs: args, content: fn.name, callId, hidden: isHiddenTool, pendingCallId, serverName: extractMcpServerName(fn.name) })
@@ -2080,6 +2178,8 @@ export class Agent {
             const errFp = buildToolFingerprint(fn.name, args)
             const errorFingerprint = `${fn.name}:${errFp.argsKey}:${(result.error ?? '').slice(0, 120)}`
             this.recentErrorFingerprints.push(errorFingerprint)
+            // Свежая ошибка — navigator'у повод свериться с целью/ограничениями.
+            this.navigatorProbe = true
             if (this.recentErrorFingerprints.length > maxRepeatedErrors) {
               this.recentErrorFingerprints.shift()
             }
