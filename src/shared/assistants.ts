@@ -113,5 +113,14 @@ export interface AgentStats {
 }
 export type AgentStatsMap = Record<string, AgentStats>
 
+/**
+ * W1 feedback-веса (персистятся между рестартами): источников хинтов и
+ * возможностей каталога watcher'а. Диапазон 0.5–1.5 (см. bridge).
+ */
+export interface AssistantsWeights {
+  sources: Record<string, number>
+  capabilities: Record<string, number>
+}
+
 export const ASSISTANTS_LOG_RETENTION_MS = 7 * 24 * 60 * 60 * 1000
 export const ASSISTANTS_LOG_MAX_ENTRIES = 2000

@@ -204,33 +204,41 @@ export function compressStoredMessages(messages: Message[], opts: CompressOption
   for (let k = 0; k < readOccs.length; k++) {
     const occ = readOccs[k]
     if (!candidateMsgs.has(occ.pair.msg)) continue
-    const content = occ.pair.result.content ?? ''
     const ts = occ.pair.result.timestamp ?? 0
     const later = readOccs.slice(k + 1)
     const decisions = occ.sections.map(sec => {
       const laterRanges = later.flatMap(o => o.sections.filter(s => s.path === sec.path && s.range).map(s => s.range!))
-      if (editedAfter(sec.path, occ.pair.seq)) return { sec, kind: 'stale-edit' as const, changed: true }
-      const mtimeChanged = fileChangedAfter(sec.path, ts)
-      if (mtimeChanged === true) return { sec, kind: 'stale-mtime' as const, changed: true }
-      if (sec.range && laterRanges.length && rangesCover(sec.range, laterRanges)) return { sec, kind: 'covered' as const, changed: false }
-      return { sec, kind: 'keep' as const, changed: mtimeChanged === false ? false : null }
+      if (sec.range && laterRanges.length && rangesCover(sec.range, laterRanges)) return { sec, kind: 'covered' as const }
+      if (editedAfter(sec.path, occ.pair.seq)) return { sec, kind: 'stale-edit' as const }
+      if (fileChangedAfter(sec.path, ts) === true) return { sec, kind: 'stale-mtime' as const }
+      return { sec, kind: 'keep' as const }
     })
-    if (decisions.length && decisions.every(d => d.kind !== 'keep')) {
-      const list = decisions.map(d => `${d.sec.displayPath} (${d.sec.range ? `строки ${d.sec.range.from}-${d.sec.range.to}` : 'часть файла'}) — ${d.kind === 'stale-edit' ? 'устарело: файл правился после чтения' : d.kind === 'stale-mtime' ? 'устарело: файл изменялся после чтения' : 'перекрыто свежим чтением ниже'}`).join('; ')
-      put(occ.pair, `Результат чтения свёрнут: ${list}.`, 'reread')
+    const allCovered = decisions.length > 0 && decisions.every(d => d.kind === 'covered')
+    const hasStale = decisions.some(d => d.kind === 'stale-edit' || d.kind === 'stale-mtime')
+
+    if (allCovered) {
+      const list = decisions.map(d => `${d.sec.displayPath} (${d.sec.range ? `строки ${d.sec.range.from}-${d.sec.range.to}` : 'часть файла'}) — перекрыто свежим чтением ниже`).join('; ')
+      put(occ.pair, `Результат чтения свёрнут: ${list}. При необходимости перечитай — свёртка не блокирует перечитывание.`, 'reread')
       continue
     }
-    // Уникальное (не перекрытое) чтение — информативное резюме с атрибуцией:
-    // что именно прочитано и актуально ли ещё содержимое.
-    if (content.length >= STALE_MIN_CHARS) {
-      const statKnown = decisions.some(d => d.kind === 'keep' && d.changed !== null)
-      const note = statKnown
-        ? 'файл после чтения не менялся (проверено по mtime), при необходимости перечитай с нужным offset'
-        : unknownMutSeqs.some(s => s > occ.pair.seq)
-          ? 'после чтения выполнялись команды — файл мог измениться'
-          : 'правок файла после чтения в истории нет, при необходимости перечитай с нужным offset'
-      put(occ.pair, summarizeToolResult(occ.pair.call.toolName ?? 'read_file', content, undefined, note), 'stale')
+    if (hasStale) {
+      // B: активная правка (последняя правка файла — в хвосте, который не
+      // сжимается) → чтение и есть живой срез файла: на его точные строки
+      // агент опирается в следующих old_str. Не трогаем. Работа с файлом
+      // остыла → свёртка (перечитывание после свёртки не блокируется).
+      let lastEditSeq = -1
+      for (const d of decisions) {
+        for (const s of editsByPath.get(d.sec.path) ?? []) {
+          if (s > occ.pair.seq && s > lastEditSeq) lastEditSeq = s
+        }
+      }
+      if (lastEditSeq >= 0 && !candidateMsgs.has(allPairs[lastEditSeq].msg)) continue
+      const list = decisions.map(d => `${d.sec.displayPath} (${d.sec.range ? `строки ${d.sec.range.from}-${d.sec.range.to}` : 'часть файла'}) — ${d.kind === 'stale-edit' ? 'устарело: файл правился после чтения' : 'устарело: файл изменялся после чтения'}`).join('; ')
+      put(occ.pair, `Результат чтения свёрнут: ${list}. При необходимости перечитай — свёртка не блокирует перечитывание.`, 'reread')
+      continue
     }
+    // A: свежее чтение (файл не правился, mtime не менялся, не перекрыто) —
+    // контент актуален на 100%, не сжимаем: агент опирается на него в правках.
   }
 
   // 3) Старьё: прочие большие результаты старых ходов → структурное резюме

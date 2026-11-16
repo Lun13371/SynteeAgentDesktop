@@ -142,6 +142,10 @@ export interface ChatMessage {
   content: string
   /** Visual tool-result sources; hydrated only at the agent request boundary. */
   imagePaths?: string[]
+  /** Джанитор заменил content резюме/свёрткой — точного контента здесь больше
+   *  нет. rereadGuard не считает такое сообщение «контентом в контексте»,
+   *  иначе модель запрещали перечитывать то, что джанитор сжал. */
+  janitorCollapsed?: boolean
   tool_calls?: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }>
   tool_call_id?: string
   name?: string

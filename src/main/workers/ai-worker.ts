@@ -423,6 +423,9 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
 
       // Прокидываем chatId и колбэки рабочей памяти
       agent.chatId = chatId
+      // Персист мини-агентов (конституция + recall-архив): main-чат, не
+      // инкогнито — инкогнито не должен оставлять след на диске.
+      agent.persistAssistantState = !incognito && !isSubAgent
       const runGoal = msg.goal as import('../../shared/types/goal').ChatGoal | undefined
       // §goal — активная (running) и приостановленная (paused) цель участвуют
       // в следующем ходе: отправка сообщения возобновляет цикл (как в [CC]).

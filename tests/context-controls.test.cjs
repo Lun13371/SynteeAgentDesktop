@@ -76,6 +76,10 @@ test('message changes scoped to chat, flags validated, hidden/pin independently 
   assert.equal(api.filterContextHistory('c', []).some(r => r.id === 'tail'), true)
 })
 test('prompt inputs and auto-recall are gated; calculator shares history filter', () => {
-  const chat = fs.readFileSync(path.join(root, 'src/main/ipc/chat.ipc.ts'), 'utf8')
-  for (const expected of ['customSystemPrompt: sources.instructions ?', 'projectContext: sources.projectFiles ?', 'memoryContext: sources.memory ?', 'workingMemory: sources.memory ?', 'projectInstructions: includedFiles', 'contextPrefs.excludedFiles.includes(file.source)', 'getContextPreferences(dbChatId).sources.memory &&', 'filterContextHistory(chatId, getMessagesAfterLatestCompactCached(chatId))']) assert.ok(chat.includes(expected), expected)
+  // После распила chat.ipc.ts логика промпта/гейтов живёт в отдельных модулях —
+  // проверяем исходники по тем файлам, а не по одному старому.
+  const source = ['src/main/ipc/chat.ipc.ts', 'src/main/ipc/chatSystemPrompt.ts', 'src/main/ipc/chatSendEngine.ts']
+    .map(f => fs.readFileSync(path.join(root, f), 'utf8'))
+    .join('\n')
+  for (const expected of ['customSystemPrompt: sources.instructions ?', 'projectContext: sources.projectFiles ?', 'memoryContext: sources.memory ?', 'workingMemory: sources.memory ?', 'projectInstructions: includedFiles', 'contextPrefs.excludedFiles.includes(file.source)', 'getContextPreferences(dbChatId).sources.memory', 'filterContextHistory(chatId, getMessagesAfterLatestCompactCached(chatId))']) assert.ok(source.includes(expected), expected)
 })

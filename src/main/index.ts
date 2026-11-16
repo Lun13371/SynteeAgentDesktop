@@ -390,6 +390,8 @@ app.whenReady().then(async () => {
     dbPath: () => join(app.getPath('userData'), 'syntee.db'),
     loadStats: () => store.get('assistantsStats') as import('../shared/assistants').AgentStatsMap | undefined,
     persistStats: (s) => store.set('assistantsStats', s),
+    loadWeights: () => store.get('assistantsWeights') as import('../shared/assistants').AssistantsWeights | undefined,
+    persistWeights: (w) => store.set('assistantsWeights', w),
   })
   registerChatIPC(store, mainWindow)
   registerOverlayIPC(store, overlayWindow)
