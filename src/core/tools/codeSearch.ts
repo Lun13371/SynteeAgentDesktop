@@ -65,9 +65,13 @@ async function findRg(): Promise<string | null> {
   } catch { /* dep не установлен (dev без install) — идём к системному rg */ }
   // 2) Системный rg. На win32 — where.exe (в PowerShell `where` = Where-Object).
   try {
-    const cmd = process.platform === 'win32' ? 'where.exe rg' : 'which rg'
-    const { stdout } = await execAsync(cmd, { timeout: 3000 })
-    rgBin = stdout.trim().split('\n')[0].trim() || null
+    if (process.platform === 'win32') {
+      const { stdout } = await execFileAsync('where.exe', ['rg'], { timeout: 3000 })
+      rgBin = stdout.trim().split('\n')[0].trim() || null
+    } else {
+      await execFileAsync('rg', ['--version'], { timeout: 3000 })
+      rgBin = 'rg'
+    }
   } catch { rgBin = null }
   return rgBin
 }
@@ -87,11 +91,11 @@ async function runRgOnce(rg: string, args: string[]): Promise<{ stdout: string; 
     const { stdout, stderr } = await execFileAsync(rg, args, { timeout: 15000, maxBuffer: 10 * 1024 * 1024 })
     return { stdout, stderr, code: 0 }
   } catch (e: any) {
-    if (e.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') {
+    if (e.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' || e.code === 'ERR_CHILD_PROCESS_STDOUT_MAXBUFFER') {
       return { stdout: (e.stdout ?? '').toString(), stderr: 'maxbuffer exceeded', code: 2 }
     }
-    const code = typeof e.code === 'number' ? e.code : 1
-    return { stdout: (e.stdout ?? '').toString(), stderr: (e.stderr ?? '').toString(), code }
+    const code = typeof e.code === 'number' ? e.code : 2
+    return { stdout: (e.stdout ?? '').toString(), stderr: (e.stderr || e.message || e.code || 'ripgrep execution failed').toString(), code }
   }
 }
 
@@ -276,7 +280,7 @@ export async function searchCode(
     return searchWithRg(rg, pattern, absPath, workdir, opts, { totalMax, perFileDisplayCap, contextLines, maxChars })
   }
   // rg не найден — PowerShell (медленнее, но работает без rg).
-  return searchCodePowerShell(pattern, absPath, opts)
+  return searchCodeFallback(pattern, absPath, opts, 'ripgrep executable was not found')
 }
 
 async function searchWithRg(
@@ -297,7 +301,7 @@ async function searchWithRg(
   }
   if (countRes.code === 2) {
     // Реальная ошибка rg (не regex) — fallback в PowerShell.
-    const ps = await searchCodePowerShell(pattern, absPath, opts)
+    const ps = await searchCodeFallback(pattern, absPath, opts, countRes.stderr)
     if (ps.success) return { success: true, output: `[rg error: ${countRes.stderr.slice(0, 100)}]\n${ps.output}` }
     return ps
   }
@@ -336,7 +340,7 @@ async function searchWithRg(
     contentRes = await runRgOnce(rg, ['--json', '--hidden', caseFlag, '--fixed-strings', ...globArgs, '-C', String(lim.contextLines), '-m', String(lim.perFileDisplayCap), pattern, absPath])
   }
   if (contentRes.code === 2) {
-    const ps = await searchCodePowerShell(pattern, absPath, opts)
+    const ps = await searchCodeFallback(pattern, absPath, opts, contentRes.stderr)
     if (ps.success) return { success: true, output: `[rg error: ${contentRes.stderr.slice(0, 100)}]\n${ps.output}` }
     return ps
   }
@@ -361,6 +365,13 @@ function parseGlobExts(glob?: string): string[] | null {
   const simple = glob.match(/^\*(\.[\w.]+)$/)
   if (simple) return [simple[1]]
   return null
+}
+
+function searchCodeFallback(pattern: string, absPath: string, opts: SearchOpts | undefined, diagnostic: string): Promise<ToolResult> {
+  if (process.platform !== 'win32') {
+    return Promise.resolve({ success: false, output: '', error: `search_code: ${diagnostic.slice(0, 1000)}` })
+  }
+  return searchCodePowerShell(pattern, absPath, opts)
 }
 
 async function searchCodePowerShell(

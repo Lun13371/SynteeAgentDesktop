@@ -20,6 +20,7 @@ import { downloadUpdater, findUpdater, healLauncherJson, launchUpdater } from '.
 
 const POLL_INTERVAL_MS = 30 * 60 * 1000 // 30 minutes
 const FIRST_CHECK_DELAY_MS = 10_000
+const PACKAGE_UPDATE_MESSAGE = 'Установите новую версию пакета Syntee Helper через менеджер пакетов.'
 
 let state: UpdateState = {
   status: 'idle',
@@ -78,6 +79,14 @@ export function subscribeUpdates(fn: (s: UpdateState) => void): () => void {
  * status='checking' for UI feedback.
  */
 export async function checkForUpdates(): Promise<UpdateState> {
+  if (process.platform !== 'win32') {
+    setState({
+      status: 'error',
+      available: null,
+      error: PACKAGE_UPDATE_MESSAGE,
+    })
+    return state
+  }
   setState({ status: 'checking', error: null })
   try {
     const current = app.getVersion()
@@ -159,6 +168,9 @@ export function dismissUpdate(version: string): void {
  * the user with nothing.
  */
 export async function quitAndInstall(): Promise<QuitAndInstallResult> {
+  if (process.platform !== 'win32') {
+    return { ok: false, error: PACKAGE_UPDATE_MESSAGE }
+  }
   // Point launcher.json at the current server first: even an outdated
   // updater binary obeys the JSON over its baked-in default.
   healLauncherJson()
@@ -190,6 +202,8 @@ export async function quitAndInstall(): Promise<QuitAndInstallResult> {
  * Start the periodic poll. Called from src/main/index.ts after app.whenReady.
  */
 export function startUpdatePolling(): void {
+  // Gateway manifests refer to the Windows ZIP and may require a forced update.
+  if (process.platform !== 'win32') return
   // First check after a short delay so the app window is up before we hit
   // the network (cold start stays snappy).
   setTimeout(() => {

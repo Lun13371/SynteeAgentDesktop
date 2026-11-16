@@ -32,7 +32,7 @@ function buildCwdMarkerSuffix(shell: string | undefined, isWin: boolean): string
     return `; Write-Output "${CWD_MARKER}:$($PWD.Path)"`
   } else {
     // bash/zsh — pwd -P возвращает физический путь (без symlink'ов)
-    return `; echo "${CWD_MARKER}:$(pwd -P)"`
+    return `\n__syntee_status=$?; echo "${CWD_MARKER}:$(pwd -P)"; exit "$__syntee_status"`
   }
 }
 
@@ -50,6 +50,7 @@ function extractCwdMarker(stdout: string): { stdout: string; cwd?: string } {
 }
 
 export async function runCommand(cmd: string, cwd?: string, shell?: string, timeout?: number): Promise<ToolResult> {
+  let effectiveTimeout = timeout ?? 60
   try {
     const isWin = process.platform === 'win32'
 
@@ -81,7 +82,7 @@ export async function runCommand(cmd: string, cwd?: string, shell?: string, time
     // Маркер парсится из stdout после выполнения — cwd переживает между вызовами.
     processedCmd += buildCwdMarkerSuffix(shell, isWin)
 
-    const effectiveTimeout = timeout ?? (isTsc ? 120 : 60)
+    if (isTsc && timeout === undefined) effectiveTimeout = 120
     const timeoutMs = effectiveTimeout * 1000
     const maxBuffer = 10 * 1024 * 1024  // 10MB — иначе Node падает с ERR_CHILD_PROCESS_STDOUT_MAXBUFFER до smartTrimOutput
 
@@ -128,7 +129,8 @@ export async function runCommand(cmd: string, cwd?: string, shell?: string, time
         }
       }
     } else {
-      // Linux/Mac — bash напрямую. LANG/LC_ALL — на случай не-UTF локали.
+      // C.UTF-8 is available on Linux even when no locales have been generated.
+      const utf8Locale = process.platform === 'linux' ? 'C.UTF-8' : 'en_US.UTF-8'
       execCmd = processedCmd
       execOpts = {
         cwd: cwd || homedir(),
@@ -140,8 +142,8 @@ export async function runCommand(cmd: string, cwd?: string, shell?: string, time
           ...process.env,
           PYTHONIOENCODING: 'utf-8',
           PYTHONUTF8: '1',
-          LANG: 'en_US.UTF-8',
-          LC_ALL: 'en_US.UTF-8',
+          LANG: utf8Locale,
+          LC_ALL: utf8Locale,
           GIT_PAGER: 'cat',
         },
       }
@@ -164,12 +166,12 @@ export async function runCommand(cmd: string, cwd?: string, shell?: string, time
       ...(detectedCwd ? { cwd: detectedCwd } : {}),
     }
   } catch (e: any) {
-    const stdoutPart = smartTrimOutput(e.stdout?.trim() || '')
     const stderrPart = smartTrimOutput(e.stderr?.trim() || '')
 
     // Пытаемся извлечь cwd-маркер даже из ошибочного вывода — cd мог успеть
     // сработать до того, как команда упала.
-    const { cwd: detectedCwd } = extractCwdMarker(e.stdout?.trim() || '')
+    const { stdout, cwd: detectedCwd } = extractCwdMarker(e.stdout?.trim() || '')
+    const stdoutPart = smartTrimOutput(stdout)
 
     // Node child_process marks a process killed by timeout: e.killed=true,
     // e.signal='SIGTERM' (sometimes null, but killed=true). execAsync throws

@@ -1,7 +1,7 @@
 {
   "name": "syntee-helper",
   "version": "1.1.4",
-  "description": "Syntee Helper — персональный AI-ассистент для Windows",
+  "description": "Syntee Helper — персональный AI-ассистент",
   "main": "./out/main/index.js",
   "author": "Syntee",
   "scripts": {
@@ -13,6 +13,7 @@
     "start": "electron-vite build && electron out/main/index.js",
     "preview": "electron-vite preview",
     "build:win": "npm run build:sidecar && npm run build && electron-builder --win",
+    "build:linux": "bash Sidecar/scripts/build-linux.sh && npm run build && electron-builder --linux dir --x64",
     "lint": "eslint . --format json",
     "lint:pretty": "eslint .",
     "postinstall": "node scripts/patch-node-pty-spectre.mjs && electron-builder install-app-deps"

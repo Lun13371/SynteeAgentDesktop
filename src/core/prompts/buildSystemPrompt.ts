@@ -151,7 +151,11 @@ export function buildSystemPromptParts(params: SystemPromptParams): SystemPrompt
   // Порядок секций фиксирован — не менять между версиями без необходимости:
   // любое изменение сбрасывает prompt cache у всех пользователей (один раз,
   // это нормально, но не должно случаться случайно).
-  const staticPart = `You are Syntee — a personal AI assistant for Windows.
+  const osName = process.platform === 'win32' ? 'Windows'
+    : process.platform === 'darwin' ? 'macOS'
+    : process.platform === 'linux' ? 'Linux'
+    : process.platform
+  const staticPart = `You are Syntee — a personal AI assistant for ${osName}.
 ${userName ? `The user's name is ${userName}. Address them by name.` : ''}
 **Answer the user in the SAME language they write in.** If they write in Russian — answer in Russian. If in English — answer in English. If mixed — match the dominant language. Code, file paths, commands, and technical identifiers always stay in their original form regardless of language.
 ${customSystemPrompt ? `\n## Custom instruction\n${customSystemPrompt}\n` : ''}

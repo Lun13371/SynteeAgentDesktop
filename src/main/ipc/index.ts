@@ -17,6 +17,7 @@ import { registerProjectMapIPC } from './projectMap.ipc'
 import { projectMapManager } from '../../core/projectMap/mapBuilder'
 import { DEFAULT_PROJECT_MAP_SPEED, type ProjectMapSpeedSettings } from '../../shared/projectMap'
 import { shutdownSidecar } from '../../core/sidecar/sidecarClient'
+import { getLinuxAutostartState, setLinuxAutostart } from '../platform/linuxAutostart'
 
 /** Устройство семантики: 'auto' — DirectML при доступности, иначе CPU. */
 export type SemanticDeviceSetting = 'auto' | 'cpu' | 'gpu'
@@ -72,47 +73,31 @@ function registerWindowIPC({ mainWindow }: IPCContext): void {
   ipcMain.handle('window:isMaximized', () => mainWindow.isMaximized())
 }
 
-// ── Автозагрузка (Login Items / HKCU\...\Run) ──────────────────
-// Реальное состояние берём из Electron (app.getLoginItemSettings),
-// а не из config.json — чекбокс в настройках всегда показывает правду
-// (в т.ч. если юзер отключил автозапуск через Диспетчер задач).
-function getAutostartState(): boolean {
+async function getAutostartState(): Promise<boolean> {
   try {
+    if (process.platform === 'linux') return await getLinuxAutostartState()
     return app.getLoginItemSettings().openAtLogin
   } catch (e) {
-    console.error('[autostart] getLoginItemSettings failed:', e)
+    console.error('[autostart] failed to read OS settings:', e)
     return false
   }
 }
 
-function applyAutostart(enabled: boolean): boolean {
-  try {
-    if (app.isPackaged) {
-      app.setLoginItemSettings({ openAtLogin: enabled })
-    } else {
-      // dev-режим: process.execPath = electron.exe, без явного path/args
-      // в Run прописался бы голый electron без пути к приложению.
-      app.setLoginItemSettings({
-        openAtLogin: enabled,
-        path: process.execPath,
-        args: [resolve(process.argv[1] || '.')],
-      })
-    }
-    return true
-  } catch (e) {
-    console.error('[autostart] setLoginItemSettings failed:', e)
-    return false
+async function applyAutostart(enabled: boolean): Promise<void> {
+  const args = app.isPackaged ? [] : [resolve(process.argv[1] || '.')]
+  if (process.platform === 'linux') {
+    await setLinuxAutostart(enabled, process.execPath, args)
+  } else if (app.isPackaged) {
+    app.setLoginItemSettings({ openAtLogin: enabled })
+  } else {
+    app.setLoginItemSettings({ openAtLogin: enabled, path: process.execPath, args })
   }
 }
 
 function registerSettingsIPC({ store, hotkeyManager }: IPCContext): void {
   ipcMain.handle('settings:get', (_, key: string) => store.get(key, DEFAULT_TOOL_SETTINGS[key as keyof typeof DEFAULT_TOOL_SETTINGS]))
-  ipcMain.handle('settings:set', (_, key: string, value: unknown) => {
-    // Автозагрузка: применяем в ОС ДО сохранения настройки — если реестр
-    // недоступен, чекбокс не должен показывать ложное «включено».
-    if (key === 'autostart') {
-      if (!applyAutostart(Boolean(value))) return
-    }
+  ipcMain.handle('settings:set', async (_, key: string, value: unknown) => {
+    if (key === 'autostart') await applyAutostart(value === true)
     if (key === 'customToolsEnabled') value = value === true
     if (key === 'disabledTools') value = normalizeDisabledTools(value)
     store.set(key, value)
@@ -141,7 +126,7 @@ function registerSettingsIPC({ store, hotkeyManager }: IPCContext): void {
     }
   })
   ipcMain.handle('settings:getAll', () => ({ ...DEFAULT_TOOL_SETTINGS, ...store.store }))
-  // Живой опрос реального состояния автозагрузки из реестра Windows
+  // Читаем состояние автозапуска из ОС при открытии настроек.
   ipcMain.handle('settings:autostartStatus', () => getAutostartState())
   ipcMain.handle('settings:reset', () => { store.clear(); return true })
 
@@ -692,7 +677,7 @@ function registerTrayMenuIPC({ trayMenuWindow, mainWindow, voiceWindow, spotligh
         mainWindow.getWindow()?.webContents.send('nav:open-dots')
         break
       case 'quit':
-        app.exit(0)
+        app.quit()
         break
     }
   })

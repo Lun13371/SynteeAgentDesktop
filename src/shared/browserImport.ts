@@ -1,6 +1,6 @@
 export interface BrowserImportSource {
   id: string
-  browser: 'chrome' | 'edge'
+  browser: 'chrome' | 'chromium' | 'edge'
   name: string
   bookmarks: boolean
   history: boolean

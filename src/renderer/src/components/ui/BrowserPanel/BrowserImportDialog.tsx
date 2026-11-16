@@ -31,7 +31,7 @@ export default function BrowserImportDialog({ mode, profileId, onClose, onImport
     window.syntee.browser.importSources().then(items => {
       if (canceled) return
       setSources(items)
-      if (items[0]) { setSourceId(items[0].id); setName(`${items[0].browser === 'chrome' ? 'Chrome' : 'Edge'} — ${items[0].name}`) }
+      if (items[0]) { setSourceId(items[0].id); setName(items[0].name) }
     }).catch(e => { if (!canceled) setError(String(e.message ?? e)) }).finally(() => { if (!canceled) setLoading(false) })
     return () => { canceled = true }
   }, [mode])
@@ -76,15 +76,15 @@ export default function BrowserImportDialog({ mode, profileId, onClose, onImport
   return createPortal(
     <div className="browser-import-backdrop" onClick={() => { if (!busy) onClose() }}>
       <section className="browser-import-dialog" role="dialog" aria-modal="true" aria-label={mode === 'import' ? 'Импорт из браузера' : 'Импортированные данные'} onClick={e => e.stopPropagation()}>
-        <header><h3>{mode === 'import' ? 'Импорт из Chrome / Edge' : mode === 'bookmarks' ? 'Импортированные закладки' : 'Импортированная история'}</h3><button disabled={busy} onClick={onClose} aria-label="Закрыть">✕</button></header>
+        <header><h3>{mode === 'import' ? 'Импорт из браузера' : mode === 'bookmarks' ? 'Импортированные закладки' : 'Импортированная история'}</h3><button disabled={busy} onClick={onClose} aria-label="Закрыть">✕</button></header>
         {mode === 'import' ? <>
           <p>Данные переносятся в новый отдельный профиль Syntee. Исходный браузер остаётся без изменений.</p>
-          {loading ? <p role="status">Поиск профилей…</p> : sources.length === 0 ? <p>Профили Chrome и Edge в стандартных папках Windows не найдены.</p> : <>
+          {loading ? <p role="status">Поиск профилей…</p> : sources.length === 0 ? <p>Профили Chrome, Chromium и Edge в стандартных папках не найдены.</p> : <>
             <label>Исходный профиль<select disabled={busy || !!result?.ok} value={sourceId} onChange={e => {
               setSourceId(e.target.value)
               const item = sources.find(s => s.id === e.target.value)
-              if (item) setName(`${item.browser === 'chrome' ? 'Chrome' : 'Edge'} — ${item.name}`)
-            }}>{sources.map(s => <option key={s.id} value={s.id}>{s.browser === 'chrome' ? 'Chrome' : 'Edge'} — {s.name}</option>)}</select></label>
+              if (item) setName(item.name)
+            }}>{sources.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}</select></label>
             <label>Название профиля Syntee<input maxLength={40} disabled={busy || !!result?.ok} value={name} onChange={e => setName(e.target.value)} /></label>
             <label className="browser-import-check"><input type="checkbox" checked={bookmarks && !!source?.bookmarks} disabled={busy || !!result?.ok || !source?.bookmarks} onChange={e => setBookmarks(e.target.checked)} />Закладки с папками{!source?.bookmarks && ' (нет файла)'}</label>
             <label className="browser-import-check"><input type="checkbox" checked={history && !!source?.history} disabled={busy || !!result?.ok || !source?.history} onChange={e => setHistory(e.target.checked)} />История{!source?.history && ' (нет файла)'}</label>

@@ -2,6 +2,8 @@ import { app } from 'electron'
 import { join } from 'path'
 import { existsSync, mkdirSync, createWriteStream, statSync, unlinkSync, renameSync } from 'fs'
 import { get } from 'https'
+import type { IncomingMessage } from 'node:http'
+import { pipeline } from 'node:stream/promises'
 import { totalmem } from 'os'
 import { log } from '../../core/logger'
 
@@ -98,53 +100,71 @@ export function isModelDownloaded(size: ModelSize): boolean {
 
 export type DownloadProgress = { phase: 'downloading' | 'done' | 'error'; percent: number; bytes: number; error?: string }
 
+const downloads = new Map<ModelSize, { promise: Promise<string>; listeners: Set<(p: DownloadProgress) => void> }>()
+
 export function downloadModel(size: ModelSize, onProgress: (p: DownloadProgress) => void): Promise<string> {
+  const existing = downloads.get(size)
+  if (existing) {
+    existing.listeners.add(onProgress)
+    return existing.promise
+  }
+  const listeners = new Set([onProgress])
+  const promise = downloadModelFile(size, progress => {
+    for (const listener of listeners) {
+      try { listener(progress) } catch { /* progress observers do not own the download */ }
+    }
+  }).finally(() => downloads.delete(size))
+  downloads.set(size, { promise, listeners })
+  return promise
+}
+
+async function downloadModelFile(size: ModelSize, onProgress: (p: DownloadProgress) => void): Promise<string> {
   const info = MODELS[size]
   const dest = getModelPath(size)
   if (isModelDownloaded(size)) {
     onProgress({ phase: 'done', percent: 100, bytes: statSync(dest).size })
-    return Promise.resolve(dest)
+    return dest
   }
 
-  return new Promise((resolve, reject) => {
-    const tmp = dest + '.tmp'
-    const file = createWriteStream(tmp)
-    let received = 0
-
-    const request = (url: string, redirects: number) => {
+  const request = (url: string, redirects: number): Promise<IncomingMessage> => {
+    return new Promise((resolve, reject) => {
       if (redirects > 5) { reject(new Error('Too many redirects')); return }
-      get(url, { headers: { 'User-Agent': 'SynteeHelper/1.0' } }, (res) => {
+      const connection = get(url, { headers: { 'User-Agent': 'SynteeHelper/1.0' } }, (res) => {
         if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-          request(res.headers.location, redirects + 1)
+          res.resume()
+          resolve(request(new URL(res.headers.location, url).href, redirects + 1))
           return
         }
         if (res.statusCode !== 200) {
+          res.resume()
           reject(new Error(`HTTP ${res.statusCode} for ${url}`))
           return
         }
-        const total = parseInt(res.headers['content-length'] ?? '0', 10) || info.expectedBytes
-        res.on('data', (chunk: Buffer) => {
-          received += chunk.length
-          file.write(chunk)
-          onProgress({ phase: 'downloading', percent: Math.min(99, Math.round(received / total * 100)), bytes: received })
-        })
-        res.on('end', () => {
-          file.end(() => {
-            try {
-              if (existsSync(dest)) unlinkSync(dest)
-              renameSync(tmp, dest)
-              onProgress({ phase: 'done', percent: 100, bytes: received })
-              log('[ModelManager] downloaded %s (%d bytes)', info.fileName, received)
-              resolve(dest)
-            } catch (e) { reject(e) }
-          })
-        })
-        res.on('error', (e) => { file.end(); reject(e) })
-      }).on('error', (e) => { file.end(); reject(e) })
-    }
-
-    request(info.url, 0)
-  })
+        resolve(res)
+      })
+      connection.setTimeout(60_000, () => connection.destroy(new Error('Model download timed out')))
+      connection.on('error', reject)
+    })
+  }
+  const tmp = dest + '.tmp'
+  let received = 0
+  try {
+    const response = await request(info.url, 0)
+    const total = parseInt(response.headers['content-length'] ?? '0', 10) || info.expectedBytes
+    response.on('data', (chunk: Buffer) => {
+      received += chunk.length
+      onProgress({ phase: 'downloading', percent: Math.min(99, Math.round(received / total * 100)), bytes: received })
+    })
+    await pipeline(response, createWriteStream(tmp))
+    if (existsSync(dest)) unlinkSync(dest)
+    renameSync(tmp, dest)
+    onProgress({ phase: 'done', percent: 100, bytes: received })
+    log('[ModelManager] downloaded %s (%d bytes)', info.fileName, received)
+    return dest
+  } catch (error) {
+    try { unlinkSync(tmp) } catch { /* a failed HTTP request may not create a file */ }
+    throw error
+  }
 }
 
 export function deleteModel(size: ModelSize): void {

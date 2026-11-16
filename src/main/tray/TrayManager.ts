@@ -1,4 +1,4 @@
-import { Tray, nativeImage, app, type Rectangle, type NativeImage } from 'electron'
+import { Menu, Tray, nativeImage, app, type Rectangle, type NativeImage } from 'electron'
 import { join } from 'path'
 import type { TrayMenuWindow } from '../windows/TrayMenuWindow'
 
@@ -42,6 +42,18 @@ export class TrayManager {
     }
     this.tray = new Tray(icon)
     this.tray.setToolTip('Syntee Helper')
+    if (process.platform === 'linux') {
+      this.tray.on('click', this.callbacks.showMain)
+      this.tray.setContextMenu(Menu.buildFromTemplate([
+        { label: 'Открыть Syntee', click: this.callbacks.showMain },
+        { label: 'Голосовой режим', click: this.callbacks.showVoice },
+        { label: 'Spotlight', click: this.callbacks.showSpotlight },
+        { label: 'Меню Syntee', click: () => this.menuWindow.show() },
+        { type: 'separator' },
+        { label: 'Выход', click: this.callbacks.quit },
+      ]))
+      return
+    }
     this.tray.on('double-click', () => this.callbacks.showMain())
     // Правый клик — показать кастомное HTML-меню у иконки.
     this.tray.on('right-click', (_e, bounds) => this.menuWindow.show(bounds as Rectangle | undefined))

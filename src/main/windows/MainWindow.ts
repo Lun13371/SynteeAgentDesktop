@@ -20,6 +20,7 @@ function resourcesDir(): string {
 
 export class MainWindow {
   private win: BrowserWindow | null = null
+  private canClose = false
   private boundsSaveTimer: NodeJS.Timeout | null = null
 
   constructor(private store: Store) {}
@@ -168,6 +169,7 @@ export class MainWindow {
 
     // При закрытии — прятаться в трей
     this.win.on('close', (e) => {
+      if (this.canClose) return
       e.preventDefault()
       this.win?.hide()
     })
@@ -249,6 +251,10 @@ export class MainWindow {
 
   getWindow(): BrowserWindow | null {
     return this.win
+  }
+
+  allowCloseOnQuit(): void {
+    this.canClose = true
   }
 
   /**

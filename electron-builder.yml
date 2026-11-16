@@ -6,18 +6,6 @@ directories:
   buildResources: resources
   output: dist
 
-files:
-  - out/**/*
-  - package.json
-  # ── Исключаем кэш моделей Whisper (~508 МБ) — модели докачиваются
-  #    сами при первом использовании через @huggingface/transformers.
-  - "!**/node_modules/@huggingface/transformers/.cache/**"
-  # ── Исключаем нативные бинари onnxruntime-node для чужих платформ
-  #    (~120 МБ): darwin, linux, win32-arm64. Оставляем только win32-x64.
-  - "!**/node_modules/onnxruntime-node/bin/napi-v6/darwin/**"
-  - "!**/node_modules/onnxruntime-node/bin/napi-v6/linux/**"
-  - "!**/node_modules/onnxruntime-node/bin/napi-v6/win32/arm64/**"
-
 # Бандленный ripgrep (@vscode/ripgrep-*) — бинарь rg.exe должен быть
 # распакован из asar, иначе не исполняется. findRg() заменяет app.asar →
 # app.asar.unpacked в пути.
@@ -41,13 +29,9 @@ extraResources:
       - "**/*"
       - "!syntee-launcher.exe"
       - "!installer.nsh"
+      - "!launcher.json"
+      - "!native/**"
       - "!sidecar/**"
-  # Optional Rust Fast Context backend. The directory may be empty in dev or
-  # when the sidecar is not built; TypeScript remains the default backend.
-  - from: resources/sidecar/
-    to: sidecar/
-    filter:
-      - "**/*"
 
 win:
   target:
@@ -55,6 +39,43 @@ win:
       arch: [x64]
   icon: resources/icon.ico
   requestedExecutionLevel: asInvoker
+  # A platform list with only exclusions would package the entire checkout.
+  files:
+    - out/**/*
+    - package.json
+    - "!**/node_modules/@huggingface/transformers/.cache/**"
+    - "!**/node_modules/onnxruntime-node/bin/napi-v6/{darwin,linux}/**"
+    - "!**/node_modules/onnxruntime-node/bin/napi-v6/win32/arm64/**"
+  extraResources:
+    - from: resources/launcher.json
+      to: launcher.json
+    - from: resources/native/
+      to: native/
+    - from: resources/sidecar/
+      to: sidecar/
+      filter:
+        - "*.exe"
+        - "*.dll"
+
+linux:
+  target: dir
+  executableName: syntee-helper
+  icon: resources/icon.png
+  files:
+    - out/**/*
+    - package.json
+    - "!**/node_modules/@huggingface/transformers/.cache/**"
+    - "!**/node_modules/onnxruntime-node/bin/napi-v6/{darwin,win32}/**"
+    - "!**/node_modules/onnxruntime-node/bin/napi-v6/linux/arm64/**"
+    - "!**/node_modules/node-pty/prebuilds/{darwin-*,win32-*}/**"
+  asarUnpack:
+    - node_modules/node-pty/build/Release/**
+  extraResources:
+    - from: resources/sidecar/
+      to: sidecar/
+      filter:
+        - syntee-sidecar
+        - "*.so*"
 
 # The zip is uploaded to the gateway admin and activated per channel.
 # The launcher downloads it on first install and on updates, extracts it

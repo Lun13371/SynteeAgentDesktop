@@ -5,6 +5,8 @@
 import { ipcMain } from 'electron'
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import type { MainWindow } from '../windows/MainWindow'
+import { createPulseCapture, listPulseOutputs } from '../audio/pulseAudio'
+import type { AudioControllerInstance } from '../audio/nativeAudio'
 
 export interface AudioOutputDevice {
   id: string
@@ -17,6 +19,7 @@ const POWERSHELL = 'powershell.exe'
 let monitor: ChildProcessWithoutNullStreams | null = null
 let stdoutBuffer = ''
 let cachedDevices: AudioOutputDevice[] = []
+let stopPulseMonitor: (() => void) | null = null
 
 const AUDIO_SCRIPT = String.raw`
 $ErrorActionPreference = 'Stop'
@@ -192,6 +195,85 @@ function sendToWindow(mainWindow: MainWindow, channel: string, payload: unknown)
   try { mainWindow.getWindow()?.webContents.send(channel, payload) } catch { /* window may be closing */ }
 }
 
+async function startPulseMonitor(mainWindow: MainWindow): Promise<void> {
+  if (stopPulseMonitor) return
+  let active = true
+  const meters = new Map<string, { capture: AudioControllerInstance; peak: number }>()
+  let refresh: ReturnType<typeof setTimeout> | undefined
+  // stop() can run during the awaited device lookup, before this timer exists.
+  // eslint-disable-next-line prefer-const
+  let report: ReturnType<typeof setInterval> | undefined
+
+  const stop = (): void => {
+    active = false
+    clearTimeout(refresh)
+    clearInterval(report)
+    for (const { capture } of meters.values()) capture.stop()
+    meters.clear()
+    stopPulseMonitor = null
+  }
+  stopPulseMonitor = stop
+
+  const refreshOutputs = async (): Promise<void> => {
+    const outputs = await listPulseOutputs()
+    if (!active) return
+    const running = new Set(outputs.filter(output => output.running).map(output => output.id))
+    for (const [id, { capture }] of meters) {
+      if (running.has(id)) continue
+      capture.stop()
+      meters.delete(id)
+    }
+    for (const output of outputs) {
+      if (!running.has(output.id) || meters.has(output.id)) continue
+      const meter = { capture: createPulseCapture(output, 8000, 1), peak: 0 }
+      meters.set(output.id, meter)
+      meter.capture.start({ deviceType: 'output', deviceId: output.id }, (error, data) => {
+        if (error) meters.delete(output.id)
+        if (!data) return
+        for (let i = 0; i < data.length; i += 2) {
+          meter.peak = Math.max(meter.peak, Math.abs(data.readInt16LE(i)))
+        }
+      })
+    }
+    const previous = new Map(cachedDevices.map(device => [device.id, device.level]))
+    cachedDevices = outputs.map(({ id, name, isDefault }) => ({
+      id, name, isDefault, level: running.has(id) ? previous.get(id) ?? 0 : 0
+    }))
+    sendToWindow(mainWindow, 'audioDevices:update', cachedDevices)
+    refresh = setTimeout(() => {
+      void refreshOutputs().catch(error => {
+        if (!active) return
+        stop()
+        console.warn('[audio-devices]', error)
+        sendToWindow(mainWindow, 'audioDevices:stopped', undefined)
+      })
+    }, 1500)
+  }
+
+  try {
+    await refreshOutputs()
+  } catch (error) {
+    if (active) stop()
+    throw error
+  }
+  if (!active) return
+  report = setInterval(() => {
+    let changed = false
+    const devices = cachedDevices.map(device => {
+      const meter = meters.get(device.id)
+      const level = (meter?.peak ?? 0) / 32768
+      if (meter) meter.peak = 0
+      if (level === device.level) return device
+      changed = true
+      return { ...device, level }
+    })
+    if (changed) {
+      cachedDevices = devices
+      sendToWindow(mainWindow, 'audioDevices:update', devices)
+    }
+  }, 180)
+}
+
 function startMonitor(mainWindow: MainWindow): void {
   if (monitor && monitor.exitCode === null) return
   const encoded = encodePowerShell(AUDIO_SCRIPT)
@@ -234,14 +316,16 @@ function startMonitor(mainWindow: MainWindow): void {
 }
 
 function stopMonitor(): void {
+  stopPulseMonitor?.()
   if (!monitor) return
   monitor.kill()
   monitor = null
 }
 
 export function registerAudioDevicesIPC(mainWindow: MainWindow): void {
-  ipcMain.handle('audioDevices:startMonitor', () => {
-    startMonitor(mainWindow)
+  ipcMain.handle('audioDevices:startMonitor', async () => {
+    if (process.platform === 'linux') await startPulseMonitor(mainWindow)
+    else startMonitor(mainWindow)
     return cachedDevices
   })
   ipcMain.handle('audioDevices:stopMonitor', () => {

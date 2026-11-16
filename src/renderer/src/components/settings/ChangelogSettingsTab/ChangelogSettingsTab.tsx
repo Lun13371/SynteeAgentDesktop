@@ -23,6 +23,7 @@ export default function ChangelogSettingsTab() {
   const [error, setError] = useState<string | null>(null)
   const check = useUpdateStore((s) => s.check)
   const checking = useUpdateStore((s) => s.status === 'checking')
+  const updateError = useUpdateStore((s) => s.error)
 
   const load = async () => {
     setLoading(true)
@@ -67,6 +68,8 @@ export default function ChangelogSettingsTab() {
           Проверить обновления
         </motion.button>
       </div>
+
+      {updateError && <div className="changelog-settings-error">{updateError}</div>}
 
       {loading ? (
         <div className="changelog-settings-loading">

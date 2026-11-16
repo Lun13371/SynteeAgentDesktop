@@ -99,7 +99,6 @@ export function initAssistants(opts: { load: () => Partial<AssistantsSettings> |
   persistWeightsFn = opts.persistWeights ?? null
   if (globalSettings.enabled) {
     applyModelSize()
-    void localModels.ensureReady()
   }
 }
 
@@ -158,6 +157,7 @@ export { detectModelSize, isModelDownloaded, getModelPath } from './modelManager
 
 // После idle-выгрузки сервер поднимается лениво на первом же событии агента.
 function serverReady(): boolean {
+  if (!globalSettings.enabled) return false
   if (getServerState() === 'ready') return true
   void localModels.ensureReady()
   return false
@@ -173,6 +173,7 @@ async function serverReadyOrWake(): Promise<boolean> {
   if (serverReady()) return true
   const deadline = Date.now() + SERVER_WAKE_TIMEOUT_MS
   while (Date.now() < deadline) {
+    if (!globalSettings.enabled) return false
     // 'error' — сервер упал окончательно (исчерпал рестарты): ждём зря.
     if (localModels.getState() === 'error') return false
     await new Promise(r => setTimeout(r, 400))

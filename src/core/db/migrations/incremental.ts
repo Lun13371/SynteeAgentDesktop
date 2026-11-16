@@ -57,11 +57,6 @@ export function runIncrementalMigrations(db: Database.Database): void {
   // не дублирует (проверка по metadata->legacy_id).
   migrateLegacyMemoryToMemoryItems(db)
 
-  // base64 вложений в БД: одноразовая чистка исторических сообщений. Новые
-  // сообщения пишутся уже без dataUrl (writeMessageRow), а файлы на диске
-  // (path) остаются единственным источником — renderer рендерит file://.
-  stripMessageAttachmentDataUrls(db)
-
   // Автомиграция: добавляем title колонку к memory_items (если ещё нет).
   // Для существующих записей без title — переносим content в title
   // (как fallback, чтобы UI показывал что-то осмысленное).
@@ -146,6 +141,9 @@ export function runIncrementalMigrations(db: Database.Database): void {
       db.prepare(`ALTER TABLE messages ADD COLUMN reply_to TEXT`).run()
     }
   }
+
+  // Cleanup requires the attachments column, including on first launch.
+  stripMessageAttachmentDataUrls(db)
 
   // chat_draft_attachments — вложения черновика (переживают рестарт, не
   // пропадают при смене чата). Картинки хранятся как файлы в
