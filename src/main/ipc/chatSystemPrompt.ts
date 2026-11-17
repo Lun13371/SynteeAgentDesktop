@@ -133,28 +133,6 @@ export async function getSystemPrompt(store: Store, chatId?: string, isIncognito
       }, [])
     }
 
-    // Active MCP servers for a brief note in the system prompt.
-    // In incognito — empty (privacy).
-    let activeMcpServers: import('../../core/prompts/buildSystemPrompt').McpPromptInfo[] = []
-    if (!isIncognito) {
-      activeMcpServers = withRetrySync('activeMcpServers', () => {
-        const mgr = getMcpManager()
-        let mcpProjectId: string | undefined
-        if (workdir) {
-          const found = getAllProjects().find(p => p.workdir === workdir)
-          mcpProjectId = found?.id
-        }
-        const allServers = mgr.getAllServers({ projectWorkdir: workdir, projectId: mcpProjectId })
-        return allServers
-          .filter(s => s.enabled && s.status === 'connected' && s.tools.length > 0
-            && mgr.isScopeApplicable(s.scope, mcpProjectId))
-          .map(s => ({
-            name: s.name,
-            tools: s.tools.map(t => ({ shortName: t.shortName, description: t.description })),
-          }))
-      }, [])
-    }
-
     // Active plugins for a brief note in the system prompt.
     // In incognito — empty (privacy).
     let activePlugins: import('../../core/prompts/buildSystemPrompt').PluginPromptInfo[] = []
@@ -173,7 +151,7 @@ export async function getSystemPrompt(store: Store, chatId?: string, isIncognito
     }
 
     const mergedWorkingMemory = summary
-      ? `${workingMemory ? workingMemory + '\n\n' : ''}## Summary of previous conversation context\n(Summary of earlier messages. Use this for context — tasks, decisions, files, and state from before compaction. Continue from where the conversation left off.)\n${summary}`
+      ? `${workingMemory ? workingMemory + '\n\n' : ''}## Earlier conversation summary\n${summary}`
       : workingMemory
 
     // Global system prompt from Settings → AI → Parameters (or /sys command)
@@ -259,7 +237,7 @@ export async function getSystemPrompt(store: Store, chatId?: string, isIncognito
         { key: 'tools', label: 'История инструментов', enabled: sources.tools, detail: 'Прошлые tool calls и результаты. Доступность инструментов текущего запуска не меняется.', characters: 0 },
       ]
     }
-    let systemPrompt = perfPhase('chat.system_prompt.build', () => buildSystemPrompt({ userName, memoryContext: sources.memory ? memoryContext : '', memoryStats: sources.memory ? memoryStats : undefined, graphStats: sources.memory ? graphStats : undefined, workingMemory: sources.memory ? mergedWorkingMemory : '', customSystemPrompt: sources.instructions ? customSystemPrompt : undefined, workdir, projectContext: sources.projectFiles ? projectContext : undefined, projectInstructions: includedFiles, activeSkills, activeMcpServers, activePlugins, oneShotSkill, globalSkillsDir, globalPluginsDir, browserMode: promptBrowserMode, imageMode: promptImageMode, maxParallelSubAgents: (store.get('agentSettings', DEFAULT_AGENT_SETTINGS) as AgentSettings)?.maxParallelSubAgents, pluginContext: sources.projectFiles ? pluginContext : [], pluginSections: sources.instructions ? pluginSections : [], protectedVars }))
+    let systemPrompt = perfPhase('chat.system_prompt.build', () => buildSystemPrompt({ userName, memoryContext: sources.memory ? memoryContext : '', memoryStats: sources.memory ? memoryStats : undefined, graphStats: sources.memory ? graphStats : undefined, workingMemory: sources.memory ? mergedWorkingMemory : '', customSystemPrompt: sources.instructions ? customSystemPrompt : undefined, workdir, projectContext: sources.projectFiles ? projectContext : undefined, projectInstructions: includedFiles, activeSkills, activePlugins, oneShotSkill, globalSkillsDir, globalPluginsDir, browserMode: promptBrowserMode, imageMode: promptImageMode, maxParallelSubAgents: (store.get('agentSettings', DEFAULT_AGENT_SETTINGS) as AgentSettings)?.maxParallelSubAgents, pluginContext: sources.projectFiles ? pluginContext : [], pluginSections: sources.instructions ? pluginSections : [], protectedVars }))
 
     // Хук prompt:before-build — последняя точка вмешательства плагинов
     // в system prompt (modify → новый текст).

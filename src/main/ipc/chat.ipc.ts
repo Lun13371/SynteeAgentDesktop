@@ -50,7 +50,6 @@ import { v4 as uuid } from 'uuid'
 import {
   applyRollingWindowAsync, getContextSettings, estimateMessagesTokensAsync,
   estimateTokens, getModelContextWindow,
-  type ChatMessage,
 } from '../../core/context/contextManager'
 import { buildSnapshotFromEstimate, buildSnapshotFromReal, getSessionCost, resetSessionCost, getModelPriceInfo } from '../../core/tokens/usageTracker'
 import {} from '../../core/tokens/gatewayModelsCache'
@@ -66,7 +65,7 @@ import type { Message, AgentSettings, ChatMode, QueueItemMeta, Attachment, Steer
 import { toSteerAttachmentMeta } from '../../shared/steer'
 import { DEFAULT_AGENT_SETTINGS } from '../../shared/types'
 import { parseCompactArgs } from '../../shared/slashCommands'
-import { messageToContextMessages } from './chatContextHelpers'
+import { buildContextHistory } from './chatContextHelpers'
 import { slimMessagesForUI } from './slimMessages'
 import { getMessagesCached, getMessagesAfterLatestCompactCached, recoverStreamingBuffersForChat } from './historyCache'
 import {
@@ -354,7 +353,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       // Live-подмножество: сообщения после последнего divider'а (старые
       // summarized не грузятся в модель — их заменяет summary в system prompt).
       const liveMessages = filterContextHistory(chatId, getMessagesAfterLatestCompactCached(chatId))
-      const rawHistory: ChatMessage[] = liveMessages.flatMap(messageToContextMessages)
+      const rawHistory = buildContextHistory(liveMessages)
 
       // Priority 1: последний реальный usage от провайдера (переживает перезапуск).
       // tiktoken-оценка без этого занижает — не знает про tool schemas overhead,
@@ -882,9 +881,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       // Manual compaction still needs full-history statistics for UI.
       const history = getMessagesCached(chatId)
       const liveMessages = getLiveMessages(history)
-      const rawHistory: ChatMessage[] = liveMessages.flatMap(m =>
-        messageToContextMessages(m).map(cm => ({ ...cm, messageId: m.id })),
-      )
+      const rawHistory = buildContextHistory(liveMessages)
       if (rawHistory.length === 0) {
         return { error: 'Чат пуст — нечего сжимать.' }
       }

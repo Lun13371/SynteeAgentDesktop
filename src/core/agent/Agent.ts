@@ -1894,12 +1894,6 @@ export class Agent {
           log('[Agent] exec tool: %s callId=%s', fn.name, callId)
           let result: ToolResult
           let codeTrace: CodeTraceEntry[] | undefined
-          // Пост-фактум подсказка для execute_code: скрипт-минималка (<2
-          // вложенных вызовов — раунд-трип впустую) или ровно 2 вызова
-          // (модель пишет минимальные скрипты вместо цепочки). Подсказка
-          // идёт ТОЛЬКО модели (contentForAI) — в UI шаге показывается
-          // codeMode: { code, trace }, и дублировать её пользователю не нужно.
-          let codeModeHint = ''
           try {
             // execute_code — обычный тул реестра, тот же путь, что у остальных.
             // Гард нужен только на случай, когда его нет в наборе: персона с
@@ -1952,19 +1946,6 @@ export class Agent {
               })
               codeTrace = codeResult.trace
               result = { success: codeResult.success, output: codeResult.output, error: codeResult.error }
-              // Подсказка только при успешном прогоне: у упавшего скрипта в
-              // результате уже есть error. Артефакт-операции (artifacts.save
-              // и т.п.) реальными вызовами тула не считаются.
-              if (codeResult.success) {
-                const nestedCalls = (codeResult.trace ?? []).filter(t => !t.name.startsWith('__artifact_')).length
-                if (nestedCalls < 2) {
-                  codeModeHint = `\n[execute_code hint: this script made ${nestedCalls} nested tool call(s) — a wasted round-trip. When 1 tool call is enough, call that tool directly.]`
-                } else if (nestedCalls === 2) {
-                  // Пол минималки модель соблюдает, но стала писать РОВНО 2 вызова
-                  // вместо цепочки. Мягко пинаем к батчингу: «2 — это пол, а не цель».
-                  codeModeHint = `\n[execute_code hint: 2 nested calls is the floor, not the goal. If more steps of this task are coming, batch them ALL into one script instead of running several minimal ones.]`
-                }
-              }
             } else {
               const toolPromise = this.executeTool(fn.name, args, callbacks, dryRunMode, callId, callSignal)
               // MCP and sub-agents manage their own timeouts and cancellation.
@@ -2151,12 +2132,9 @@ export class Agent {
           const perToolMax = (fn.name === 'search_code' || fn.name === 'get_file_outline')
             ? Math.max(ctxSettings.toolMaxChars, 20000)
             : ctxSettings.toolMaxChars
-          const truncatedContent = (!imageUrl && ctxSettings.toolTruncEnabled && !noTruncTool)
+          const contentForAI = (!imageUrl && ctxSettings.toolTruncEnabled && !noTruncTool)
             ? truncateToolResult(finalContent, perToolMax)
             : finalContent
-          // Подсказка приклеивается ПОСЛЕ обрезки — она гарантированно доходит
-          // до модели, даже если вывод скрипта упёрся в потолок.
-          const contentForAI = codeModeHint ? `${truncatedContent}${codeModeHint}` : truncatedContent
 
           if (!result.success && !isHiddenTool) {
             // Fingerprint ошибки включает args (через buildToolFingerprint —
@@ -2270,6 +2248,23 @@ export class Agent {
 
         for (const mutation of pendingMutations) mutation()
 
+        for (const item of normalizedCalls) {
+          const r = resultMap.get(item.callId)
+          messages.push({
+            role: 'tool',
+            tool_call_id: item.callId,
+            name: item.fn.name,
+            // analyze_image прямой пас: если тул вернул imageParts (основная
+            // модель vision-capable) — отдаём картинку прямо в tool-сообщении
+            // как multipart content. AIClient сохраняет эти блоки для
+            // Anthropic, а для OpenAI/Responses переносит пиксели в user
+            // ПОСЛЕ всех парных tool-результатов раунда.
+            content: r?.imageParts?.length
+              ? [...r.imageParts, { type: 'text' as const, text: r.contentForAI }]
+              : r?.contentForAI ?? '',
+          })
+        }
+
         if (
           !goalRuntime && // Goal checks must use the normal approved tool path.
           this.verificationCommand &&
@@ -2285,23 +2280,6 @@ export class Agent {
             toolName: '_verification',
             content: verifyResult.output,
             success: verifyResult.success,
-          })
-        }
-
-        for (const item of normalizedCalls) {
-          const r = resultMap.get(item.callId)
-          messages.push({
-            role: 'tool',
-            tool_call_id: item.callId,
-            name: item.fn.name,
-            // analyze_image прямой пас: если тул вернул imageParts (основная
-            // модель vision-capable) — отдаём картинку прямо в tool-сообщении
-            // как multipart content. AIClient сохраняет эти блоки для
-            // Anthropic, а для OpenAI/Responses переносит пиксели в user
-            // ПОСЛЕ всех парных tool-результатов раунда.
-            content: r?.imageParts?.length
-              ? [...r.imageParts, { type: 'text' as const, text: r.contentForAI }]
-              : r?.contentForAI ?? '',
           })
         }
 

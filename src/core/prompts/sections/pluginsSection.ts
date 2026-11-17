@@ -2,7 +2,7 @@
  * Plugins block in the system prompt.
  *
  * Краткая заметка: какие плагины включены, их promptDescription (короткое
- * описание из манифеста) и имена тулов (формат plugin__{id}__{tool}).
+ * описание из манифеста), виджеты и теги. Имена тулов уже есть в schemas.
  * Если плагинов нет — пустая строка (секция не добавляется).
  */
 
@@ -15,11 +15,8 @@ export function buildPluginsBlock(
 ): string {
   if (!plugins?.length && !context?.length && !sections?.length) return ''
   const lines = plugins?.map(p => {
-    const toolList = p.tools.length > 0
-      ? p.tools.join(', ')
-      : '(no tools)'
     const desc = p.promptDescription ? ` — ${p.promptDescription}` : ''
-    let line = `- **${p.name}**${desc}\n  Tools: ${toolList}`
+    let line = `- **${p.name}**${desc}`
     if (p.widgets?.length) {
       const widgets = p.widgets
         .map(w => w.description ? `${w.name} (${w.description})` : w.name)
@@ -37,8 +34,6 @@ export function buildPluginsBlock(
   let block = ''
   if (plugins?.length) {
     block += `## Active plugins (${plugins.length})
-
-You have tools from local plugins. Their names have the format \`plugin__pluginId__toolName\` — call them like regular tools.
 
 ${lines.join('\n')}`
   }
