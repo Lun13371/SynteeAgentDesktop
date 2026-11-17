@@ -78,11 +78,13 @@ and `base-devel`. Build as a regular user on Arch Linux.
 npm ci
 mkdir -p dist
 (cd packaging/arch && PKGDEST="$PWD/../../dist" makepkg)
-sudo pacman -U dist/syntee-helper-1.1.4-2-x86_64.pkg.tar.zst
+sudo pacman -U dist/syntee-helper-1.1.6-1-x86_64.pkg.tar.zst
 ```
 
 The Linux port review, measured memory usage and remaining runtime checks are in
 [docs/arch-review.md](docs/arch-review.md).
+The 1.1.6 mini-agent, context and cost accounting fixes are described in
+[docs/mini-agent-review.md](docs/mini-agent-review.md).
 
 ### Windows x64
 

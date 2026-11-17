@@ -10,15 +10,16 @@ import { getGatewayModelsCache } from '../tokens/gatewayModelsCache'
 import { getCatalogModel } from '../tokens/modelCatalog'
 import { getNextApiKey } from '../../shared/roundRobin'
 import { getIdentityHeaders, getOpencodeZenHeaders, isOpencodeProvider } from '../../shared/constants'
-import type { Provider, ModelParams, ReasoningOptionSpec } from '../../shared/types'
+import type { Provider, ModelParams, ReasoningOptionSpec, ModelMeta } from '../../shared/types'
 import { isAnthropicProvider } from './anthropicConverters'
 import { log, sleep, backoffDelay, OVERALL_TIMEOUT_MS, DEFAULT_TEMPERATURE, DEFAULT_MAX_TOKENS, extractReasoningText } from './shared'
 import { chatWithToolsAnthropic } from './anthropicNative'
 import { routeToolImagesToUser, summarizeImagePayload } from './toolImageMessages'
 import { repairToolCallHistory } from './toolCallHistory'
-import { computeContextSnapshot } from '../tokens/usageTracker'
+import { computeContextSnapshot, getModelPriceInfo } from '../tokens/usageTracker'
 import type { ContextCountedInfo } from '../agent/types'
 import { resolveMediaTransport, requestMediaAnalysis, type AuxiliaryMediaInput, type MediaKind } from './mediaSupport'
+import { observeAIRequest, type AIUsageContext } from './requestUsage'
 
 // ── Gateway token holder + refresher (ретрай на 401) ────────────────────────
 // Worker thread не может импортировать gatewayClient/tokenStore (electron-store
@@ -95,8 +96,28 @@ export class AIClient {
   private client: OpenAI
   private maxRetries = 6
 
-  constructor(private store: Store) {
+  constructor(private store: Store, private usageContext: AIUsageContext = {}) {
     this.client = this.createClient()
+  }
+
+  /** Wrap only SDK request creation; existing streaming/UI callbacks stay intact. */
+  private observeClient<T>(client: T, providerId: string, source: string, anthropic = false): T {
+    // SDK create overloads return APIPromise/Stream; our call sites await them.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const sdk = client as any
+    const wrap = (resource: { create: (...args: unknown[]) => unknown }, api: 'openai' | 'responses' | 'anthropic' | 'embedding'): void => {
+      const original = resource.create.bind(resource)
+      resource.create = (...args: unknown[]) => {
+        const params = args[0] as { model?: string } | undefined
+        return observeAIRequest(() => original(...args) as PromiseLike<unknown>, {
+          providerId, modelId: params?.model ?? '', source,
+          pricing: getModelPriceInfo(providerId, params?.model ?? '', this.store.get('customModels', []) as ModelMeta[]),
+        }, this.usageContext, api)
+      }
+    }
+    if (anthropic) wrap(sdk.messages, 'anthropic')
+    else { wrap(sdk.chat.completions, 'openai'); wrap(sdk.responses, 'responses'); wrap(sdk.embeddings, 'embedding') }
+    return client
   }
 
   private createClient(): OpenAI {
@@ -105,7 +126,7 @@ export class AIClient {
     // мульти-провайдерную систему. Если endpoint пуст, клиент всё равно
     // создаётся (для совместимости), но запросы без назначения упадут.
     const endpoint = (this.store.get('apiEndpoint') as string) || ''
-    return new OpenAI({ apiKey, baseURL: endpoint || undefined, defaultHeaders: this.identityHeaders() })
+    return this.observeClient(new OpenAI({ apiKey, baseURL: endpoint || undefined, defaultHeaders: this.identityHeaders() }), '', 'default')
   }
 
   reload(): void {
@@ -288,9 +309,9 @@ export class AIClient {
       if (!token) {
         throw new Error('Not authenticated with Syntee-Gateway. Sign in via Profile → Sign In.')
       }
-      return new OpenAI({ apiKey: token, baseURL: info.provider.baseUrl, defaultHeaders: this.identityHeaders() })
+      return this.observeClient(new OpenAI({ apiKey: token, baseURL: info.provider.baseUrl, defaultHeaders: this.identityHeaders() }), info.provider.id, type)
     }
-    return new OpenAI({ apiKey: info.apiKey, baseURL: info.provider.baseUrl, defaultHeaders: this.providerHeaders(info.provider) })
+    return this.observeClient(new OpenAI({ apiKey: info.apiKey, baseURL: info.provider.baseUrl, defaultHeaders: this.providerHeaders(info.provider) }), info.provider.id, type)
   }
 
   /**
@@ -1116,11 +1137,11 @@ export class AIClient {
       const visualPayload = summarizeImagePayload(messages)
       if (visualPayload.images) log('[vision:send]', { model, provider: providerInfo.provider.id, api: 'anthropic', format: 'image/source', ...visualPayload })
       const anthropicApiKey = isGateway ? gatewayToken! : providerInfo.apiKey
-      const anthropicClient = new Anthropic({
+      const anthropicClient = this.observeClient(new Anthropic({
         apiKey: anthropicApiKey,
         baseURL: providerInfo.provider.baseUrl,
         defaultHeaders: this.identityHeaders(),
-      })
+      }), providerInfo.provider.id, resolvedRole, true)
       return chatWithToolsAnthropic(
         anthropicClient, messages, tools, signal, model, temperature, maxTokens, reasoningExtra,
         { onToken, onRateLimit, onRetry, onUsage, onThinkingToken, onThinkingDone, onToolCallStarted }
@@ -1143,11 +1164,11 @@ export class AIClient {
 
     // OpenAI-совместимый путь (включая syntee-gateway через JWT)
     let client = providerInfo
-      ? new OpenAI({
+      ? this.observeClient(new OpenAI({
           apiKey: isGateway ? gatewayToken! : providerInfo.apiKey,
           baseURL: providerInfo.provider.baseUrl,
           defaultHeaders: this.providerHeaders(providerInfo.provider),
-        })
+        }), providerInfo.provider.id, resolvedRole)
       : this.client
 
     // ── Модели только с Responses API (muse-spark и runtime-выявленные) ─────
@@ -1345,7 +1366,7 @@ export class AIClient {
           const fresh = await refreshGatewayTokenAfter401()
           if (fresh) {
             gatewayToken = fresh
-            client = new OpenAI({ apiKey: fresh, baseURL: providerInfo!.provider.baseUrl, defaultHeaders: this.identityHeaders() })
+            client = this.observeClient(new OpenAI({ apiKey: fresh, baseURL: providerInfo!.provider.baseUrl, defaultHeaders: this.identityHeaders() }), providerInfo!.provider.id, resolvedRole)
             continue
           }
           throw new Error('Syntee session expired — sign in again (Profile → Sign In).')
@@ -1420,7 +1441,7 @@ export class AIClient {
             { type: 'image_url', image_url: { url: `data:${mime || 'image/png'};base64,${imageBase64}`, detail: 'high' } },
             { type: 'text', text: prompt },
           ]}],
-          stream: true, max_tokens: 4096, temperature: 0,
+          stream: true, stream_options: { include_usage: true }, max_tokens: 4096, temperature: 0,
         }, { signal: controller.signal })
         let fullText = ''
         for await (const chunk of stream) {

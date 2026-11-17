@@ -3,9 +3,9 @@ import type { Message, ToolStep } from '../../shared/types'
 import { JANITOR_MARKER } from '../../shared/assistants'
 import { estimateTokens } from '../tokens/usageTracker'
 import {
-  summarizeToolResult, parseReadSections, rangesCover, normalizePath, stableStringify, toolCallDetail,
+  parseReadSections, rangesCover, normalizePath, stableStringify,
   PINNED_TOOLS, FILE_MUTATORS, UNKNOWN_MUTATORS, READ_TOOLS,
-  STALE_MIN_CHARS, STALE_MIN_SAVED, MIN_STUB_CHARS,
+  STALE_MIN_SAVED, MIN_STUB_CHARS,
   type ParsedReadSection,
 } from './janitor'
 
@@ -29,8 +29,9 @@ import {
  *  - Степы с визуалом (imagePaths/imageUrl), diff'ами, ошибками и pinned-тулы
  *    никогда не сжимаются. Анализ (покрытие/сталость) учитывает и хвостовые
  *    ходы — заменяется только история за хвостом.
- *  - Оригинал не сохраняется (по дизайну B: «лишнее зачем хранить») — резюме
- *    сохраняет пути, диапазоны строк и ошибки.
+ *  - Уникальные tool outputs остаются в БД. Их in-run резюме восстанавливает
+ *    recall-архив при старте следующего worker; безвозвратно удаляются только
+ *    точные дубли и чтения, для которых все файлы перекрыты/устарели.
  */
 
 export interface CompressOptions {
@@ -70,6 +71,7 @@ interface StepPair {
   result: ToolStep
   /** Глобальный хронологический номер пары (по всем ходам, включая хвост). */
   seq: number
+  round: number
 }
 
 /** Собирает валидные пары call→result из toolSteps сообщения (по callId). */
@@ -80,13 +82,25 @@ function collectPairs(m: Message): StepPair[] {
     if (s.type === 'tool_result' && s.callId) resultByCall.set(s.callId, s)
   }
   const pairs: StepPair[] = []
+  const roundByCall = new Map<string, number>()
+  let round = 0
+  let sawResult = false
+  for (const s of steps) {
+    if (s.type === 'tool_call' && s.callId) {
+      if (sawResult) { round++; sawResult = false }
+      roundByCall.set(s.callId, round)
+    } else if (s.type === 'tool_result') sawResult = true
+  }
+  // Saved iterations retain the exact parallel call batches.
+  m.iterations?.forEach((iteration, index) => {
+    for (const s of iteration.steps ?? []) {
+      if (s.type === 'tool_call' && s.callId) roundByCall.set(s.callId, index)
+    }
+  })
   for (const s of steps) {
     if (s.type !== 'tool_call' || !s.callId) continue
-    if (s.toolName && PINNED_TOOLS.has(s.toolName)) continue
     const result = resultByCall.get(s.callId)
-    if (result && !alreadyCompressed(result.content) && !isProtected(result)) {
-      pairs.push({ msg: m, call: s, result, seq: 0 })
-    }
+    if (result) pairs.push({ msg: m, call: s, result, seq: 0, round: roundByCall.get(s.callId) ?? 0 })
   }
   return pairs
 }
@@ -107,15 +121,25 @@ function statMtime(path: string): number | null {
 export function compressStoredMessages(messages: Message[], opts: CompressOptions): Map<string, CompressionPlan> {
   const plans = new Map<string, CompressionPlan>()
   const stepMessages = messages.filter(m => m.role === 'assistant' && (m.toolSteps?.length ?? 0) > 0)
-  if (stepMessages.length <= opts.tailKeep) return plans
-  const candidates = stepMessages.slice(0, -opts.tailKeep)
-  const candidateMsgs = new Set(candidates)
 
   // Анализ — по всем ходам (чтения/правки в хвосте тоже перекрывают и
   // устаревают старую историю), замены — только для кандидатов.
-  const allPairs = stepMessages.flatMap(collectPairs)
+  let roundCount = 0
+  const allPairs = stepMessages.flatMap(message => {
+    const pairs = collectPairs(message)
+    const count = pairs.length ? Math.max(...pairs.map(pair => pair.round)) + 1 : 0
+    for (const pair of pairs) pair.round += roundCount
+    roundCount += count
+    return pairs
+  })
   allPairs.forEach((p, seq) => { p.seq = seq })
   if (allPairs.length === 0) return plans
+  const boundary = roundCount - Math.max(1, opts.tailKeep)
+  const candidatePairs = new Set(allPairs.filter(pair => pair.round < boundary))
+  const candidates = stepMessages.filter(message => allPairs.some(pair => pair.msg === message && candidatePairs.has(pair)))
+  const editable = (pair: StepPair): boolean => candidatePairs.has(pair)
+    && !alreadyCompressed(pair.result.content) && !isProtected(pair.result)
+    && !PINNED_TOOLS.has(pair.call.toolName ?? '')
 
   // Мутации: явные правки по путям + недетерминированные тулы.
   const editsByPath = new Map<string, number[]>()
@@ -159,7 +183,7 @@ export function compressStoredMessages(messages: Message[], opts: CompressOption
   const replace = new Map<ToolStep, string>()
   const kindOf = new Map<ToolStep, 'dedup' | 'reread' | 'stale'>()
   const put = (p: StepPair, text: string, kind: 'dedup' | 'reread' | 'stale'): void => {
-    if (replace.has(p.result)) return
+    if (replace.has(p.result) || !editable(p)) return
     const finalText = `${JANITOR_MARKER} ${text}`
     const saved = estimateTokens(p.result.content ?? '') - estimateTokens(finalText)
     if (saved < STALE_MIN_SAVED) return
@@ -174,6 +198,7 @@ export function compressStoredMessages(messages: Message[], opts: CompressOption
   const byFingerprint = new Map<string, StepPair[]>()
   for (const p of allPairs) {
     const name = p.call.toolName ?? ''
+    if (alreadyCompressed(p.result.content) || isProtected(p.result)) continue
     if (!name || READ_TOOLS.has(name) || FILE_MUTATORS.has(name) || UNKNOWN_MUTATORS.has(name) || PINNED_TOOLS.has(name)) continue
     const key = `${name}|${stableStringify(p.call.toolArgs ?? {})}`
     const arr = byFingerprint.get(key)
@@ -184,10 +209,11 @@ export function compressStoredMessages(messages: Message[], opts: CompressOption
     arr.sort((a, b) => a.seq - b.seq)
     for (let k = 0; k < arr.length - 1; k++) {
       const a = arr[k]
-      if (!candidateMsgs.has(a.msg)) continue
+      if (!editable(a)) continue
       const content = a.result.content ?? ''
       if (content.length < MIN_STUB_CHARS) continue
       if (anyEditBetween(a.seq, arr[k + 1].seq) || unknownBetween(a.seq, arr[k + 1].seq)) continue
+      if (content !== arr[k + 1].result.content) continue
       put(a, `Результат вызова ${a.call.toolName ?? 'tool'} с теми же аргументами уже есть ниже по истории (между вызовами мутаций не было) — свёрнуто локальным помощником.`, 'dedup')
     }
   }
@@ -198,12 +224,13 @@ export function compressStoredMessages(messages: Message[], opts: CompressOption
   for (const p of allPairs) {
     const name = p.call.toolName ?? ''
     if (!READ_TOOLS.has(name)) continue
+    if (alreadyCompressed(p.result.content) || isProtected(p.result)) continue
     readOccs.push({ pair: p, sections: parseReadSections(name, p.result.content ?? '') })
   }
   readOccs.sort((a, b) => a.pair.seq - b.pair.seq)
   for (let k = 0; k < readOccs.length; k++) {
     const occ = readOccs[k]
-    if (!candidateMsgs.has(occ.pair.msg)) continue
+    if (!editable(occ.pair)) continue
     const ts = occ.pair.result.timestamp ?? 0
     const later = readOccs.slice(k + 1)
     const decisions = occ.sections.map(sec => {
@@ -221,7 +248,7 @@ export function compressStoredMessages(messages: Message[], opts: CompressOption
       put(occ.pair, `Результат чтения свёрнут: ${list}. При необходимости перечитай — свёртка не блокирует перечитывание.`, 'reread')
       continue
     }
-    if (hasStale) {
+    if (hasStale && decisions.every(d => d.kind !== 'keep')) {
       // B: активная правка (последняя правка файла — в хвосте, который не
       // сжимается) → чтение и есть живой срез файла: на его точные строки
       // агент опирается в следующих old_str. Не трогаем. Работа с файлом
@@ -232,7 +259,7 @@ export function compressStoredMessages(messages: Message[], opts: CompressOption
           if (s > occ.pair.seq && s > lastEditSeq) lastEditSeq = s
         }
       }
-      if (lastEditSeq >= 0 && !candidateMsgs.has(allPairs[lastEditSeq].msg)) continue
+      if (lastEditSeq >= 0 && !candidatePairs.has(allPairs[lastEditSeq])) continue
       const list = decisions.map(d => `${d.sec.displayPath} (${d.sec.range ? `строки ${d.sec.range.from}-${d.sec.range.to}` : 'часть файла'}) — ${d.kind === 'stale-edit' ? 'устарело: файл правился после чтения' : 'устарело: файл изменялся после чтения'}`).join('; ')
       put(occ.pair, `Результат чтения свёрнут: ${list}. При необходимости перечитай — свёртка не блокирует перечитывание.`, 'reread')
       continue
@@ -241,18 +268,9 @@ export function compressStoredMessages(messages: Message[], opts: CompressOption
     // контент актуален на 100%, не сжимаем: агент опирается на него в правках.
   }
 
-  // 3) Старьё: прочие большие результаты старых ходов → структурное резюме
-  //    с атрибуцией. Результаты правок (diff) не трогаем — они несут
-  //    уникальное состояние файлов.
-  for (const p of allPairs) {
-    if (replace.has(p.result) || !candidateMsgs.has(p.msg)) continue
-    const name = p.call.toolName ?? ''
-    if (PINNED_TOOLS.has(name) || FILE_MUTATORS.has(name) || READ_TOOLS.has(name)) continue
-    const content = p.result.content ?? ''
-    if (content.length < STALE_MIN_CHARS) continue
-    const detail = toolCallDetail((p.call.toolArgs ?? {}) as Record<string, unknown>)
-    put(p, summarizeToolResult(name, content, detail || undefined), 'stale')
-  }
+  // Unique tool outputs stay in the DB. In-run summaries are reapplied from
+  // the bounded recall archive; deleting the raw DB copy would make them
+  // irrecoverable after an archive failure or a restart.
 
   if (replace.size === 0) return plans
 
@@ -278,7 +296,7 @@ export function compressStoredMessages(messages: Message[], opts: CompressOption
         ...it,
         steps: (it.steps ?? []).map(s => {
           const rep = s.callId ? repByCallId.get(s.callId) : undefined
-          return rep ? { ...s, content: rep } : s
+          return rep && s.type === 'tool_result' ? { ...s, content: rep } : s
         }),
       }))
     }

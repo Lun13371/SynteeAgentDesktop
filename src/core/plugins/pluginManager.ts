@@ -1215,7 +1215,8 @@ export class PluginManager {
     /** pluginId вызывающего плагина — для роутинга aiTool-вызовов. */
     pluginId?: string
   }): Promise<string> {
-    const client = new AIClient(this.store)
+    const usageChatId = params.chatId || (params.chatContext ? lastActiveChatId : undefined)
+    const client = new AIClient(this.store, { ...(usageChatId ? { chatId: usageChatId } : {}), source: 'plugin' })
     const maxTokens = Math.min(Math.max(1, Number(params.maxTokens) || 1024), AI_MAX_TOKENS)
     const opts = params.model ? { model: String(params.model), maxTokens } : { maxTokens }
 

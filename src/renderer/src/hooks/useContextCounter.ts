@@ -23,6 +23,10 @@ export interface ContextInfo {
   }
   sessionCostCents: number | null
   sessionRequests: number
+  sessionUnpricedRequests: number
+  lastRequestCostCents: number | null
+  sessionIncludesAuxiliary: boolean
+  accountingStartedAt?: number | null
   // Поля для совместимости с ContextRing.tsx (legacy naming)
   total: number
   modelId: string
@@ -60,6 +64,8 @@ interface UsagePush {
   limit: number
   status: 'ok' | 'warn' | 'critical'
   source?: 'real' | 'estimate'
+  /** A fresh payload estimate supersedes usage from an earlier request. */
+  scope?: 'request'
   compressed?: boolean
   breakdown?: {
     history: number
@@ -74,6 +80,10 @@ interface UsagePush {
   }
   sessionCostCents?: number | null
   sessionRequests?: number
+  sessionUnpricedRequests?: number
+  lastRequestCostCents?: number | null
+  sessionIncludesAuxiliary?: boolean
+  accountingStartedAt?: number | null
   pricing?: { inputPerM: number; outputPerM: number } | null
   estimatedCostCents?: number | null
   providerId?: string
@@ -99,6 +109,9 @@ export function useContextCounter({
   // usage — источник истины после первого ответа модели.
   const lastRealRef = useRef<UsagePush | null>(null)
   const pricingRef = useRef<UsagePush['pricing']>(null)
+  // Costs have a separate stream: auxiliary requests must never replace
+  // the main model's context usage, and later estimates must retain totals.
+  const lastCostRef = useRef<Partial<UsagePush> | null>(null)
   const isRunningRef = useRef(isRunning)
   useEffect(() => { isRunningRef.current = isRunning }, [isRunning])
 
@@ -109,12 +122,15 @@ export function useContextCounter({
       // Fix 6: игнорируем push от другого чата (защита от race-condition
       // при быстрой смене чатов A→B→C, когда ответ от A приходит позже).
       if (data.chatId && chatId && data.chatId !== chatId) return
+      data = { ...data, ...lastCostRef.current }
       lastPushRef.current = data
       if (data.pricing !== undefined) pricingRef.current = data.pricing
       // Phase 4: real-priority — real usage от провайдера храним отдельно;
       // estimate от context:calculate игнорируем, если уже есть real.
       if (data.source === 'real') {
         lastRealRef.current = data
+      } else if (data.scope === 'request') {
+        lastRealRef.current = null
       } else if (lastRealRef.current) {
         // Уже есть real snapshot для этого чата — estimate не перетирает его
         // (как в opencode: real — источник истины после первого ответа).
@@ -123,8 +139,31 @@ export function useContextCounter({
       setInfo(buildContextInfo(data, inputTokensRef.current, modelId, isRunningRef.current, pricingRef.current))
     }
     const off = window.syntee.on(IPC_EVENTS.CONTEXT_USAGE, handler as (...args: unknown[]) => void)
-    return off
+    return () => { off() }
   }, [enabled, modelId, chatId])
+
+  useEffect(() => {
+    if (!enabled || !chatId) return
+    const handler = (value: unknown) => {
+      const event = value as Partial<UsagePush>
+      if (event.chatId !== chatId) return
+      const cost: Partial<UsagePush> = {
+        sessionCostCents: event.sessionCostCents,
+        sessionRequests: event.sessionRequests,
+        sessionUnpricedRequests: event.sessionUnpricedRequests,
+        lastRequestCostCents: event.lastRequestCostCents,
+        sessionIncludesAuxiliary: event.sessionIncludesAuxiliary,
+        accountingStartedAt: event.accountingStartedAt,
+      }
+      lastCostRef.current = cost
+      if (lastPushRef.current) lastPushRef.current = { ...lastPushRef.current, ...cost }
+      if (lastRealRef.current) lastRealRef.current = { ...lastRealRef.current, ...cost }
+      const base = lastRealRef.current ?? lastPushRef.current
+      if (base) setInfo(buildContextInfo(base, inputTokensRef.current, modelId, isRunningRef.current, pricingRef.current))
+    }
+    const off = window.syntee.on('context:cost', handler)
+    return () => { off() }
+  }, [chatId, enabled, modelId])
 
   // Fix 6: сброс при смене чата + запросить свежий расчёт контекста из main.
   // Без этого info висит пустым (или показывает данные предыдущего чата),
@@ -136,6 +175,7 @@ export function useContextCounter({
     lastPushRef.current = null
     lastRealRef.current = null
     pricingRef.current = null
+    lastCostRef.current = null
     inputTokensRef.current = 0
     // Просим main пересчитать контекст для нового чата — он эмитит CONTEXT_USAGE
     window.syntee.context.calculate(chatId).catch(() => { /* тихо — не критично */ })
@@ -155,7 +195,7 @@ export function useContextCounter({
       lastRealRef.current = null
     }
     const off = window.syntee.on(IPC_EVENTS.CHAT_COMPACTED, handler as (...args: unknown[]) => void)
-    return off
+    return () => { off() }
   }, [enabled, chatId])
 
   // Live-обновление при печати — лёгкая эвристика в renderer (без IPC).
@@ -214,6 +254,10 @@ function buildContextInfo(
     breakdown,
     sessionCostCents: push.sessionCostCents ?? null,
     sessionRequests: push.sessionRequests ?? 0,
+    sessionUnpricedRequests: push.sessionUnpricedRequests ?? 0,
+    lastRequestCostCents: push.lastRequestCostCents ?? null,
+    sessionIncludesAuxiliary: push.sessionIncludesAuxiliary ?? false,
+    accountingStartedAt: push.accountingStartedAt,
     // Legacy поля для ContextRing
     total,
     modelId,
@@ -225,7 +269,7 @@ function buildContextInfo(
     toolCallsTokens: breakdown.tools,
     toolCallsCount: push.toolCallsCount ?? 0,
     currentInput: inputTokens,
-    reserved: 2000,
+    reserved: 0,
     pricing: push.pricing ?? fallbackPricing ?? null,
     estimatedCostCents: push.estimatedCostCents ?? null,
     compressed: push.compressed,
