@@ -36,6 +36,7 @@ import type {
   Project, Message,
 } from '../../../../../shared/types'
 import './ExtensionsPopover.css'
+import { MAX_MCP_TOOL_TIMEOUT_SECONDS, isMcpToolTimeout } from '../../../../../shared/mcpTimeout'
 
 type Tab = 'mcp' | 'skills' | 'plugins'
 
@@ -559,6 +560,57 @@ export function McpLogsList({
 }
 
 /** Карточка MCP-сервера: статус, тумблер, reconnect, тулы с per-tool управлением. */
+function McpToolTimeoutField({ server, projectId }: { server: McpServerRuntime; projectId?: string }): JSX.Element {
+  const [draft, setDraft] = useState<string | null>(null)
+  const [error, setError] = useState('')
+  const [saving, setSaving] = useState(false)
+  const reloadMcp = useExtensionsStore(s => s.loadMcpServers)
+  const seconds = draft === null ? server.toolTimeoutSeconds : Number(draft)
+  const save = async () => {
+    if (saving || !isMcpToolTimeout(seconds) || seconds === server.toolTimeoutSeconds) return
+    setSaving(true)
+    setError('')
+    try {
+      const result = await window.syntee.mcp.setServerState({
+        serverId: server.id, projectId: server.projectId ?? projectId, toolTimeoutSeconds: seconds,
+      })
+      if (!result.ok) throw new Error(result.error)
+      await reloadMcp(projectId)
+      setDraft(null)
+    } catch (error) {
+      setError(error instanceof Error && error.message ? error.message : 'Не удалось сохранить таймаут')
+    } finally {
+      setSaving(false)
+    }
+  }
+  return (
+    <form className="ext-card-row ext-card-row--start" onSubmit={e => { e.preventDefault(); void save() }}>
+      <label className="ext-card-row-label" htmlFor={`mcp-tool-timeout-${server.id}`}>Таймаут инструмента</label>
+      <div className="ext-env-edit-area">
+        <div className="ext-env-edit-row">
+          <input
+            id={`mcp-tool-timeout-${server.id}`}
+            className="ext-form-input ext-mcp-timeout-input"
+            type="number"
+            min={1}
+            max={MAX_MCP_TOOL_TIMEOUT_SECONDS}
+            step={1}
+            value={draft ?? server.toolTimeoutSeconds}
+            onChange={e => { setDraft(e.target.value); setError('') }}
+            disabled={saving}
+          />
+          <button type="submit" className="ext-action-btn ext-action-btn--xs"
+            disabled={saving || !isMcpToolTimeout(seconds) || seconds === server.toolTimeoutSeconds}>
+            {saving ? 'Сохранение…' : 'Сохранить'}
+          </button>
+        </div>
+        <span className="ext-form-hint">От 1 до {MAX_MCP_TOOL_TIMEOUT_SECONDS} секунд. Действует со следующего вызова, включая Code Mode.</span>
+        {error && <span className="ext-form-error" role="alert">{error}</span>}
+      </div>
+    </form>
+  )
+}
+
 function McpServerCard({ server, projects, projectId }: { server: McpServerRuntime; projects: Project[]; projectId?: string }): JSX.Element {
   const [expanded, setExpanded] = useState(false)
   const [approvalBusy, setApprovalBusy] = useState(false)
@@ -782,6 +834,7 @@ function McpServerCard({ server, projects, projectId }: { server: McpServerRunti
             onChange={setScope}
             disabled={server.source === 'project'}
           />
+          <McpToolTimeoutField server={server} projectId={projectId} />
           {server.transport === 'stdio' && server.command && (
             <div className="ext-card-row">
               <span className="ext-card-row-label">Команда</span>

@@ -1,8 +1,6 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { loader } from '@monaco-editor/react'
-import * as monaco from 'monaco-editor'
 import AppIcon from '../AppIcon/AppIcon'
 import FileIcon from '../FileIcon/FileIcon'
 import SafeDiffEditor from '../SafeDiffEditor/SafeDiffEditor'
@@ -13,9 +11,6 @@ import { useChatStore } from '../../../store/chat.store'
 import { useUIStore } from '../../../store/ui.store'
 import { whileHoverSm, whileTapSm, whileHoverTiny, whileTapTiny, whileHoverListItem, whileTapListItem, springHover } from '../../../utils/motionPresets'
 import './SessionChangesPanel.css'
-
-// Офлайн Monaco (повторный вызов loader.config безопасен)
-loader.config({ monaco })
 
 interface SessionChangesPanelProps {
   chatId?: string | null

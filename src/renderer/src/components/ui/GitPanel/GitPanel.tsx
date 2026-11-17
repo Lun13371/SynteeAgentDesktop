@@ -1,8 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef, memo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { loader } from '@monaco-editor/react'
-import * as monaco from 'monaco-editor'
+import type * as monaco from 'monaco-editor'
 import AppIcon from '../AppIcon/AppIcon'
 import FileIcon from '../FileIcon/FileIcon'
 import SafeDiffEditor from '../SafeDiffEditor/SafeDiffEditor'
@@ -12,9 +11,6 @@ import { useFileTabsStore } from '../../../store/fileTabs.store'
 import { useUIStore } from '../../../store/ui.store'
 import { useToast } from '../Toast/Toast'
 import './GitPanel.css'
-
-// Офлайн Monaco (уже сконфигурирован в FileEditorPane, но повторный вызов безопасен)
-loader.config({ monaco })
 
 // ── Опции Monaco DiffEditor (модульная константа) ───────────────────────
 // Инлайн-литерал в JSX пересоздавался на каждый рендер GitPanel →

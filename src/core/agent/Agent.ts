@@ -20,7 +20,7 @@ import {
   getHardLimitTokens, getHardLimitTargetTokens,
 } from '../context/contextManager'
 import type { ChatMessage } from '../context/contextManager'
-import { computeContextSnapshot } from '../tokens/usageTracker'
+import { computeRequestContextSnapshot, estimateTokens } from '../tokens/usageTracker'
 import { MAX_TOOL_TIMEOUT_MS } from '../ai/shared'
 import { getSubagentRole } from '../../shared/subagent-roles'
 import type { FileCacheEntry } from '../context/fileCacheTypes'
@@ -52,9 +52,10 @@ import type { CodeTraceEntry } from '../codeMode'
 import { Janitor } from '../context/janitor'
 import { loadAssistantState, saveAssistantState } from '../context/assistantState'
 import { Constitution } from '../context/constitution'
+import { consumeHintBudget, MAX_PENDING_HINTS } from '../context/hintBudget'
 import { getSkillManager } from '../skills/skillManager'
 import type { Capability } from './watcher'
-import { HINT_MARKER, JANITOR_MARKER, CONSTITUTION_MARKER, BRIEFING_MARKER, DEFAULT_ASSISTANTS_SETTINGS, type AssistantsSettings, type HintCandidate } from '../../shared/assistants'
+import { JANITOR_MARKER, CONSTITUTION_MARKER, BRIEFING_MARKER, DEFAULT_ASSISTANTS_SETTINGS, type AssistantsSettings, type HintCandidate } from '../../shared/assistants'
 
 // Ограниченное хранилище Code Mode живёт в worker-процессе, а записи изолированы chatId.
 // Если worker завершён, артефакты очищаются вместе с ним.
@@ -68,6 +69,7 @@ const NON_DESTRUCTIVE_TOOLS = new Set([
   'edit_file',
   'save_memory',
   'recall_memory',
+  'recall_context',
   'update_working_memory',
   'update_todo',
   'ask_user',
@@ -199,7 +201,7 @@ export class Agent {
   private forceJanitorMode: 'light' | 'deep' | null = null
   private ecoStage = 0
   private tokenCalibration = 1
-  private pendingApproxTokens = 0
+  private pendingEstimatedTokens = 0
   private navigatorRoundCounter = 0
   /** Probe-флаги navigator'а: свежая ошибка/зацикливание — повод свериться
    *  с целью и ограничениями раньше обычного интервала (см. блок Navigator). */
@@ -261,15 +263,16 @@ export class Agent {
 
   pushHint(hint: HintCandidate): void {
     if (!this.assistantsSettings.enabled || !this.hintSourceEnabled(hint.source)) return
-    if (this.recentHintIds.has(hint.id)) return
-    if (this.pendingHints.length >= 3) return
+    if (this.recentHintIds.has(hint.id) || this.pendingHints.some(pending => pending.id === hint.id)) return
+    if (this.pendingHints.length >= MAX_PENDING_HINTS) return
     this.pendingHints.push(hint)
   }
 
   private hintSourceEnabled(source: HintCandidate['source']): boolean {
     const s = this.assistantsSettings
     switch (source) {
-      case 'memory': case 'skill': case 'capability': return s.watcherEnabled
+      case 'memory': return s.watcherEnabled && s.sources.memory
+      case 'skill': case 'capability': return s.watcherEnabled && s.sources.skills
       case 'briefing': return s.briefingEnabled
       case 'navigator': return s.navigatorEnabled
       case 'archivist': return s.archivistEnabled
@@ -342,18 +345,22 @@ export class Agent {
   }
 
   /** Применяет отчёт janitor + пост-обработка (конституция, якорь, refine-запросы). */
-  private applyJanitorReport(messages: AgentMessage[], report: import('../../shared/assistants').JanitorReport, callbacks: AgentCallbacks, step: number): void {
+  private applyJanitorReport(messages: AgentMessage[], report: import('../../shared/assistants').JanitorReport, callbacks: AgentCallbacks, toolSchemas: unknown[], contextWindow: number): void {
+    const before = computeRequestContextSnapshot(messages, contextWindow, toolSchemas)
     const optimized = this.janitor.apply(messages as ChatMessage[], report)
     messages.length = 0
     messages.push(...(optimized as AgentMessage[]))
     this.reinjectConstitution(messages)
     this.markCacheAnchor(messages)
+    const after = computeRequestContextSnapshot(messages, contextWindow, toolSchemas)
+    const saved = Math.max(0, before.estimated - after.estimated)
     callbacks.onStep({
       type: 'janitor',
-      content: `Оптимизировано: ${report.actions.length} действ., −${report.totalTokensSaved} токенов`,
-      janitorTokensSaved: report.totalTokensSaved,
+      content: `Контекст запроса ≈${before.estimated} → ≈${after.estimated} токенов (${after.pct}% окна). Сэкономлено ≈${saved}; свёрнуто ${report.actions.length} результатов инструментов.`,
+      janitorTokensSaved: saved,
       janitorActions: report.actions.map(a => ({ kind: a.kind, description: a.description, tokensSaved: a.tokensSaved, archiveId: a.archiveId })),
     })
+    callbacks.onContextUpdate?.({ promptTokens: after.estimated, breakdown: after.breakdown })
     // J4: просим локальную модель улучшить структурные резюме (async, не блокирует).
     if (this.onAssistantEvent) {
       for (const a of report.actions) {
@@ -403,8 +410,13 @@ export class Agent {
     if (!this.liveMessages || !summary) return
     const tag = `[recall:${archiveId}]`
     for (const m of this.liveMessages) {
-      if (typeof m.content === 'string' && m.content.includes(tag)) {
-        m.content = `${JANITOR_MARKER} ${summary} ${tag}`
+      if (m.role === 'tool' && typeof m.content === 'string' && m.content.includes(tag)) {
+        const replacement = `${JANITOR_MARKER} ${summary} ${tag}`
+        if (estimateTokens(replacement) <= estimateTokens(m.content)) {
+          m.content = replacement
+          this.janitor.updateSummary(archiveId, replacement)
+          this.persistStateNow()
+        }
       }
     }
   }
@@ -643,6 +655,7 @@ export class Agent {
         this.janitor.hydrateArchive(st.janitorArchive ?? [])
       }
     }
+    this.janitor.restoreSummaries(messages as ChatMessage[])
     // J1: детерминированное извлечение ограничений из нового user-сообщения.
     if (this.assistantsSettings.enabled && typeof userMessage === 'string') {
       const added = this.constitution.addFromUserText(userMessage)
@@ -681,7 +694,7 @@ export class Agent {
         this.continuityStarted = true
         void this.computeContinuity().then(text => {
           if (!text) return
-          this.pendingHints.push({ id: `continuity-${Date.now()}`, source: 'briefing', content: text, score: 1, title: 'continuity' })
+          this.pushHint({ id: `continuity-${Date.now()}`, source: 'briefing', content: text, score: 1, title: 'continuity' })
         }).catch(() => {})
       }
     }
@@ -755,6 +768,20 @@ export class Agent {
     }
     const filteredSchemas = filterToolSchemas(activeSchemas, toolSettings)
     activeSchemas.splice(0, activeSchemas.length, ...filteredSchemas)
+    if (!activeSchemas.some(schema => schema.function.name === 'recall_context')
+      && (this.janitor.getArchiveSize() > 0 || (this.assistantsSettings.enabled && this.assistantsSettings.janitorEnabled))) {
+      activeSchemas.push({
+        type: 'function',
+        function: {
+          name: 'recall_context',
+          description: 'Read an original tool result replaced by a [recall:id] summary. Paginated; use the returned next offset for more.',
+          parameters: {
+            type: 'object', required: ['archive_id'],
+            properties: { archive_id: { type: 'string' }, offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 8000 } },
+          },
+        },
+      })
+    }
     // execute_code — обычный тул реестра (schemas/code.ts). Набор приходит из
     // getToolSchemas: normal-режим даёт его, ask/planning/read-only — нет.
     const artifacts = CODE_MODE_ARTIFACTS
@@ -815,10 +842,8 @@ export class Agent {
     let finalAnswerNudges = 0
     const nativeImageAnalysis = new NativeImageAnalysis()
     const runCallbacks = callbacks
-    let codeModeInternalCallDepth = 0
     callbacks = {
       ...runCallbacks,
-      onStep: (event) => { if (codeModeInternalCallDepth === 0) runCallbacks.onStep(event) },
       onDone: (answer, details) => {
         // §goal — завершение прогона само по себе не вердикт: цель остаётся
         // set, если оценщик её не закрыл (как в [CC]).
@@ -909,22 +934,17 @@ export class Agent {
       }
 
       if (this.pendingHints.length > 0 && !signal?.aborted && this.hintCooldown <= 0) {
-        const budget = this.assistantsSettings.hintBudgetTokens
-        const incoming = this.pendingHints.splice(0)
-        let injected = 0
-        for (const hint of incoming) {
-          if (injected >= budget) break
-          const text = hint.title ? `[${hint.source}: ${hint.title}] ${hint.content}` : `[${hint.source}] ${hint.content}`
-          messages.push({ role: 'user', content: `${HINT_MARKER}\n\n${text}` })
+        const incoming = this.assistantsSettings.enabled ? this.pendingHints.filter(hint => this.hintSourceEnabled(hint.source)) : []
+        const { selected, remaining } = consumeHintBudget(incoming, this.assistantsSettings.hintBudgetTokens)
+        this.pendingHints = remaining
+        for (const { hint, text, message } of selected) {
+          messages.push({ role: 'user', content: message })
           this.recentHintIds.add(hint.id)
           if (this.recentHintIds.size > 50) {
             const first = this.recentHintIds.values().next().value
             if (first) this.recentHintIds.delete(first)
           }
           callbacks.onStep({ type: 'hint', content: text, hintSource: hint.source, hintId: hint.id })
-          // Бюджет задан в токенах (hintBudgetTokens=300), а не в символах —
-          // считаем оценкой ~3.5 символа/токен, иначе лимит срезал всё до 1 хинта.
-          injected += Math.ceil(text.length / 3.5)
           log('[Agent] hint injected (round %s): %s', step, text.slice(0, 100))
         }
         this.hintCooldown = this.assistantsSettings.hintCooldownRounds
@@ -935,11 +955,9 @@ export class Agent {
       // Economist + умный триггер Janitor: не спамим компакцией на ранних
       // ходах. Сжимаем только когда ран созрел (>25 шагов), есть реальные
       // повторы тулов, или контекст подбирается к лимиту.
-      const approxTokens = messages.reduce((s, m) => s + (typeof m.content === 'string' ? m.content.length : 0) / 4, 0)
-      this.pendingApproxTokens = approxTokens
-      // Калибровка chars/4 по реальным prompt_tokens из API (EMA): для русского
-      // текста chars/4 занижает токены в ~1.5-2 раза, пороги должны быть точными.
-      const calibratedTokens = approxTokens * this.tokenCalibration
+      const requestContext = computeRequestContextSnapshot(messages, realContextWindow, activeSchemas)
+      this.pendingEstimatedTokens = requestContext.estimated
+      const calibratedTokens = requestContext.estimated * this.tokenCalibration
       // Economist: порог относительно окна контекста модели.
       // 1M → 30%, 500k → 60%, 256k → 70%, <256k → 80%.
       const ecoFrac = realContextWindow >= 1_000_000 ? 0.3 : realContextWindow >= 500_000 ? 0.6 : realContextWindow >= 256_000 ? 0.7 : 0.8
@@ -975,7 +993,7 @@ export class Agent {
       const janitorDue = typeof this.janitor?.shouldScan === 'function'
         && this.janitor.shouldScan(this.janitorRoundCounter)
         && (matureRun || heavyRepeats || contextPressure)
-      if (janitorDue || this.forceJanitorMode) {
+      if (this.assistantsSettings.enabled && this.assistantsSettings.janitorEnabled && (janitorDue || this.forceJanitorMode)) {
         const scanMode = this.forceJanitorMode ?? 'deep'
         this.forceJanitorMode = null
         // Emergency (economist stage 2 — ecoStage ещё активен): активный хвост
@@ -987,7 +1005,8 @@ export class Agent {
         log('[Agent] janitor scan round=%s mode=%s actions=%d saved=%d enabled=%s', this.janitorRoundCounter, scanMode, report.actions.length, report.totalTokensSaved, this.assistantsSettings.enabled)
         // J2: не применяем микро-компакции — они инвалидируют кэш чаще, чем экономят.
         if (report.actions.length > 0 && report.totalTokensSaved >= this.assistantsSettings.janitorMinSavingsTokens) {
-          this.applyJanitorReport(messages, report, callbacks, step)
+          this.applyJanitorReport(messages, report, callbacks, activeSchemas, realContextWindow)
+          this.pendingEstimatedTokens = computeRequestContextSnapshot(messages, realContextWindow, activeSchemas).estimated
         } else {
           this.onAssistantEvent?.({ kind: 'janitor_skip' })
         }
@@ -1053,12 +1072,10 @@ export class Agent {
           }, INACTIVITY_TIMEOUT_MS)
         }
         resetInactivityTimer()
-        // Калибровка Economist: реальные prompt_tokens этого раунда против
-        // нашей оценки chars/4 → EMA-коэффициент (clamp 0.5..4).
+        // Match provider tokenization against the complete request, including tools.
         const trackUsage = (promptTokens: number, completionTokens: number, cacheRead?: number, cacheWrite?: number) => {
-          if (this.pendingApproxTokens > 0 && promptTokens > 0) {
-            const ratio = Math.min(4, Math.max(0.5, promptTokens / this.pendingApproxTokens))
-            this.tokenCalibration = this.tokenCalibration * 0.7 + ratio * 0.3
+          if (this.pendingEstimatedTokens > 0 && promptTokens > 0) {
+            this.tokenCalibration = Math.min(4, Math.max(0.5, promptTokens / this.pendingEstimatedTokens))
           }
           if (goalRuntime) goalRuntime.addTokens(promptTokens + completionTokens)
           callbacks.onUsage?.(promptTokens, completionTokens, cacheRead, cacheWrite)
@@ -1462,7 +1479,11 @@ export class Agent {
           }
         })
 
-        const executeCall = async (item: NormalizedToolCall): Promise<void> => {
+        const executionCallbacks = callbacks
+        const executeCall = async (item: NormalizedToolCall, nestedSignal?: AbortSignal): Promise<void> => {
+          const callSignal = nestedSignal ?? signal
+          if (callSignal?.aborted) return
+          const callbacks = nestedSignal ? { ...executionCallbacks, onStep: () => {} } : executionCallbacks
           const { callId, fn, isHiddenTool, pendingCallId, parseError } = item
           if (goalRuntime && !goalRuntime.reserveTool()) {
             if (goalRuntime.active) goalRuntime.stop('limit', 'Goal tool-call or time budget exhausted')
@@ -1544,7 +1565,7 @@ export class Agent {
                 const loopMsg = alternation
                   ? `Loop guard: you are alternating ${fingerprint.toolName} with another tool in a loop (${fpCount} recent calls, 2 unique). Change strategy: analyze what is already done and choose a different approach.`
                   : `Loop guard: you repeated ${fn.name} with effectively the same arguments ${maxRepeatedToolCalls} times. Stop retrying it unchanged and switch strategy.`
-                if (codeModeInternalCallDepth === 0) messages.push({
+                if (!nestedSignal) messages.push({
                   role: 'user',
                   content: hardBlock
                     ? `${loopMsg}\n\nATTENTION: tool "${fn.name}" is blocked for this run() after ${guardHits} loop-guard warnings (${guardHits * maxRepeatedToolCalls} actual calls). It was NOT executed. Change strategy or ask the user.`
@@ -1616,7 +1637,7 @@ export class Agent {
 
               if (shouldHardBlock) {
                 const hardStopMsg = `Loop guard: ${fn.name} produced invalid JSON ${parseFailCount} times. The tool is blocked for this run. Explain the issue to the user — you may need to simplify the edit, use a different edit mode, or split the work into smaller steps.`
-                if (codeModeInternalCallDepth === 0) messages.push({ role: 'user', content: hardStopMsg })
+                if (!nestedSignal) messages.push({ role: 'user', content: hardStopMsg })
                 resultMap.set(callId, {
                   contentForAI: `${hardStopMsg}\n\nLast parse error: ${parseError.message}\nYou sent (first 200 chars): ${parseError.snippet}`,
                   callId,
@@ -1643,7 +1664,7 @@ export class Agent {
                 // т.к. ремонт провалился), но модель НЕ блокируется —
                 // может retry с другим JSON в следующем раунде.
                 const softMsg = `Loop guard (soft): ${fn.name} produced invalid JSON ${parseFailCount} times. Parse error: ${parseError.message}. You sent (first 200 chars): ${parseError.snippet}. Please retry with valid JSON — make sure all string values are properly quoted (e.g. "mode": "str_replace", not "mode": str_replace).`
-                if (codeModeInternalCallDepth === 0) messages.push({ role: 'user', content: softMsg })
+                if (!nestedSignal) messages.push({ role: 'user', content: softMsg })
                 resultMap.set(callId, {
                   contentForAI: softMsg,
                   callId,
@@ -1773,7 +1794,7 @@ export class Agent {
           // use this exact approval decision. Its optional policy only adds a
           // stricter boundary in Auto mode; it never weakens normal approvals.
           const codeModePolicy = autoSettings.codeModePolicy
-          const codeModeInternal = codeModeInternalCallDepth > 0
+          const codeModeInternal = !!nestedSignal
           const approval = needsApproval(fn.name, args, mode, {
             auto: autoSettings,
             forbiddenPaths,
@@ -1788,7 +1809,7 @@ export class Agent {
             && fn.name !== 'read_file' && fn.name !== 'read_files' && fn.name !== 'find_files'
             && fn.name !== 'search_code' && fn.name !== 'list_directory'
             && fn.name !== 'get_diagnostics'
-            && fn.name !== 'recall_memory') {
+            && fn.name !== 'recall_memory' && fn.name !== 'recall_context') {
             approval.block = true
             approval.reason = 'Code Mode настроен только для чтения и анализа'
           }
@@ -1870,6 +1891,7 @@ export class Agent {
           }
           if (effectiveApproval.confirm && callbacks.onConfirm) {
             const decision = await callbacks.onConfirm(fn.name, args)
+            if (callSignal?.aborted) return
             const approved = typeof decision === 'boolean' ? decision : decision?.approved === true
             if (!approved) {
               resultMap.set(callId, { contentForAI: 'Действие отклонено пользователем.', callId, name: fn.name })
@@ -1885,18 +1907,12 @@ export class Agent {
             }
           }
 
-          if (signal?.aborted || (goalRuntime && !goalRuntime.active)) return
+          if (callSignal?.aborted || (goalRuntime && !goalRuntime.active)) return
           callbacks.onStatus?.(`${fn.name}...`)
           console.log('[Agent] exec tool: %s callId=%s (step=%d)', fn.name, callId, step)
           log('[Agent] exec tool: %s callId=%s', fn.name, callId)
           let result: ToolResult
           let codeTrace: CodeTraceEntry[] | undefined
-          // Пост-фактум подсказка для execute_code: скрипт-минималка (<2
-          // вложенных вызовов — раунд-трип впустую) или ровно 2 вызова
-          // (модель пишет минимальные скрипты вместо цепочки). Подсказка
-          // идёт ТОЛЬКО модели (contentForAI) — в UI шаге показывается
-          // codeMode: { code, trace }, и дублировать её пользователю не нужно.
-          let codeModeHint = ''
           try {
             // execute_code — обычный тул реестра, тот же путь, что у остальных.
             // Гард нужен только на случай, когда его нет в наборе: персона с
@@ -1910,37 +1926,31 @@ export class Agent {
             }
             if (fn.name === 'execute_code') {
               const code = typeof args.code === 'string' ? args.code : ''
-              const codeAbort = new AbortController()
-              const forwardAbort = () => codeAbort.abort()
-              if (signal?.aborted) codeAbort.abort()
-              else signal?.addEventListener('abort', forwardAbort, { once: true })
-              let codeResult: Awaited<ReturnType<typeof executeCode>>
-              try { codeResult = await executeCode({
-                code, chatId: this.chatId, signal: codeAbort.signal,
+              const codeResult = await executeCode({
+                code, chatId: this.chatId, signal: callSignal,
                 artifacts,
                 sanitizeTrace: value => this.toolDispatcher.maskSecretValuesInText(JSON.stringify(value ?? null)),
                 callTool: async (toolName, toolArgs, childSignal) => {
                   if (childSignal?.aborted || signal?.aborted) return { success: false, output: '', error: 'Execution aborted' }
-                  const allowedSchemas = new Set(activeSchemas.map(s => s.function.name))
-                  if (toolName === 'execute_code' || !allowedSchemas.has(toolName)) {
+                  if (toolName === 'execute_code' || !activeSchemas.some(s => s.function.name === toolName)) {
                     const reason = `Tool "${toolName}" is unavailable in the current run.`
                     return { success: false, output: '', error: reason }
                   }
                   const internalId = `code-${callId}-${Math.random().toString(36).slice(2, 9)}`
+                  const toolArguments = JSON.stringify(toolArgs ?? {})
                   const internalItem = {
                     callId: internalId,
-                    call: { id: internalId, type: 'function', function: { name: toolName, arguments: JSON.stringify(toolArgs ?? {}) } },
-                    fn: { name: toolName, arguments: JSON.stringify(toolArgs ?? {}) },
+                    call: { id: internalId, type: 'function', function: { name: toolName, arguments: toolArguments } },
+                    fn: { name: toolName, arguments: toolArguments },
                     args: (toolArgs && typeof toolArgs === 'object' ? toolArgs : {}) as Record<string, unknown>,
                     parseError: undefined,
                     isHiddenTool: false,
                     pendingCallId: undefined,
                   } as unknown as NormalizedToolCall
-                  codeModeInternalCallDepth++
-                  try { await executeCall(internalItem) }
-                  finally { codeModeInternalCallDepth-- }
+                  await executeCall(internalItem, childSignal)
                   const internalResult = resultMap.get(internalId)
-                  if (!internalResult) return { success: false, output: '', error: signal?.aborted ? 'Execution aborted' : 'Tool was blocked or cancelled.' }
+                  resultMap.delete(internalId)
+                  if (!internalResult) return { success: false, output: '', error: childSignal?.aborted ? 'Execution aborted' : 'Tool was blocked or cancelled.' }
                   const text = internalResult.contentForAI
                   const failed = internalResult.success === false || /(?:Action blocked|Rejected by the user|Действие отклонено пользователем|Approval required; tool not executed|unavailable in the current run|Permission block|Permission denied|blocked by loop guard|Hard loop guard|Loop guard|is disabled|unavailable in the current mode|not available in the current mode)/i.test(text)
                   // Failure/отказ НЕ обрывает скрипт: возвращаем его внутрь гостя как
@@ -1952,45 +1962,22 @@ export class Agent {
                     ...(internalResult.diff ? { diff: internalResult.diff } : {}),
                   }
                 },
-              }) } finally { signal?.removeEventListener('abort', forwardAbort) }
+              })
               codeTrace = codeResult.trace
               result = { success: codeResult.success, output: codeResult.output, error: codeResult.error }
-              // Подсказка только при успешном прогоне: у упавшего скрипта в
-              // результате уже есть error. Артефакт-операции (artifacts.save
-              // и т.п.) реальными вызовами тула не считаются.
-              if (codeResult.success) {
-                const nestedCalls = (codeResult.trace ?? []).filter(t => !t.name.startsWith('__artifact_')).length
-                if (nestedCalls < 2) {
-                  codeModeHint = `\n[execute_code hint: this script made ${nestedCalls} nested tool call(s) — a wasted round-trip. When 1 tool call is enough, call that tool directly.]`
-                } else if (nestedCalls === 2) {
-                  // Пол минималки модель соблюдает, но стала писать РОВНО 2 вызова
-                  // вместо цепочки. Мягко пинаем к батчингу: «2 — это пол, а не цель».
-                  codeModeHint = `\n[execute_code hint: 2 nested calls is the floor, not the goal. If more steps of this task are coming, batch them ALL into one script instead of running several minimal ones.]`
-                }
+            } else {
+              const toolPromise = this.executeTool(fn.name, args, callbacks, dryRunMode, callId, callSignal)
+              // MCP and sub-agents manage their own timeouts and cancellation.
+              if (isMcpTool || fn.name === 'spawn_agent') {
+                result = await toolPromise
+              } else {
+                let timer: ReturnType<typeof setTimeout> | undefined
+                const timeout = new Promise<never>((_, reject) => {
+                  timer = setTimeout(() => reject(new Error(`Tool ${fn.name} exceeded the execution timeout (${MAX_TOOL_TIMEOUT_MS / 1000}s).`)), MAX_TOOL_TIMEOUT_MS)
+                })
+                try { result = await Promise.race([toolPromise, timeout]) }
+                finally { clearTimeout(timer) }
               }
-            } else {
-            const toolPromise = this.executeTool(fn.name, args, callbacks, dryRunMode, callId)
-            if (fn.name === 'spawn_agent') {
-              // spawn_agent — блокирующий вызов до полного завершения суб-агента
-              // (его собственный цикл до MAX_STEPS). Суб-агент имеет свои потолки
-              // на каждый свой тул (MAX_TOOL_TIMEOUT_MS 180с, MCP_CALL_TIMEOUT_MS
-              // 120с) — зависший тул внутри суб-агента ловится там. Внешний
-              // MAX_TOOL_TIMEOUT_MS тут только убивал легитимно длинные суб-агенты
-              // (большой рефакторинг/исследование много минут). Безопасность
-              // висения: worker'а on('error'/'exit') и cancel() в AgentManager
-              // резолвят промис spawn_agent → родитель не блокируется навсегда.
-              result = await toolPromise
-            } else {
-              // Защитный потолок выполнения одного тула. Без этого зависший
-              // тул (MCP stdio с повисшим пайпом, исключение до эмита результата)
-              // блокирует агентский цикл навсегда — UI крутит спиннер
-              // «Выполняется…» пока весь агент не завершится. Таймер гарантированно
-              // закрывает итерацию tool_result'ом с понятной причиной.
-              const timeoutPromise = new Promise<ToolResult>((_, reject) => {
-                setTimeout(() => reject(new Error(`Tool ${fn.name} exceeded the execution timeout (${Math.round(MAX_TOOL_TIMEOUT_MS / 1000)}s). The MCP server may be hung or the transport is blocked.`)), MAX_TOOL_TIMEOUT_MS)
-              })
-              result = await Promise.race([toolPromise, timeoutPromise])
-            }
             }
           } catch (toolErr) {
             // Раньше throw из executeTool протекал в outer try/catch и
@@ -2000,6 +1987,7 @@ export class Agent {
             const errMsg = toolErr instanceof Error ? toolErr.message : String(toolErr)
             result = { success: false, output: '', error: `Internal tool error in ${fn.name}: ${errMsg}` }
           }
+          if (isMcpTool && callSignal?.aborted) return
 
           // Fix 3: сброс loop-guard при успешном выполнении. Модель вышла
           // из лупа — не держим прошлые неудачи против неё весь session.
@@ -2150,6 +2138,7 @@ export class Agent {
             || fn.name === 'read_file' || fn.name === 'read_files'
             || fn.name === 'spawn_agent'
             || fn.name === 'manage_chats' // Own bounded output + offset pagination; preserve valid JSON.
+            || fn.name === 'recall_context' // Already paged to <=8000 chars; keep the advertised next offset valid.
             || fn.name === 'fetch_page'  // своя обрезка по maxChars (default 50000) с сообщением
             // Плагинные и MCP-тулы — НЕ обрезаем вообще: автор тула сам
             // отвечает за размер вывода (plugin_docs отдаёт секции доков
@@ -2163,12 +2152,9 @@ export class Agent {
           const perToolMax = (fn.name === 'search_code' || fn.name === 'get_file_outline')
             ? Math.max(ctxSettings.toolMaxChars, 20000)
             : ctxSettings.toolMaxChars
-          const truncatedContent = (!imageUrl && ctxSettings.toolTruncEnabled && !noTruncTool)
+          const contentForAI = (!imageUrl && ctxSettings.toolTruncEnabled && !noTruncTool)
             ? truncateToolResult(finalContent, perToolMax)
             : finalContent
-          // Подсказка приклеивается ПОСЛЕ обрезки — она гарантированно доходит
-          // до модели, даже если вывод скрипта упёрся в потолок.
-          const contentForAI = codeModeHint ? `${truncatedContent}${codeModeHint}` : truncatedContent
 
           if (!result.success && !isHiddenTool) {
             // Fingerprint ошибки включает args (через buildToolFingerprint —
@@ -2186,7 +2172,7 @@ export class Agent {
             const repeatedErrors = this.recentErrorFingerprints.length >= maxRepeatedErrors &&
               this.recentErrorFingerprints.every(entry => entry === errorFingerprint)
             if (repeatedErrors) {
-              if (codeModeInternalCallDepth === 0) messages.push({
+              if (!nestedSignal) messages.push({
                 role: 'user',
                 content: `Loop guard: ${fn.name} produced the same error ${maxRepeatedErrors} times. Do not retry it unchanged. Use a different tool or explain the blocker.`,
               })
@@ -2276,11 +2262,28 @@ export class Agent {
           // Serial evidence ordering: a concurrent read cannot verify a mutation.
           for (const item of normalizedCalls) await goalWait(executeCall(item))
         } else {
-          if (parallelCalls.length > 0) await Promise.all(parallelCalls.map(executeCall))
+          if (parallelCalls.length > 0) await Promise.all(parallelCalls.map(item => executeCall(item)))
           for (const item of sequentialCalls) await executeCall(item)
         }
 
         for (const mutation of pendingMutations) mutation()
+
+        for (const item of normalizedCalls) {
+          const r = resultMap.get(item.callId)
+          messages.push({
+            role: 'tool',
+            tool_call_id: item.callId,
+            name: item.fn.name,
+            // analyze_image прямой пас: если тул вернул imageParts (основная
+            // модель vision-capable) — отдаём картинку прямо в tool-сообщении
+            // как multipart content. AIClient сохраняет эти блоки для
+            // Anthropic, а для OpenAI/Responses переносит пиксели в user
+            // ПОСЛЕ всех парных tool-результатов раунда.
+            content: r?.imageParts?.length
+              ? [...r.imageParts, { type: 'text' as const, text: r.contentForAI }]
+              : r?.contentForAI ?? '',
+          })
+        }
 
         if (
           !goalRuntime && // Goal checks must use the normal approved tool path.
@@ -2297,23 +2300,6 @@ export class Agent {
             toolName: '_verification',
             content: verifyResult.output,
             success: verifyResult.success,
-          })
-        }
-
-        for (const item of normalizedCalls) {
-          const r = resultMap.get(item.callId)
-          messages.push({
-            role: 'tool',
-            tool_call_id: item.callId,
-            name: item.fn.name,
-            // analyze_image прямой пас: если тул вернул imageParts (основная
-            // модель vision-capable) — отдаём картинку прямо в tool-сообщении
-            // как multipart content. AIClient сохраняет эти блоки для
-            // Anthropic, а для OpenAI/Responses переносит пиксели в user
-            // ПОСЛЕ всех парных tool-результатов раунда.
-            content: r?.imageParts?.length
-              ? [...r.imageParts, { type: 'text' as const, text: r.contentForAI }]
-              : r?.contentForAI ?? '',
           })
         }
 
@@ -2342,13 +2328,7 @@ export class Agent {
           // с tool_calls+tool results+current user). breakdown консистентен
           // с computeContextSnapshot / AIClient.onContextCounted — больше
           // никаких отдельных формул, дающих другие числа.
-          const systemMsg = messages[0]?.role === 'system' ? messages[0] : undefined
-          const rest = systemMsg ? messages.slice(1) : messages
-          const snap = computeContextSnapshot(rest, Number.MAX_SAFE_INTEGER, {
-            systemPrompt: systemMsg?.content as string | undefined,
-            includeToolSchemas: true,
-            toolSchemas: activeSchemas,
-          })
+          const snap = computeRequestContextSnapshot(messages, realContextWindow, activeSchemas)
           callbacks.onContextUpdate({
             promptTokens: snap.estimated,
             breakdown: {
@@ -2483,9 +2463,16 @@ export class Agent {
     args: Record<string, unknown>,
     callbacks?: AgentCallbacks,
     dryRun?: boolean,
-    callId?: string
+    callId?: string,
+    signal?: AbortSignal,
   ): Promise<ToolResult> {
-    return this.toolDispatcher.executeTool(name, args, callbacks, dryRun, callId)
+    if (name === 'recall_context') {
+      const output = this.janitor.recallPage(String(args.archive_id ?? ''), Number(args.offset ?? 0), Number(args.limit ?? 4000))
+      return output === null
+        ? { success: false, output: '', error: 'Context archive entry not found. Repeat the original read/search if available.' }
+        : { success: true, output }
+    }
+    return this.toolDispatcher.executeTool(name, args, callbacks, dryRun, callId, signal)
   }
 
   /**

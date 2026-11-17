@@ -154,7 +154,7 @@ fn build_session(
     model_path: &Path,
     device: SemanticDevice,
 ) -> Result<(Session, bool)> {
-    if device != SemanticDevice::Cpu {
+    if cfg!(windows) && device != SemanticDevice::Cpu {
         match build_session_inner(environment, model_path, true) {
             Ok(session) => return Ok((session, true)),
             Err(error) => {
@@ -186,11 +186,14 @@ fn build_session_inner(
         builder = next;
     }
     if dml {
-        builder = builder
-            .with_execution_providers([ort::ep::DirectML::default().build()])
-            .map_err(|error| SidecarError::Model(format!("directml provider: {error}")))?
-            .with_memory_pattern(false)
-            .map_err(|error| SidecarError::Model(format!("memory pattern: {error}")))?;
+        #[cfg(windows)]
+        {
+            builder = builder
+                .with_execution_providers([ort::ep::DirectML::default().build()])
+                .map_err(|error| SidecarError::Model(format!("directml provider: {error}")))?
+                .with_memory_pattern(false)
+                .map_err(|error| SidecarError::Model(format!("memory pattern: {error}")))?;
+        }
     }
     builder
         .with_optimization_level(ort::session::builder::GraphOptimizationLevel::Level3)

@@ -10,11 +10,13 @@ import { classifyTool } from '../../core/agent/commandSafety'
 import { writeFile, editFile } from '../../core/tools/index'
 import { buildPlanningInjection, buildAskInjection } from '../../core/prompts/buildSystemPrompt'
 import { getModelContextWindow } from '../../core/context/contextManager'
-import { recordSessionCost, buildSnapshotFromReal, estimateCost, getModelPriceInfo } from '../../core/tokens/usageTracker'
+import { buildSnapshotFromReal, estimateCost, getModelPriceInfo } from '../../core/tokens/usageTracker'
+import { setAIUsageSink, setDefaultAIUsageContext } from '../../core/ai/requestUsage'
 import { initModelCatalog } from '../../core/tokens/modelCatalog'
 import { setGatewayModelsCache } from '../../core/tokens/gatewayModelsCache'
 import { getToolSchemas } from '../../core/tools/index'
 import { requestBrowserOperation } from '../../core/agent/browserWorkerBroker'
+import { requestMcpTool } from '../../core/mcp/mcpWorkerBroker'
 import { filterToolSchemas, getToolSettings } from '../../shared/toolSettings'
 import { teardownSidecar } from '../../core/sidecar/sidecarClient'
 import { log } from '../../core/logger'
@@ -88,6 +90,7 @@ const fakeStore = {
 } as never
 
 const aiClient = new AIClient(fakeStore)
+setAIUsageSink(event => send({ type: 'request_usage', event }))
 
 // Refresher gateway-токена для AIClient: worker сам рефрешить не может
 // (electron-store/tokenStore в worker_threads недоступны), поэтому просит
@@ -245,6 +248,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
     }
   }
 
+  setDefaultAIUsageContext({ chatId, source: subagentRole ? 'subagent' : 'main' })
   let fullText = ''
   let thinkingText = ''
   let thinkingStartMs = 0
@@ -512,6 +516,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
               type: 'context_usage',
               pct, estimated: info.promptTokens, limit: contextWindow, status,
               source: 'estimate',
+              scope: 'request',
               breakdown: info.breakdown,
             })
           },
@@ -712,6 +717,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
               type: 'context_usage',
               pct, estimated: info.promptTokens, limit: contextWindow, status,
               source: 'estimate',
+              scope: 'request',
               breakdown: info.breakdown,
             })
           },
@@ -724,7 +730,6 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
               lastBreakdown as { history: number; system: number; tools: number; current: number; toolResults?: number; cacheReadTokens?: number; cacheWriteTokens?: number },
             )
             // Накапливаем стоимость сессии (cache-токены тарифицируются отдельно)
-            const sess = recordSessionCost(chatId, resolvedProviderId ?? '', resolvedModelId ?? '', promptTokens, completionTokens, cacheReadTokens, cacheWriteTokens)
             send({
               type: 'context_usage',
               pct: snapshot.pct,
@@ -737,8 +742,6 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
               estimatedCostCents: estimateCost(promptTokens, completionTokens, resolvedProviderId ?? '', resolvedModelId ?? ''),
               providerId: resolvedProviderId,
               modelId: resolvedModelId,
-              sessionCostCents: sess?.totalCents ?? null,
-              sessionRequests: sess?.requests ?? 0,
               // Сырые накопленные токены turn'а — main аккумулирует их в
               // run.bufferedUsage, чтобы статистика сохранилась при Стопе/
               // краше воркера (done/error при terminate() уже не приходят).
@@ -952,19 +955,8 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
               send({ type: 'get_main_chat_messages', chatId, msgId, replyId, limit: params.limit, search: params.search })
             })
           },
-          onMcpCall: (fullToolName, args) => {
-            return new Promise((resolve) => {
-              const replyId = `mcp-call-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
-              replyHandlers.set(replyId, (reply) => {
-                resolve({
-                  success: (reply.success as boolean) ?? false,
-                  output: (reply.output as string) ?? '',
-                  error: reply.error as string | undefined,
-                })
-              })
-              send({ type: 'mcp_call', chatId, msgId, replyId, toolName: fullToolName, args })
-            })
-          },
+          onMcpCall: (fullToolName, args, signal) =>
+            requestMcpTool(fullToolName, args, replyHandlers, send, signal ?? runAbort.signal),
           onMcpRequiresApproval: (fullToolName) => {
             // Синхронный ответ из кэша workerData.mcpApprovalMap (заполняется main
             // при spawn-е: { [toolFullName]: boolean }). По умолчанию true (безопаснее).
@@ -1137,6 +1129,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
               type: 'context_usage',
               pct, estimated: info.promptTokens, limit: contextWindow, status,
               source: 'estimate',
+              scope: 'request',
               breakdown: info.breakdown,
             })
           },
@@ -1162,7 +1155,6 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
             const cw = getModelContextWindow(storeData)
             const snapshot = buildSnapshotFromReal(usage, cw, lastBreakdown as { history: number; system: number; tools: number; current: number })
             // Накапливаем стоимость сессии
-            const sess = recordSessionCost(chatId, resolvedProviderId ?? '', resolvedModelId ?? '', usage.promptTokens, usage.completionTokens)
             send({
               type: 'context_usage',
               pct: snapshot.pct,
@@ -1175,8 +1167,6 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
               estimatedCostCents: estimateCost(u.promptTokens, u.completionTokens, resolvedProviderId ?? '', resolvedModelId ?? ''),
               providerId: resolvedProviderId,
               modelId: resolvedModelId,
-              sessionCostCents: sess?.totalCents ?? null,
-              sessionRequests: sess?.requests ?? 0,
               // Сырые накопленные токены turn'а (см. агентный onUsage выше)
               rawPromptTokens: accPromptTokens || undefined,
               rawCompletionTokens: accCompletionTokens || undefined,

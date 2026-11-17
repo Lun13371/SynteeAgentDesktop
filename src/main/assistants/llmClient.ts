@@ -3,8 +3,8 @@ import { log } from '../../core/logger'
 
 export type { QueuePriority }
 
-export function enqueue(prompt: string, priority: QueuePriority, maxTokens = 100, timeoutMs?: number): Promise<string> {
-  return localModels.complete(prompt, { priority, maxTokens, timeoutMs })
+export function enqueue(prompt: string, priority: QueuePriority, maxTokens = 100, timeoutMs?: number, signal?: AbortSignal): Promise<string> {
+  return localModels.complete(prompt, { priority, maxTokens, timeoutMs, signal })
 }
 
 export async function judgeRelevance(stepContext: string, hintContent: string): Promise<{ relevant: boolean; reason: string }> {
@@ -95,7 +95,7 @@ function parseJsonArray(text: string): Array<Record<string, unknown>> | null {
 
 /** Navigator: drift-судья + нарушения закреплённых ограничений (бинарные вердикты).
  *  `todo` — актуальный todo-лист: сверка «уход от плана», не только цели. */
-export async function judgeDrift(objective: string, transcript: string, constraints: string[] = [], todo = ''): Promise<{ drift: boolean; violation: boolean; reason: string }> {
+export async function judgeDrift(objective: string, transcript: string, constraints: string[] = [], todo = '', signal?: AbortSignal): Promise<{ drift: boolean; violation: boolean; reason: string }> {
   const goalPart = objective ? `Goal: ${objective.slice(0, 300)}` : 'Goal: (none — check constraints only)'
   const rules = constraints.length ? `\nPinned user constraints:\n${constraints.slice(0, 8).map(c => `- ${c.slice(0, 150)}`).join('\n')}\n` : ''
   const todoPart = todo ? `\nTodo plan:\n${todo.slice(0, 400)}\n` : ''
@@ -103,7 +103,7 @@ export async function judgeDrift(objective: string, transcript: string, constrai
   try {
     // Mid-run advisory — приоритет выше janitor'а: судья полезен только пока
     // ран идёт, а janitor-задачи в очереди спокойно ждут.
-    const text = await enqueue(prompt, 'default', 60)
+    const text = await enqueue(prompt, 'default', 60, undefined, signal)
     return {
       drift: /DRIFT:\s*YES/i.test(text),
       violation: /VIOLATION:\s*YES/i.test(text),
@@ -143,10 +143,10 @@ export async function distillSession(transcript: string, modifiedFiles: string[]
 }
 
 /** J1: LLM-экстракция ограничений из user-текста (JSON array строк). */
-export async function extractConstraints(text: string): Promise<string[]> {
+export async function extractConstraints(text: string, signal?: AbortSignal): Promise<string[]> {
   const prompt = `Extract standing user constraints/rules (things the agent must always/never do) from this message. Ignore transient task steps.\n\n${text.slice(0, 700)}\n\nOutput JSON array of short strings, e.g. ["never modify tests","always use pnpm"]. Only JSON.`
   try {
-    const out = await enqueue(prompt, 'watcher', 150)
+    const out = await enqueue(prompt, 'watcher', 150, undefined, signal)
     const m = out.match(/\[[\s\S]*\]/)
     if (!m) return []
     const arr = JSON.parse(m[0]) as unknown[]
@@ -155,9 +155,9 @@ export async function extractConstraints(text: string): Promise<string[]> {
 }
 
 /** J4: структурное резюме старого tool-результата. */
-export async function summarizeTool(toolName: string, content: string): Promise<string> {
+export async function summarizeTool(toolName: string, content: string, signal?: AbortSignal): Promise<string> {
   const prompt = `Summarize this "${toolName}" tool result in one line, KEEPING file paths, line numbers and key facts/errors:\n${content.slice(0, 900)}\n\nOne line only.`
-  try { return (await enqueue(prompt, 'janitor', 100)).trim() } catch { return '' }
+  try { return (await enqueue(prompt, 'janitor', 100, undefined, signal)).trim() } catch { return '' }
 }
 
 export interface CapabilityVerdict {
@@ -169,13 +169,13 @@ export interface CapabilityVerdict {
 
 /** Watcher v2: точный вердикт — какую конкретную возможность вызвать сейчас.
  *  Возвращает helpful=false, если ничего уверенно полезного нет (тогда skip). */
-export async function judgeCapability(context: string, catalog: Array<{ id: string; name: string; desc: string }>): Promise<CapabilityVerdict> {
+export async function judgeCapability(context: string, catalog: Array<{ id: string; name: string; desc: string }>, signal?: AbortSignal): Promise<CapabilityVerdict> {
   const none: CapabilityVerdict = { helpful: false, id: '', action: '', confidence: 0 }
   if (catalog.length === 0) return none
   const list = catalog.map(c => `- ${c.id}: ${c.name} — ${c.desc.slice(0, 80)}`).join('\n')
   const prompt = `You are a capability router for a coding agent. Current situation:\n${context.slice(0, 500)}\n\nAvailable capabilities:\n${list.slice(0, 1800)}\n\nPick the SINGLE capability that would concretely help RIGHT NOW, or none. Answer ONLY JSON:\n{"helpful":true,"id":"<id>","action":"<one concrete instruction>","confidence":0.0-1.0}\nIf nothing clearly helps, {"helpful":false,"id":"","action":"","confidence":0}. Be strict: only high-confidence, actionable matches.`
   try {
-    const text = await enqueue(prompt, 'watcher', 150)
+    const text = await enqueue(prompt, 'watcher', 150, undefined, signal)
     const m = text.match(/\{[\s\S]*\}/)
     if (!m) return none
     const p = JSON.parse(m[0]) as Partial<CapabilityVerdict>

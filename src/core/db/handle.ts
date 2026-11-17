@@ -1,5 +1,4 @@
 import Database from 'better-sqlite3'
-import { app } from 'electron'
 import { join } from 'path'
 import { mkdirSync } from 'fs'
 import { runMigrations } from './migrations'
@@ -25,8 +24,7 @@ export function getDB(): Database.Database {
  *
  * После открытия соединения запускает миграции (runMigrations).
  */
-export function initDB(): void {
-  const userData = app.getPath('userData')
+export function initDB(userData: string): void {
   mkdirSync(userData, { recursive: true })
   const dbPath = join(userData, 'syntee.db')
 

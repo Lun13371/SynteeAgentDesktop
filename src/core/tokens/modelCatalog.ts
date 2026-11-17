@@ -383,8 +383,8 @@ export async function refreshCatalog(cachePath?: string, force?: boolean): Promi
         // hasPricing — models.dev отдал cost-поле (даже нулевое → модель
         // бесплатна). Без него «бесплатно» и «цена неизвестна» неотличимы.
         const hasPricing = model.cost != null && (model.cost.input != null || model.cost.output != null)
-        const inputCents = model.cost?.input != null ? Math.round(model.cost.input * 100) : 0
-        const outputCents = model.cost?.output != null ? Math.round(model.cost.output * 100) : 0
+        const inputCents = model.cost?.input != null ? model.cost.input * 100 : 0
+        const outputCents = model.cost?.output != null ? model.cost.output * 100 : 0
         // Пропускаем записи вообще без полезных данных (нет ни лимитов, ни цен).
         if (ctx === 0 && !hasPricing) continue
 
@@ -396,8 +396,8 @@ export async function refreshCatalog(cachePath?: string, force?: boolean): Promi
           inputPricePerM: inputCents,
           outputPricePerM: outputCents,
           hasPricing,
-          cacheReadPerM: model.cost?.cache_read != null ? Math.round(model.cost.cache_read * 100) : undefined,
-          cacheWritePerM: model.cost?.cache_write != null ? Math.round(model.cost.cache_write * 100) : undefined,
+          cacheReadPerM: model.cost?.cache_read != null ? model.cost.cache_read * 100 : undefined,
+          cacheWritePerM: model.cost?.cache_write != null ? model.cost.cache_write * 100 : undefined,
           displayName: model.name,
           description: model.description,
           capabilities: caps,

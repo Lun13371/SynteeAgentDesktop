@@ -132,6 +132,8 @@ function bakeEnvPlugin(): Plugin {
 export default defineConfig({
   main: {
     define: { __APP_VERSION__: JSON.stringify(pkg.version) },
+    // Lower class fields before the bytecode plugin transforms arrow functions.
+    esbuild: protect ? { target: 'es2021' } : undefined,
     plugins: [externalizeDepsPlugin(), bakeEnvPlugin(), ...(protect ? [bytecodePlugin({ removeBundleJS: true })] : [])],
     build: {
       rollupOptions: {

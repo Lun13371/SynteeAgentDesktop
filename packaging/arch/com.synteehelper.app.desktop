@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Syntee Helper
+Exec=/usr/bin/syntee-helper %U
+Icon=com.synteehelper.app
+Terminal=false
+StartupWMClass=com.synteehelper.app
+Categories=Development;
+MimeType=x-scheme-handler/synteehelper;

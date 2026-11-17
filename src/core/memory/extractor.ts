@@ -109,7 +109,7 @@ export async function extractFactsFromTurn(
   }
 
   // LLM-вызов по паттерну summarizeWithLLM (annotator.ts:92)
-  const aiClient = new AIClient(store)
+  const aiClient = new AIClient(store, { chatId: params.chatId, source: 'memory' })
   const prompt = buildExtractPrompt(params.userMessage, params.assistantMessage)
 
   let raw = ''

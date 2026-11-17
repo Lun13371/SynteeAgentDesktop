@@ -65,9 +65,49 @@ $ npm run build:win
 # For macOS
 $ npm run build:mac
 
-# For Linux
+# For Linux x86_64 (unpacked Electron app in dist/linux-unpacked)
 $ npm run build:linux
 ```
+
+### Arch Linux x86_64 package
+
+From the checkout, install the dependencies listed in `packaging/arch/PKGBUILD`
+and `base-devel`. Build as a regular user on Arch Linux.
+
+```bash
+npm ci
+mkdir -p dist
+(cd packaging/arch && PKGDEST="$PWD/../../dist" makepkg)
+sudo pacman -U dist/syntee-helper-1.1.6-1-x86_64.pkg.tar.zst
+```
+
+The Linux port review, measured memory usage and remaining runtime checks are in
+[docs/arch-review.md](docs/arch-review.md).
+The 1.1.6 mini-agent, context and cost accounting fixes are described in
+[docs/mini-agent-review.md](docs/mini-agent-review.md).
+
+### Windows x64
+
+Download and run the `Syntee-Helper-Setup-<version>-x64.exe` asset from a
+`windows-v<version>` release in the [GitHub fork](https://github.com/zaxdevv/SynteeAgentDesktop/releases).
+For future updates, open **Настройки → Обновления → Проверить обновления**.
+Click **Скачать**, then run the downloaded installer over the existing
+standalone installation. Chats and settings use `%APPDATA%\SynteeHelper`.
+The standalone install has its own Start menu entry, **Syntee Helper Desktop**.
+Exit any running Syntee instance before installing.
+
+To build the standalone installer on Windows, install Node.js, Rust with the
+MSVC toolchain and Visual Studio C++ Build Tools, then run:
+
+```powershell
+npm ci --ignore-scripts
+npm run build:win:installer
+```
+
+Publish the generated installer from `dist/windows` using a
+`windows-v<version>` tag matching the version in `package.json`. The app only
+discovers Windows releases with the matching installer asset. The launcher
+ZIP remains available through `npm run build:win` and uses the Syntee Gateway.
 
 ## Examples
 

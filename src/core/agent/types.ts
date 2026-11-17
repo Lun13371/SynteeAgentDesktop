@@ -110,7 +110,7 @@ export interface AgentCallbacks {
    * Вызов MCP-тула (round-trip в main-процесс, где живёт McpManager).
    * fullToolName = mcp__serverName__toolName. Возвращает {success, output, error?}.
    */
-  onMcpCall?: (fullToolName: string, args: Record<string, unknown>) => Promise<{ success: boolean; output: string; error?: string }>
+  onMcpCall?: (fullToolName: string, args: Record<string, unknown>, signal?: AbortSignal) => Promise<{ success: boolean; output: string; error?: string }>
   /**
    * Проверка, нужно ли подтверждение для MCP-тула. Если вернёт true —
    * агент запросит одобрение через onConfirm (как для опасных тулов).

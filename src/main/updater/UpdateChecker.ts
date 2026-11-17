@@ -12,14 +12,16 @@
  * app ready so a cold start isn't blocked). A manual check is exposed via the
  * 'updates:check' IPC handler.
  */
-import { app } from 'electron'
+import { app, shell } from 'electron'
 import Store from 'electron-store'
 import type { QuitAndInstallResult, UpdateManifest, UpdateState, UpdateStatus } from '../../shared/types'
-import { checkUrl } from './config'
+import { checkUrl, usesWindowsInstallerUpdates } from './config'
 import { downloadUpdater, findUpdater, healLauncherJson, launchUpdater } from './LauncherBridge'
+import { fetchWindowsInstallerReleases, findWindowsInstallerUpdate, windowsInstallerUrl } from './windowsInstallerFeed'
 
 const POLL_INTERVAL_MS = 30 * 60 * 1000 // 30 minutes
 const FIRST_CHECK_DELAY_MS = 10_000
+const PACKAGE_UPDATE_MESSAGE = 'Установите новую версию пакета Syntee Helper через менеджер пакетов.'
 
 let state: UpdateState = {
   status: 'idle',
@@ -35,7 +37,7 @@ let pollTimer: NodeJS.Timeout | null = null
 
 function getStore(): Store<Record<string, unknown>> {
   if (!store) {
-    store = new Store<Record<string, unknown>>({ name: 'updates', cwd: undefined })
+    store = new Store<Record<string, unknown>>({ name: usesWindowsInstallerUpdates() ? 'windows-updates' : 'updates', cwd: undefined })
     const saved = store.get('dismissedUpdates')
     if (Array.isArray(saved)) state.dismissed = saved as string[]
   }
@@ -72,34 +74,38 @@ export function subscribeUpdates(fn: (s: UpdateState) => void): () => void {
   }
 }
 
+async function fetchUpdate(current: string): Promise<UpdateManifest | null> {
+  if (usesWindowsInstallerUpdates()) {
+    return findWindowsInstallerUpdate(await fetchWindowsInstallerReleases(), current)
+  }
+  const response = await fetch(checkUrl('stable', current), { signal: AbortSignal.timeout(10_000) })
+  if (response.status === 204) return null
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  return await response.json() as UpdateManifest
+}
+
 /**
  * Query the gateway for an update. Updates `state` and notifies listeners.
  * Safe to call manually (from the settings "Check now" button) — it sets
  * status='checking' for UI feedback.
  */
 export async function checkForUpdates(): Promise<UpdateState> {
+  if (process.platform !== 'win32') {
+    setState({
+      status: 'error',
+      available: null,
+      error: PACKAGE_UPDATE_MESSAGE,
+    })
+    return state
+  }
   setState({ status: 'checking', error: null })
   try {
-    const current = app.getVersion()
-    const channel = 'stable'
-    const url = checkUrl(channel, current)
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), 10000)
-    let res: Response
-    try {
-      res = await fetch(url, { signal: controller.signal })
-    } finally {
-      clearTimeout(timer)
-    }
-    if (res.status === 204) {
-      // Up to date.
+    getStore()
+    const manifest = await fetchUpdate(app.getVersion())
+    if (!manifest) {
       setState({ status: 'no-update', available: null, lastCheckedAt: Date.now() })
       return state
     }
-    if (!res.ok) {
-      throw new Error(`HTTP ${res.status}`)
-    }
-    const manifest = (await res.json()) as UpdateManifest
     // If the user dismissed this version, don't re-show the badge — but keep
     // it in state so the settings page can still see it.
     const dismissed = state.dismissed.includes(manifest.version)
@@ -159,6 +165,20 @@ export function dismissUpdate(version: string): void {
  * the user with nothing.
  */
 export async function quitAndInstall(): Promise<QuitAndInstallResult> {
+  if (process.platform !== 'win32') {
+    return { ok: false, error: PACKAGE_UPDATE_MESSAGE }
+  }
+  if (usesWindowsInstallerUpdates()) {
+    const version = state.available?.delivery === 'installer' ? state.available.version : undefined
+    const url = version ? windowsInstallerUrl(version) : null
+    if (!url) return { ok: false, error: 'Сначала проверьте наличие обновления' }
+    try {
+      await shell.openExternal(url)
+      return { ok: true }
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  }
   // Point launcher.json at the current server first: even an outdated
   // updater binary obeys the JSON over its baked-in default.
   healLauncherJson()
@@ -190,6 +210,8 @@ export async function quitAndInstall(): Promise<QuitAndInstallResult> {
  * Start the periodic poll. Called from src/main/index.ts after app.whenReady.
  */
 export function startUpdatePolling(): void {
+  // Gateway manifests refer to the Windows ZIP and may require a forced update.
+  if (process.platform !== 'win32') return
   // First check after a short delay so the app window is up before we hit
   // the network (cold start stays snappy).
   setTimeout(() => {

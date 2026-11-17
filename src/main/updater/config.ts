@@ -11,6 +11,14 @@
  * hardcode the path here so callers can just use checkUrl/changelogUrl/etc.
  */
 
+import { existsSync } from 'fs'
+import { join } from 'path'
+
+export function usesWindowsInstallerUpdates(): boolean {
+  return process.platform === 'win32' && !!process.resourcesPath
+    && existsSync(join(process.resourcesPath, 'windows-installer-channel'))
+}
+
 const BASE =
   (process.env.SYNTEE_UPDATE_URL ?? process.env.SYNTEE_API_URL ?? 'http://localhost:8000').replace(/\/$/, '')
 

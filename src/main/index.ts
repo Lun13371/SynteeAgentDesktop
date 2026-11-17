@@ -8,6 +8,7 @@ import { join, relative, isAbsolute } from 'path'
 // выполниться ДО импорта tokenStore/gatewayClient (они создают Store при
 // импорте). Поэтому setPath — первое что выполняется в модуле.
 app.setName('SynteeHelper')
+if (process.platform === 'linux') app.setDesktopName('com.synteehelper.app.desktop')
 // SYNTEE_USER_DATA_DIR — изоляция профиля для тестов запусков (QA/CI):
 // позволяет поднять второй инстанс с отдельным userData, не конфликтуя
 // с singleton-lock и данными живого инстанса юзера.
@@ -44,6 +45,7 @@ import { TrayManager } from './tray/TrayManager'
 import { HotkeyManager } from './hotkeys/HotkeyManager'
 import { registerAllIPC } from './ipc'
 import { initAssistants } from './assistants/bridge'
+import { localModels } from './localModels/LocalModelManager'
 import { registerChatIPC, flushAllActiveRuns } from './ipc/chat.ipc'
 import { registerOverlayIPC } from './ipc/overlay.ipc'
 import { registerVoiceIPC } from './ipc/voice.ipc'
@@ -88,6 +90,7 @@ import { initActivityManager } from './managers/ActivityManager'
 import { initGitSyncManager, registerGitSyncIPC } from './managers/GitSyncManager'
 import { startUpdatePolling, stopUpdatePolling } from './updater/UpdateChecker'
 import { ensureUpdater } from './updater/LauncherBridge'
+import { usesWindowsInstallerUpdates } from './updater/config'
 import { initModelCatalog, refreshCatalog } from '../core/tokens/modelCatalog'
 import { initSkillManager } from '../core/skills/skillManager'
 import { initCommandManager } from '../core/commands/commandManager'
@@ -288,7 +291,7 @@ app.whenReady().then(async () => {
   configurePerformanceDiagnostics(join(app.getPath('userData'), 'logs'))
   const stopPerformanceSampling = startPerformanceSampling()
   app.once('before-quit', stopPerformanceSampling)
-  electronApp.setAppUserModelId('com.synteehelper.app')
+  electronApp.setAppUserModelId(usesWindowsInstallerUpdates() ? 'com.synteehelper.desktop' : 'com.synteehelper.app')
 
   // ── syntee-plugin:// — файлы UI плагинов (iframe-панели) ──
   protocol.handle('syntee-plugin', handlePluginProtocol)
@@ -343,7 +346,7 @@ app.whenReady().then(async () => {
   setInterval(() => { refreshCatalog(catalogCachePath).catch(() => {}) }, 86_400_000)
 
   // Skills-менеджер (загрузка .md-скиллов, состояние вкл/выкл, scope).
-  initSkillManager(store)
+  initSkillManager(store, app.getPath('userData'))
 
   // Commands-менеджер (загрузка .md-кастомных slash-команд).
   initCommandManager()
@@ -628,11 +631,13 @@ process.on('uncaughtException', (err) => {
 })
 
 app.on('before-quit', () => {
+  mainWindow?.allowCloseOnQuit()
   // Флешим все активные стримящиеся ответы в БД — ПЕРВЫМ, до любых cleanup,
   // чтобы частичный ответ ассистента не потерялся при резком выходе.
   try { flushAllActiveRuns() } catch { /* ok — best-effort */ }
   mainWindow?.flushBounds()
   ptyManager.killAll()
+  localModels.shutdown()
   // Останавливаем опрос обновлений и Git Sync Monitor.
   stopUpdatePolling()
   gitSyncManager?.stop()

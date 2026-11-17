@@ -7,6 +7,9 @@
 .changelog-settings-toolbar {
   display: flex;
   justify-content: flex-end;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .changelog-settings-check-btn {

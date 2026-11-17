@@ -4,7 +4,7 @@ import { JANITOR_MARKER, type JanitorAction, type JanitorActionKind, type Janito
 
 // ── Классификация тулов ──────────────────────────────────────────────────────
 /** Тулы, чьи результаты — структурное состояние для агента: не трогаем. */
-export const PINNED_TOOLS = new Set(['update_todo', 'update_working_memory', 'ask_user', 'request_access'])
+export const PINNED_TOOLS = new Set(['update_todo', 'update_working_memory', 'ask_user', 'request_access', 'recall_context'])
 /** Явные мутаторы файла: правка после чтения делает чтение устаревшим. */
 export const FILE_MUTATORS = new Set(['edit_file', 'write_file'])
 /** Недетерминированное влияние на диск: между дедуплицируемыми вызовами
@@ -15,6 +15,8 @@ export const READ_TOOLS = new Set(['read_file', 'read_files'])
 export const STALE_MIN_CHARS = 1200   // короче — резюме не дешевле
 export const STALE_MIN_SAVED = 150    // замена должна окупиться
 export const MIN_STUB_CHARS = 800     // дедуп/перечитывание коротких результатов — шум
+export const MAX_JANITOR_ARCHIVE_ENTRIES = 50
+export const MAX_JANITOR_ARCHIVE_CHARS = 4_000_000
 
 // ── Разбор результатов чтения ────────────────────────────────────────────────
 export interface ReadRange {
@@ -32,7 +34,9 @@ export interface ParsedReadSection {
 }
 
 export function normalizePath(p: string): string {
-  return String(p).toLowerCase().replace(/\//g, '\\')
+  const path = String(p)
+  // POSIX paths are case sensitive. Only Windows paths share a folded key.
+  return /^(?:[a-z]:[\\/]|\\\\)/i.test(path) ? path.toLowerCase().replace(/\//g, '\\') : path
 }
 
 /**
@@ -60,15 +64,20 @@ export function parseReadSections(toolName: string, content: string): ParsedRead
   }
   if (toolName === 'read_files') {
     const sections: ParsedReadSection[] = []
-    const headerRe = /=== (.+?) \| (\d+) lines? ===/g
+    const headerRe = /^=== (.+?) \| (\d+) lines? ===\r?$/gm
     const matches = [...content.matchAll(headerRe)]
-    for (const m of matches) {
+    // Mixed batches also contain error/binary/not-found sections without a
+    // line count. Their diagnostics cannot be replaced by later file reads.
+    // Decline range-based collapse unless every section was understood.
+    if ([...content.matchAll(/^=== .+ ===\r?$/gm)].length !== matches.length) return []
+    for (let index = 0; index < matches.length; index++) {
+      const m = matches[index]
       const headerEnd = (m.index ?? 0) + m[0].length
-      const body = content.slice(headerEnd)
+      const body = content.slice(headerEnd, matches[index + 1]?.index ?? content.length)
       const total = Number(m[2])
       const shown = body.match(/\.\.\.\[shown (\d+) of (\d+) lines/)
       const numbered = body.match(/^\d+\|/gm)?.length ?? 0
-      const to = shown ? Number(shown[1]) : (numbered || Math.min(total, 250))
+      const to = Math.min(total, shown ? Number(shown[1]) : (numbered || Math.min(total, 250)))
       sections.push({ path: normalizePath(m[1]), displayPath: m[1], range: { from: 1, to, total } })
     }
     return sections
@@ -102,7 +111,7 @@ export function stableStringify(v: unknown): string {
 
 function headTail(body: string, headLen = 160, tailLen = 80): string {
   const head = body.slice(0, headLen).replace(/\n/g, ' ')
-  const tail = body.length > headLen + tailLen ? ` … ${body.slice(-tailLen).replace(/\n/g, ' ')}` : ''
+  const tail = tailLen > 0 && body.length > headLen + tailLen ? ` … ${body.slice(-tailLen).replace(/\n/g, ' ')}` : ''
   return `${head}${tail}`
 }
 
@@ -204,6 +213,7 @@ export interface JanitorArchiveEntry {
  */
 export class Janitor {
   private archive = new Map<string, JanitorArchiveEntry>()
+  private pendingArchive = new Map<string, JanitorArchiveEntry>()
   private archiveCounter = 0
   private lastScanRound = 0
   private settings: AssistantsSettings
@@ -223,6 +233,10 @@ export class Janitor {
 
   scan(messages: ChatMessage[], currentRound: number, mode: 'light' | 'deep' = 'deep', tailStepsOverride?: number): JanitorReport {
     const start = Date.now()
+    this.pendingArchive.clear()
+    if (!this.settings.enabled || !this.settings.janitorEnabled) {
+      return { actions: [], totalTokensSaved: 0, scannedMessages: messages.length, durationMs: 0 }
+    }
     this.lastScanRound = currentRound
     const total = messages.length
     // tailStepsOverride — emergency-режим economist'а (stage 2): активный хвост
@@ -288,14 +302,22 @@ export class Janitor {
       if (replacements.has(idx)) return
       const content = contentOf(idx)
       let finalText = `${JANITOR_MARKER} ${text}`
+      let archiveEntry: JanitorArchiveEntry | undefined
       if (kind === 'summarize_stale') {
-        const archiveId = `jan-${++this.archiveCounter}-${Date.now()}`
-        this.archive.set(archiveId, { id: archiveId, originalMessages: [{ ...messages[idx] }], summary: text, ts: Date.now() })
+        if (!messages[idx].tool_call_id) return
+        const entries = [...this.archive.values(), ...this.pendingArchive.values()]
+        const existing = entries.find(entry => entry.originalMessages[0]?.tool_call_id === messages[idx].tool_call_id
+          && entry.originalMessages[0]?.content === content)
+        if (!existing && (entries.length >= MAX_JANITOR_ARCHIVE_ENTRIES
+          || entries.reduce((n, entry) => n + this.entryChars(entry), 0) + content.length > MAX_JANITOR_ARCHIVE_CHARS)) return
+        const archiveId = existing?.id ?? `jan-${++this.archiveCounter}-${Date.now()}`
         archiveIdByIndex.set(idx, archiveId)
         finalText += ` [recall:${archiveId}]`
+        archiveEntry = { id: archiveId, originalMessages: [{ ...messages[idx] }], summary: finalText, ts: existing?.ts ?? Date.now() }
       }
       const saved = estimateTokens(content) - estimateTokens(finalText)
       if (saved < STALE_MIN_SAVED) return
+      if (archiveEntry) this.pendingArchive.set(archiveEntry.id, archiveEntry)
       replacements.set(idx, finalText)
       reasons.set(idx, { kind, what, saved })
     }
@@ -322,6 +344,7 @@ export class Janitor {
         const content = contentOf(a.idx)
         if (content.length < MIN_STUB_CHARS) continue
         if (hasMutationBetween(a.idx, arr[k + 1].idx)) continue
+        if (content !== contentOf(arr[k + 1].idx)) continue
         put(a.idx, `Результат вызова ${a.name} с теми же аргументами уже есть ниже по истории (между вызовами мутаций не было) — свёрнуто локальным помощником.`, 'dedup_tool_call', `${a.name}: дубликат аргументов`)
       }
     }
@@ -361,7 +384,7 @@ export class Janitor {
         continue
       }
 
-      if (hasStale) {
+      if (hasStale && decisions.every(d => d.kind !== 'keep')) {
         // B: правки по файлу продолжаются СЕЙЧАС (последняя — в активном хвосте)
         // → чтение и есть живой срез файла, патчить/сжимать нельзя: на его
         // точные строки агент опирается в следующих old_str. Работа с файлом
@@ -386,7 +409,8 @@ export class Janitor {
         const note = unknownAfter(occ.idx)
           ? 'после чтения выполнялись команды — файл мог измениться'
           : 'правок файла после чтения в истории нет, при необходимости перечитай с нужным offset'
-        put(occ.idx, summarizeToolResult('read_file', content, undefined, note), 'summarize_stale', `чтение → резюме (emergency)`)
+        const name = callInfo.get(messages[occ.idx].tool_call_id ?? '')?.name ?? 'read_file'
+        put(occ.idx, summarizeToolResult(name, content, undefined, note), 'summarize_stale', `чтение → резюме (emergency)`)
       }
     }
 
@@ -438,15 +462,31 @@ export class Janitor {
       for (const idx of action.messageIndices) {
         const msg = result[idx]
         if (!msg || msg.role !== 'tool' || typeof msg.content !== 'string') continue
+        if (action.kind === 'summarize_stale' && action.archiveId) {
+          const entry = this.pendingArchive.get(action.archiveId) ?? this.archive.get(action.archiveId)
+          if (!entry || entry.originalMessages[0]?.content !== msg.content) continue
+          this.archive.set(entry.id, entry)
+        }
         const text = action.replacement ?? `${JANITOR_MARKER} ${action.description}`
         result[idx] = { ...msg, content: text, janitorCollapsed: true }
       }
     }
+    this.pendingArchive.clear()
     return result
   }
 
   recall(archiveId: string): ChatMessage[] | null {
     return this.archive.get(archiveId)?.originalMessages ?? null
+  }
+
+  recallPage(archiveId: string, offset = 0, limit = 4000): string | null {
+    const original = this.recall(archiveId)
+    if (!original) return null
+    const text = original.map(message => typeof message.content === 'string' ? message.content : JSON.stringify(message.content)).join('\n')
+    const start = Number.isFinite(offset) ? Math.max(0, Math.floor(offset)) : 0
+    const count = Number.isFinite(limit) ? Math.max(1, Math.min(8000, Math.floor(limit))) : 4000
+    const end = Math.min(text.length, start + count)
+    return `[recall:${archiveId} | chars ${start}-${end} of ${text.length}${end < text.length ? ` | next offset=${end}` : ''}]\n${text.slice(start, end)}`
   }
 
   getArchiveSize(): number {
@@ -463,11 +503,37 @@ export class Janitor {
    *  отводится дальше восстановленных, чтобы новые id не пересекались. */
   hydrateArchive(entries: JanitorArchiveEntry[]): void {
     for (const e of entries ?? []) {
-      if (!e?.id || this.archive.has(e.id)) continue
-      this.archive.set(e.id, e)
+      if (!e?.id || !Array.isArray(e.originalMessages) || typeof e.summary !== 'string' || this.archive.has(e.id)) continue
+      if (this.archive.size >= MAX_JANITOR_ARCHIVE_ENTRIES
+        || [...this.archive.values()].reduce((n, entry) => n + this.entryChars(entry), 0) + this.entryChars(e) > MAX_JANITOR_ARCHIVE_CHARS) continue
+      const summary = e.summary.includes(JANITOR_MARKER) ? e.summary : `${JANITOR_MARKER} ${e.summary} [recall:${e.id}]`
+      this.archive.set(e.id, { ...e, summary })
       const m = /^jan-(\d+)-/.exec(e.id)
       if (m) this.archiveCounter = Math.max(this.archiveCounter, Number(m[1]))
     }
+  }
+
+  /** Reapply committed summaries when a new worker reconstructs raw DB history. */
+  restoreSummaries(messages: ChatMessage[]): void {
+    for (const entry of this.archive.values()) {
+      const original = entry.originalMessages[0]
+      if (!original?.tool_call_id) continue
+      for (const message of messages) {
+        if (message.role === 'tool' && message.tool_call_id === original.tool_call_id && message.content === original.content) {
+          message.content = entry.summary
+          message.janitorCollapsed = true
+        }
+      }
+    }
+  }
+
+  updateSummary(archiveId: string, summary: string): void {
+    const entry = this.archive.get(archiveId)
+    if (entry && estimateTokens(summary) <= estimateTokens(entry.summary)) entry.summary = summary
+  }
+
+  private entryChars(entry: JanitorArchiveEntry): number {
+    return entry.originalMessages.reduce((n, message) => n + (typeof message?.content === 'string' ? message.content.length : JSON.stringify(message?.content ?? '').length), 0)
   }
 
   pruneArchive(maxAgeMs: number): void {

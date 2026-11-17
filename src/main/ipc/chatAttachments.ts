@@ -12,6 +12,7 @@ import { normalizeImageForVision } from '../services/imageDownscale'
 import { modelSupportsVisionByHeuristic } from '../../core/ai/visionSupport'
 import { getMcpManager } from '../../core/mcp/McpManager'
 import type { Attachment, AttachmentProcessingResult } from '../../shared/types'
+import { previewAttachmentText } from '../../core/context/attachmentText'
 
 
   /**
@@ -35,6 +36,7 @@ export async function processAttachmentsAndStream(store: Store,
     msgId: string,
     content: string,
     attachments: Attachment[],
+    contextWindow = 200_000,
   ): Promise<{ content: string; result: AttachmentProcessingResult | null; imageParts: Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string; detail?: string } }> }> {
     if (attachments.length === 0) return { content, result: null, imageParts: [] }
 
@@ -49,6 +51,7 @@ export async function processAttachmentsAndStream(store: Store,
     const startedAt = Date.now()
 
     const textBlocks: string[] = []
+    let textBudget = Math.min(16_000, Math.max(256, Math.floor(contextWindow * 0.08)))
     const processedFiles: Array<{
       name: string
       kind: string
@@ -250,14 +253,23 @@ export async function processAttachmentsAndStream(store: Store,
           // Текстовый или бинарный файл
           const mime = att.mime || ''
           if (isTextMime(mime) && st.size <= 5 * 1024 * 1024) {
+            if (textBudget < 256) {
+              textBlocks.push(`[Файл: ${att.name}; путь: ${att.path}. Лимит превью вложений исчерпан. Читай нужные участки через read_file/search_code.]`)
+              processedFiles.push({ name: att.name, kind: att.kind, status: 'binary_path', size: st.size, detail: 'Лимит превью — полный файл доступен по пути' })
+              continue
+            }
             const fileContent = await fsReadFile(att.path, 'utf-8')
-            textBlocks.push(`─── Файл: ${att.relPath || att.name} ───\n${fileContent}\n─── Конец файла: ${att.relPath || att.name} ───`)
+            const preview = await previewAttachmentText(fileContent, Math.min(8_000, textBudget) - 64)
+            textBudget -= preview.tokens + 64
+            textBlocks.push(`─── Файл: ${att.relPath || att.name}; полный путь: ${att.path} ───\n${preview.text}\n─── Конец ${preview.truncated ? 'превью' : 'файла'}: ${att.relPath || att.name} ───`)
             processedFiles.push({
               name: att.name,
               kind: att.kind,
               status: 'text_inlined',
               size: st.size,
-              detail: `${(st.size / 1024).toFixed(1)} KB — содержимое инлайнено`,
+              detail: preview.truncated
+                ? `${(st.size / 1024).toFixed(1)} KB — превью, ~${preview.tokens} токенов; полный файл доступен по пути`
+                : `${(st.size / 1024).toFixed(1)} KB — содержимое инлайнено`,
             })
           } else {
             textBlocks.push(`[Прикреплён файл: ${att.name}] (${(st.size / 1024).toFixed(1)} KB, путь: ${att.path})`)

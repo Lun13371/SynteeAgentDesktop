@@ -215,43 +215,6 @@ export function getToolSchemas(options: Partial<ToolSettings> & {
     }
   }
 
-  // Code mode: описание должно перечислять тулы, реально доступные внутри
-  // скрипта. Без этого модель не знает, что можно вызвать (в описании было
-  // абстрактное «current allowed tools»), не уверена, что скрипт не упадёт на
-  // первом же вызове, и предпочитает привычный одиночный тул.
-  // Длинные семейства (browser_*, mcp__*, plugin__*) сворачиваем в группы —
-  // иначе в browser-режиме описание раздувается на ~550 токенов на каждый запрос.
-  const codeIndex = schemas.findIndex(s => (s as { function: { name: string } }).function.name === 'execute_code')
-  if (codeIndex >= 0) {
-    const all = schemas
-      .map(s => (s as { function: { name: string } }).function.name)
-      .filter(name => name !== 'execute_code')
-    const families = [
-      ['browser_', 'browser_*'],
-      ['mcp__', 'mcp__*'],
-      ['plugin__', 'plugin__*'],
-    ] as const
-    const listed: string[] = []
-    for (const name of all) {
-      const family = families.find(([prefix]) => name.startsWith(prefix))
-      if (family) {
-        const label = family[1]
-        const count = all.filter(n => n.startsWith(family[0])).length
-        if (!listed.includes(`${label} (${count})`)) listed.push(`${label} (${count})`)
-      } else {
-        listed.push(name)
-      }
-    }
-    const base = schemas[codeIndex] as unknown as { function: { name: string; description?: string; parameters?: unknown } }
-    schemas[codeIndex] = {
-      ...base,
-      function: {
-        ...base.function,
-        description: `${base.function.description} Tools available inside this run: ${listed.join(', ')}.`,
-      },
-    } as unknown as (typeof schemas)[number]
-  }
-
   return schemas
 }
 

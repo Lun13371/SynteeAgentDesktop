@@ -40,16 +40,19 @@ import { getGitSyncManager } from '../managers/GitSyncManager'
 import { agentManager } from '../managers/AgentManager'
 import { attachAssistants, onAgentEvent, onAssistantEvent, onRunDone, onJanitorAction, getAssistantsSettings } from '../assistants/bridge'
 import { attachBrowserWorkerBroker, disposeBrowserWorkerBroker } from '../../core/agent/browserWorkerBroker'
+import { attachMcpWorkerBroker } from '../../core/mcp/mcpWorkerBroker'
 import { compressStoredMessages } from '../../core/context/historyCompressor'
 import {
   applyRollingWindowAsync, getContextSettings, estimateTokens, estimateMessagesTokensAsync,
-  getModelContextWindow, type ChatMessage,
+  getModelContextWindow,
 } from '../../core/context/contextManager'
-import { buildSnapshotFromEstimate, getSessionCost } from '../../core/tokens/usageTracker'
+import { computeRequestContextSnapshot } from '../../core/tokens/usageTracker'
+import { withAIUsageContext, type AIRequestUsage } from '../../core/ai/requestUsage'
+import { acceptAIUsage, getChatCost } from '../services/usageLedger'
 import { getGatewayModelsCache } from '../../core/tokens/gatewayModelsCache'
 import { getFileCacheSnapshot, mergeFileCache } from '../../core/context/fileReadCache'
 import { invalidateHistoryCache, getMessagesAfterLatestCompactCached } from './historyCache'
-import { messageToContextMessages, formatReplyQuote } from './chatContextHelpers'
+import { buildContextHistory, formatReplyQuote } from './chatContextHelpers'
 import { slimMessageForUI } from './slimMessages'
 import { log } from '../../core/logger'
 import { perfMark, perfEvent, perfPhaseAsync } from '../../core/performanceDiagnostics'
@@ -103,7 +106,7 @@ const pendingAttachmentPaths = new Map<string, Map<string, number>>()
    *  store / mainWindow / getSystemPrompt — из замыкания registerChatIPC.
    */
 
-export async function runChatSend(
+async function runChatSendScoped(
     store: Store,
     params: {
       chatId: string
@@ -315,9 +318,7 @@ export async function runChatSend(
       ? getLiveMessages(history)
       : filterContextHistory(params.chatId, getMessagesAfterLatestCompactCached(params.chatId, userMsg.id), userMsg.id)
     perfEvent('chat.history.load', perfMark() - historyStarted)
-    const rawHistory: ChatMessage[] = liveMessages.flatMap(m =>
-      messageToContextMessages(m).map(cm => ({ ...cm, messageId: m.id })),
-    )
+    const rawHistory = buildContextHistory(liveMessages)
     // §secrets — маскируем tool-результаты в истории: шаги в БД хранят output
     // тулов, и до фикса onStep-маскировки туда попадали сырые значения секретов
     // → история «возвращала» их модели на следующих ходах. Роль 'tool' —
@@ -505,39 +506,6 @@ export async function runChatSend(
       ? undefined
       : await getSystemPrompt(store, dbChatId, params.incognito, params.oneShotSkill, undefined,
         !!params.imageMode || params.slashCommand?.name === 'image' || getChatModes(dbChatId).imageMode)
-    if (ctxSettings.tokenCounterEnabled) {
-      const contextWindow = getModelContextWindow(storeData)
-      const sysPrompt = sendSystemPrompt
-      const currentMsgTokens = estimateTokens(params.content)
-      const snapshot = buildSnapshotFromEstimate(processedHistory, contextWindow, {
-        systemPrompt: sysPrompt,
-        currentMsgTokens,
-        includeToolSchemas: true,
-      })
-      const sess = getSessionCost(params.chatId)
-      // Если сжатие произошло в этом запросе — эмитим как 'real', чтобы
-      // рендерер принял значение поверх устаревшего lastRealRef (до-сжатия).
-      // tiktoken-оценка пост-сжатого processedHistory достаточно точна для
-      // индикатора; следующий ответ модели перезапишет её честным real.
-      const compactionSource: 'real' | 'estimate' = contextCompressed ? 'real' : 'estimate'
-      win?.webContents.send(IPC_EVENTS.CONTEXT_USAGE, {
-        chatId: params.chatId,
-        pct: snapshot.pct,
-        estimated: snapshot.estimated,
-        limit: snapshot.limit,
-        status: snapshot.status,
-        source: compactionSource,
-        compressed: contextCompressed,
-        breakdown: snapshot.breakdown,
-        sessionCostCents: sess?.totalCents ?? null,
-        sessionRequests: sess?.requests ?? 0,
-        historyMessages: history.length,
-        toolCallsCount: history.reduce((sum, msg) => {
-          const steps = msg.toolSteps as Array<{ type: string }> | undefined
-          return sum + (steps?.filter(s => s.type === 'tool_call').length ?? 0)
-        }, 0),
-      })
-    }
 
     // Request-scoped состояние этого запуска. Каждый chat:send имеет свой
     // собственный экземпляр — буферы не пересекаются между запусками.
@@ -933,10 +901,10 @@ export async function runChatSend(
     let mcpTools: Array<{ name: string; shortName: string; description: string; inputSchema: Record<string, unknown>; serverId: string; serverName: string }> = []
     const mcpApprovalMap: Record<string, boolean> = {}
     const isIncognitoRun = !!params.incognito
+    let mcpProjectId: string | undefined
     try {
       const mgr = getMcpManager()
       // projectId для scope-фильтрации MCP-серверов
-      let mcpProjectId: string | undefined
       if (chatWorkdir) {
         const found = getAllProjects().find(p => p.workdir === chatWorkdir)
         mcpProjectId = found?.id
@@ -947,10 +915,12 @@ export async function runChatSend(
         isIncognito: isIncognitoRun,
       })
       // Approval map: для каждого активного тула — требует ли подтверждение.
-      const configs = mgr.getAllServers({ projectWorkdir: chatWorkdir, projectId: mcpProjectId })
-      for (const tool of mcpTools) {
-        const config = configs.find(c => c.id === tool.serverId)
-        mcpApprovalMap[tool.name] = config ? mgr.requiresApproval(config, tool.name) : true
+      if (mcpTools.length) {
+        const configs = new Map(mgr.getAllServers({ projectWorkdir: chatWorkdir, projectId: mcpProjectId }).map(c => [c.id, c]))
+        for (const tool of mcpTools) {
+          const config = configs.get(tool.serverId)
+          mcpApprovalMap[tool.name] = config ? mgr.requiresApproval(config, tool.name) : true
+        }
       }
     } catch (e) {
       // MCP недоступен — работаем без него, чат не должен падать из-за этого.
@@ -1050,10 +1020,18 @@ export async function runChatSend(
       // BrowserManager owns action gating and live access revocation.
       return browserManager.execute(params.chatId, { ...payload, action: String(payload.action ?? '') } as Parameters<typeof browserManager.execute>[1], signal)
     })
+    const mcpServersByTool = new Map(mcpTools.map(tool => [tool.name, tool.serverId]))
+    attachMcpWorkerBroker(worker, async (toolName, args, signal) => {
+      const serverId = mcpServersByTool.get(toolName)
+      if (!serverId || run.doneSent) return { success: false, output: '', error: 'MCP-инструмент недоступен в этом запуске' }
+      return getMcpManager().callToolByName(toolName, args, {
+        serverId, projectWorkdir: chatWorkdir, projectId: mcpProjectId, signal,
+      })
+    })
     run.worker = worker
     activeRuns.set(params.chatId, run)
     attachAssistants(params.chatId, worker, { projectWorkdir: chatWorkdir, projectId: chatProjectId })
-    void onAgentEvent(params.chatId, { kind: 'task_start', text: params.message?.slice(0, 300) ?? '' })
+    void onAgentEvent(params.chatId, { kind: 'task_start', text: params.content.slice(0, 300) })
     updateForegroundBusy()
 
     // Plugins: хук chat:message — fire-and-forget, не блокирует чат.
@@ -1159,7 +1137,7 @@ export async function runChatSend(
           processAttachmentsAndStream(store,
             // effectiveContent (не params.content): уже может содержать
             // реплай-цитату поверх — инлайн-блоки файлов добавляются после неё.
-            win, params.chatId, assistantMsgId, effectiveContent, params.attachments,
+            win, params.chatId, assistantMsgId, effectiveContent, params.attachments, getModelContextWindow(storeData),
           ),
           new Promise<never>((_, reject) => {
             const t = setTimeout(() => reject(new Error('Таймаут обработки вложений')), ATTACHMENT_TIMEOUT_MS)
@@ -1949,45 +1927,6 @@ export async function runChatSend(
           break
         }
 
-        case 'mcp_call': {
-          ;(async () => {
-            try {
-              const mgr = getMcpManager()
-              const wctx = (() => {
-                try { return getChatWorkdirContext(params.chatId) } catch { return {} as ReturnType<typeof getChatWorkdirContext> }
-              })()
-              const mcpWorkdir = wctx.workdir
-              // projectId из БД (getChatWorkdirContext не возвращает id).
-              let mcpProjectId: string | undefined
-              if (mcpWorkdir) {
-                const found = getAllProjects().find(p => p.workdir === mcpWorkdir)
-                mcpProjectId = found?.id
-              }
-              const result = await mgr.callToolByName(
-                msg.toolName as string,
-                (msg.args as Record<string, unknown>) ?? {},
-                { projectWorkdir: mcpWorkdir, projectId: mcpProjectId },
-              )
-              worker.postMessage({
-                type: 'mcp_call_reply',
-                replyId: msg.replyId,
-                success: result.success,
-                output: result.output,
-                error: result.error,
-              })
-            } catch (e) {
-              worker.postMessage({
-                type: 'mcp_call_reply',
-                replyId: msg.replyId,
-                success: false,
-                output: '',
-                error: (e as Error).message,
-              })
-            }
-          })()
-          break
-        }
-
         case 'plugin_call': {
           ;(async () => {
             try {
@@ -2324,6 +2263,10 @@ export async function runChatSend(
           // Handled by the scoped browser broker attached to this worker.
           break
 
+        case 'request_usage':
+          acceptAIUsage({ ...(msg.event as AIRequestUsage), chatId: params.chatId })
+          break
+
         case 'context_usage':
           // Сохраняем последний real usage в БД — переживает перезапуск.
           // context:calculate читает его, чтобы показывать точный контекст
@@ -2349,20 +2292,19 @@ export async function runChatSend(
             }
           }
           win?.webContents.send(IPC_EVENTS.CONTEXT_USAGE, {
-            chatId: params.chatId,
             pct: msg.pct,
             estimated: msg.estimated,
             limit: msg.limit,
             status: msg.status,
             source: msg.source ?? 'estimate',
+            scope: msg.scope,
             compressed: contextCompressed,
             breakdown: msg.breakdown,
             pricing: msg.pricing ?? null,
             estimatedCostCents: msg.estimatedCostCents ?? null,
             providerId: msg.providerId,
             modelId: msg.modelId,
-            sessionCostCents: msg.sessionCostCents ?? null,
-            sessionRequests: msg.sessionRequests ?? 0,
+            ...getChatCost(params.chatId),
             historyMessages: history.length,
             toolCallsCount: history.reduce((sum, m) => {
               const steps = m.toolSteps as Array<{ type: string }> | undefined
@@ -2388,7 +2330,7 @@ export async function runChatSend(
                 if (typeof skill === 'string' && skill) invokedSkills.push(skill)
               }
             }
-            void onRunDone(params.chatId, String((msg as { answer?: unknown; content?: unknown }).answer ?? (msg as { content?: unknown }).content ?? ''), { tools: invokedTools, skills: invokedSkills })
+            void onRunDone(params.chatId, String(msg.fullText ?? run.bufferedText ?? ''), { tools: invokedTools, skills: invokedSkills })
           }
           if (msg.updatedProviders) {
             store.set('providers', msg.updatedProviders)
@@ -2734,6 +2676,21 @@ ${await getSystemPrompt(store, dbChatId, params.incognito, params.oneShotSkill)}
         broadcastGoal(params.chatId, saved)
       }
     })
+    if (ctxSettings.tokenCounterEnabled) {
+      const snapshot = computeRequestContextSnapshot([
+        { role: 'system', content: systemPrompt ?? '' },
+        ...processedHistory,
+        { role: 'user', content: run.imageParts?.length
+          ? [...run.imageParts, { type: 'text', text: effectiveContent }] : effectiveContent },
+      ], getModelContextWindow(storeData), sideToolSchemas)
+      win?.webContents.send(IPC_EVENTS.CONTEXT_USAGE, {
+        ...snapshot,
+        scope: 'request',
+        compressed: contextCompressed,
+        ...getChatCost(params.chatId),
+        historyMessages: processedHistory.length,
+      })
+    }
     worker.postMessage({
       goal: activeGoal,
       chatId: params.chatId,
@@ -2788,6 +2745,10 @@ ${await getSystemPrompt(store, dbChatId, params.incognito, params.oneShotSkill)}
 
   // Регистрируется и как IPC-хендлер, и как programmatic-API (см.
   // sendChatMessageProgrammatic выше): DotManager будит Dot'ов из main.
+export function runChatSend(...args: Parameters<typeof runChatSendScoped>): ReturnType<typeof runChatSendScoped> {
+  return withAIUsageContext({ chatId: args[1].chatId }, () => runChatSendScoped(...args))
+}
+
 export async function chatSendHandler(store: Store, mainWindow: IpcMainWindow, params: {
     chatId: string
     content: string

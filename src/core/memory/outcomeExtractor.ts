@@ -88,7 +88,7 @@ export async function extractOutcomesFromLogs(
   const prompt = `Analyze the AI agent action logs and extract long-term lessons (agent_outcome).\n\n${logsText}\n\nReturn JSON with lessons (or {"outcomes":[]} if there are no lessons).`
 
   // LLM-вызов
-  const aiClient = new AIClient(store)
+  const aiClient = new AIClient(store, { chatId, source: 'memory_outcomes' })
   let raw = ''
   try {
     await aiClient.streamChat(

@@ -1,4 +1,4 @@
-import { getQuickJS } from 'quickjs-emscripten'
+import { getQuickJS, type QuickJSDeferredPromise, type QuickJSHandle } from 'quickjs-emscripten'
 import ts from 'typescript'
 
 export interface CodeToolResult { success: boolean; output: string; error?: string; [key: string]: unknown }
@@ -24,13 +24,16 @@ export interface ExecuteCodeOptions {
   onTrace?: (entry: CodeTraceEntry) => unknown
   artifacts?: ArtifactStore
   timeoutMs?: number
-  /** Absolute wall-clock cap, including time spent waiting for nested tools. */
+  /** Wall-clock budget outside MCP requests. */
   wallTimeoutMs?: number
+  /** Extra wall time available while an MCP request is outstanding. */
+  mcpWaitBudgetMs?: number
   sanitizeTrace?: (value: unknown) => unknown
 }
 export interface ExecuteCodeResult extends CodeToolResult { trace?: CodeTraceEntry[] }
 
 export const CODE_MODE_LIMITS = Object.freeze({ codeChars: 40_000, outputChars: 40_000, bridgeJsonChars: 100_000, toolCalls: 120, parallelCalls: 8, timeoutMs: 30_000, wallTimeoutMs: 120_000, memoryBytes: 48 * 1024 * 1024, traceEntries: 60 })
+const MCP_WAIT_BUDGET_MS = 4 * 60 * 60 * 1000
 const FORBIDDEN = new Set(['execute_code', 'executeCode', 'code_mode', 'codeMode'])
 const errText = (e: unknown): string => e instanceof Error ? e.message : String(e)
 
@@ -81,53 +84,53 @@ export async function executeCode(options: ExecuteCodeOptions): Promise<ExecuteC
   })
   const fatal = (transpiled.diagnostics ?? []).filter(d => d.category === ts.DiagnosticCategory.Error)
   if (fatal.length) return fail(`TypeScript compile error: ${fatal.map(d => ts.flattenDiagnosticMessageText(d.messageText, '\n')).join('; ')}`)
-  // Two independent ceilings: guest CPU time (paused while a host tool is pending)
-  // and an absolute wall-clock cap (never paused), so repeated slow/hung tools
-  // cannot keep one execute_code call alive indefinitely.
-  const startedAt = Date.now()
-  const deadline = startedAt + Math.max(1, options.timeoutMs ?? CODE_MODE_LIMITS.timeoutMs)
-  const wallDeadline = startedAt + Math.max(1, options.wallTimeoutMs ?? CODE_MODE_LIMITS.wallTimeoutMs)
+  const module = await getQuickJS()
+  if (externalSignal?.aborted) return fail('Execution aborted')
+  const now = () => performance.now()
+  const startedAt = now()
+  const guestBudgetMs = Math.max(1, options.timeoutMs ?? CODE_MODE_LIMITS.timeoutMs)
+  const baseWallBudgetMs = Math.max(1, options.wallTimeoutMs ?? CODE_MODE_LIMITS.wallTimeoutMs)
+  const maxMcpWaitMs = options.mcpWaitBudgetMs ?? MCP_WAIT_BUDGET_MS
   const executionController = new AbortController()
-  const forwardAbort = (): void => executionController.abort()
-  if (externalSignal?.aborted) executionController.abort()
-  else externalSignal?.addEventListener('abort', forwardAbort, { once: true })
+  let wake: (() => void) | undefined
+  const forwardAbort = (): void => { executionController.abort(); wake?.() }
+  externalSignal?.addEventListener('abort', forwardAbort, { once: true })
   const signal = executionController.signal
-  const wallTimer = setTimeout(() => executionController.abort(), Math.max(1, wallDeadline - Date.now()))
   const maxCalls = CODE_MODE_LIMITS.toolCalls
   let calls = 0, inFlight = 0
   let active = true
-  // Бюджет времени считает только CPU гостя. Время, проведённое в host-вызовах
-  // (run_command на 30с, fetch_page, суб-агент), не должно убивать скрипт:
-  // раньше один длинный тул внутри скрипта давал «Execution timed out», хотя
-  // сам тул продолжал работать, а его результат выбрасывался.
-  let hostMs = 0
-  let hostSince: number | null = null
-  let hostDepth = 0
-  const hostEnter = (): void => { if (hostDepth++ === 0) hostSince = Date.now() }
-  const hostLeave = (): void => {
-    if (--hostDepth > 0 || hostSince === null) return
-    hostMs += Date.now() - hostSince
-    hostSince = null
-  }
-  const scriptDeadline = (): number => deadline + hostMs + (hostSince === null ? 0 : Date.now() - hostSince)
-  const executionError = (): 'Execution aborted' | 'Execution timed out' | 'Execution exceeded the 120-second wall-clock limit' | null => {
+  let guestDeadline = Infinity
+  let guestTimeLeft = guestBudgetMs
+  let mcpWaitMs = 0
+  let mcpSince = 0
+  let mcpInFlight = 0
+  let bridgeError: string | undefined
+  const wallTimeLeft = (time: number): number => startedAt + baseWallBudgetMs
+    + Math.min(maxMcpWaitMs, mcpWaitMs + (mcpInFlight ? time - mcpSince : 0)) - time
+  const executionError = (): string | undefined => {
     if (externalSignal?.aborted) return 'Execution aborted'
-    if (Date.now() >= wallDeadline) return 'Execution exceeded the 120-second wall-clock limit'
-    if (Date.now() > scriptDeadline()) return 'Execution timed out'
-    return null
+    const time = now()
+    if (wallTimeLeft(time) <= 0) return 'Execution exceeded its wall-clock limit'
+    if (time >= guestDeadline || guestTimeLeft <= 0) return 'Execution timed out'
+    return undefined
   }
-  const deferreds: Array<{ handle: { dispose(): void }; resolve(value?: import('quickjs-emscripten').QuickJSHandle): void; dispose(): void }> = []
-  const pendingTasks: Promise<unknown>[] = []
+  const runGuest = <T>(run: () => T): T => {
+    const start = now()
+    guestDeadline = start + guestTimeLeft
+    try { return run() }
+    finally { guestTimeLeft -= now() - start; guestDeadline = Infinity }
+  }
+  const deferreds = new Set<QuickJSDeferredPromise>()
   const pushTrace = (entry: CodeTraceEntry): void => {
     if (trace.length < CODE_MODE_LIMITS.traceEntries) trace.push(entry)
     try { options.onTrace?.(entry) } catch { /* instrumentation must not break execution */ }
   }
-  const module = await getQuickJS()
   const runtime = module.newRuntime()
   runtime.setMemoryLimit(CODE_MODE_LIMITS.memoryBytes)
   runtime.setMaxStackSize(512 * 1024)
   runtime.setInterruptHandler(() => !!executionError())
   const ctx = runtime.newContext()
+  let promise: QuickJSHandle | undefined
   try {
     const bridge = ctx.newFunction('__bridge', (nameHandle, argsHandle) => {
       const name = ctx.getString(nameHandle)
@@ -141,11 +144,11 @@ export async function executeCode(options: ExecuteCodeOptions): Promise<ExecuteC
       if (!error && artifactOp && !options.artifacts) error = 'Artifact store is not configured'
       if (!error && !artifactOp && (calls >= maxCalls)) error = 'Tool call limit exceeded'
       if (!error && inFlight >= CODE_MODE_LIMITS.parallelCalls) error = 'Parallel tool call limit exceeded'
-      if (error) { const denied = ctx.newPromise(); denied.resolve(ctx.newString(JSON.stringify({ success: false, output: '', error }))); return denied.handle }
+      if (error) return ctx.newString(JSON.stringify({ success: false, output: '', error }))
       if (!artifactOp) calls++
       inFlight++
       const deferred = ctx.newPromise()
-      deferreds.push(deferred)
+      deferreds.add(deferred)
       const settle = (value: CodeToolResult, status: 'success' | 'failure'): void => {
         if (!active) return
         const bounded = { success: !!value.success, output: String(value.output ?? '').slice(0, CODE_MODE_LIMITS.outputChars), ...(value.error ? { error: String(value.error).slice(0, CODE_MODE_LIMITS.outputChars) } : {}) }
@@ -153,7 +156,7 @@ export async function executeCode(options: ExecuteCodeOptions): Promise<ExecuteC
         // Preserve failure details in the UI trace. Many tools return an empty
         // output plus an error field; recording only output made those calls
         // look like successful calls with no content.
-        const traceResult = bounded.output || String(value.error ?? '')
+        const traceResult = bounded.output || bounded.error || ''
         // Дифф правил не входит в текстовый output тула, но именно он — вывод
         // edit_file/write_file. Прокидываем в трейс, иначе карточка правки
         // внутри скрипта оставалась пустой (только плашка файла).
@@ -166,10 +169,14 @@ export async function executeCode(options: ExecuteCodeOptions): Promise<ExecuteC
           ...(traceDiff ? { diff: traceDiff } : {}),
         })
         const text = JSON.stringify(bounded)
-        if (Buffer.byteLength(text, 'utf8') > CODE_MODE_LIMITS.bridgeJsonChars) { deferred.resolve(ctx.newString(JSON.stringify({ success: false, output: '', error: 'Tool result exceeds bridge size limit' }))) }
-        else deferred.resolve(ctx.newString(text))
+        const response = Buffer.byteLength(text, 'utf8') > CODE_MODE_LIMITS.bridgeJsonChars
+          ? JSON.stringify({ success: false, output: '', error: 'Tool result exceeds bridge size limit' }) : text
+        ctx.newString(response).consume(deferred.resolve)
       }
+      const isMcp = name.startsWith('mcp__')
+      if (isMcp && mcpInFlight++ === 0) mcpSince = now()
       const task = Promise.resolve().then(async () => {
+        if (!active || signal.aborted) return
         let result: CodeToolResult
         if (artifactOp) {
           const store = options.artifacts!
@@ -179,19 +186,25 @@ export async function executeCode(options: ExecuteCodeOptions): Promise<ExecuteC
           else if (name === '__artifact_list') result = { success: true, output: JSON.stringify(store.list(options.chatId!)) }
           else { const removed = store.delete(options.chatId!, payload.id ?? ''); result = { success: removed, output: String(removed) } }
         } else {
-          hostEnter()
-          try { result = await options.callTool(name, args, signal) }
-          finally { hostLeave() }
+          result = await options.callTool(name, args, signal)
         }
         settle(result, result?.success ? 'success' : 'failure')
       })
-      pendingTasks.push(task.catch(e => settle({ success: false, output: '', error: errText(e) }, 'failure')).finally(() => { inFlight-- }))
+      void task.catch(e => settle({ success: false, output: '', error: errText(e) }, 'failure')).finally(() => {
+        if (isMcp && --mcpInFlight === 0) mcpWaitMs += now() - mcpSince
+        inFlight--
+        if (deferreds.delete(deferred)) deferred.dispose()
+        wake?.()
+      }).catch(error => {
+        bridgeError = errText(error)
+        wake?.()
+      })
       return deferred.handle
     })
     ctx.setProp(ctx.global, '__bridge', bridge)
     bridge.dispose()
     const bootstrap = `
-      const bridge = (name, args) => __bridge(name, JSON.stringify(args ?? null)).then(JSON.parse);
+      const bridge = (name, args) => Promise.resolve(__bridge(name, JSON.stringify(args ?? null))).then(JSON.parse);
       globalThis.tools = new Proxy(Object.create(null), { get: (_, name) => name === 'call' ? (n,a) => bridge(String(n), a) : (a) => bridge(String(name), a) });
       globalThis.artifacts = Object.freeze({
         save: async (value) => { const r = await bridge('__artifact_save', value); if (!r.success) throw Error(r.error); return r.output; },
@@ -203,53 +216,45 @@ export async function executeCode(options: ExecuteCodeOptions): Promise<ExecuteC
       globalThis.__logs = [];
       globalThis.global = undefined; globalThis.process = undefined; globalThis.require = undefined; globalThis.module = undefined; globalThis.Buffer = undefined; globalThis.fetch = undefined; globalThis.XMLHttpRequest = undefined; globalThis.WebSocket = undefined;
     `
-    // Internal artifact operations share the same bridge but never reach caller tools.
-    // Set an internal host-side dispatcher by wrapping callTool in bridge dispatch below.
-    const artifactShim = `
-      globalThis.__artifactDispatch = undefined;
-    `
-    void artifactShim
     const init = ctx.evalCode(bootstrap)
     if (init.error) { const text = ctx.dump(init.error); init.error.dispose(); return fail(String(text)) }
     init.value.dispose()
-    // replace bridge dispatcher marker support: artifact calls are intercepted by callTool wrapper path below
-    const result = ctx.evalCode(transpiled.outputText, 'code-mode.ts')
-    if (result.error) { const text = ctx.dump(result.error); result.error.dispose(); return fail(String(text)) }
-    const promise = result.value
+    const result = runGuest(() => ctx.evalCode(transpiled.outputText, 'code-mode.ts'))
+    if (result.error) { const text = ctx.dump(result.error); result.error.dispose(); return fail(executionError() ?? String(text)) }
+    promise = result.value
     while (true) {
-      const executionFailure = executionError()
+      const executionFailure = executionError() ?? bridgeError
       if (executionFailure) return fail(executionFailure)
       const state = ctx.getPromiseState(promise)
       if (state.type === 'fulfilled') {
         const output = ctx.dump(state.value)
-        state.value.dispose(); promise.dispose()
+        if (state.value !== promise) state.value.dispose()
         const logsHandle = ctx.getProp(ctx.global, '__logs')
         const logs = ctx.dump(logsHandle); logsHandle.dispose()
         const text = [Array.isArray(logs) ? logs.join('\n') : '', output === undefined ? '' : typeof output === 'string' ? output : JSON.stringify(output)].filter(Boolean).join('\n')
         return { success: true, output: text.slice(0, CODE_MODE_LIMITS.outputChars), ...(trace.length ? { trace } : {}) }
       }
-      if (state.type === 'rejected') { const message = ctx.dump(state.error); state.error.dispose(); promise.dispose(); return fail(errText(message)) }
-      const jobs = runtime.executePendingJobs()
-      if (jobs.error) { const message = ctx.dump(jobs.error); jobs.error.dispose(); return fail(errText(message)) }
-      void jobs.value
-      await new Promise(resolve => setTimeout(resolve, 1))
+      if (state.type === 'rejected') { const message = ctx.dump(state.error); state.error.dispose(); return fail(errText(message)) }
+      const jobs = runGuest(() => runtime.executePendingJobs())
+      if (jobs.error) { const message = ctx.dump(jobs.error); jobs.error.dispose(); return fail(executionError() ?? errText(message)) }
+      if (jobs.value) continue
+      // Wake on a tool result, Stop, or the deadline. No polling while a server works.
+      const time = now()
+      const waitMs = wallTimeLeft(time) + (mcpInFlight > 0 ? Math.max(0, maxMcpWaitMs - mcpWaitMs - (time - mcpSince)) : 0)
+      await new Promise<void>(resolve => {
+        const timer = setTimeout(() => wake?.(), Math.max(1, waitMs))
+        wake = () => { clearTimeout(timer); wake = undefined; resolve() }
+      })
     }
   } catch (e) {
     return fail(executionError() ?? errText(e))
   } finally {
-    if (Date.now() >= wallDeadline && !externalSignal?.aborted) executionController.abort()
-    clearTimeout(wallTimer)
-    externalSignal?.removeEventListener('abort', forwardAbort)
     active = false
-    // Do not tear down the runtime while host tool promises are still settling:
-    // QuickJS asserts when a pending guest promise is freed during GC.
-    if (pendingTasks.length > 0) {
-      await Promise.race([
-        Promise.allSettled(pendingTasks),
-        new Promise(resolve => setTimeout(resolve, 250)),
-      ])
-    }
+    executionController.abort()
+    externalSignal?.removeEventListener('abort', forwardAbort)
+    promise?.dispose()
     for (const d of deferreds) { try { d.dispose() } catch { /* pending promises are reclaimed with the isolated runtime */ } }
+    deferreds.clear()
     try { ctx.dispose() } catch { /* WASM teardown must not mask execution result */ }
     try { runtime.dispose() } catch { /* abort may leave inaccessible guest jobs; module is isolated */ }
   }

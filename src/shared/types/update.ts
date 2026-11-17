@@ -4,6 +4,8 @@
 // this in-app checker only displays UI and triggers quitAndInstall().
 
 export interface UpdateManifest {
+  /** Standalone installer opens a download while the app stays running. */
+  delivery?: 'installer'
   version: string
   channel: string
   zip_url: string

@@ -1,3 +1,5 @@
+/* global require, AbortController, setTimeout */
+/* eslint-disable @typescript-eslint/no-require-imports -- Run Code Mode on the project's Node runtime. */
 const { test } = require('node:test')
 const assert = require('node:assert/strict')
 const { readFileSync } = require('node:fs')
@@ -68,6 +70,49 @@ test('a hung host call hits the absolute wall-clock limit and aborts its signal'
   assert.match(r.error, /wall-clock limit/i)
   assert.equal(sawAbort, true)
 })
+test('a TypeScript batch can wait beyond its ordinary wall limit for MCP', async () => {
+  const result = await executeCode({
+    code: "const first = await tools.call('mcp__fixture__analyze', {}); return (await tools.call('mcp__fixture__summarize', { text: first.output })).output;",
+    callTool: async (name, args) => {
+      if (name.endsWith('__analyze')) {
+        await new Promise(resolve => setTimeout(resolve, 180))
+        return { success: true, output: 'raw' }
+      }
+      return { success: true, output: 'summary of ' + args.text }
+    },
+    wallTimeoutMs: 100,
+    mcpWaitBudgetMs: 1000,
+  })
+  assert.equal(result.success, true)
+  assert.equal(result.output, 'summary of raw')
+})
+test('MCP waiting is bounded and interrupted on expiry', async () => {
+  let nestedSignal
+  const result = await executeCode({
+    code: "return await tools.call('mcp__fixture__never', {});",
+    callTool: (_name, _args, signal) => {
+      nestedSignal = signal
+      return new Promise(resolve => signal.addEventListener('abort', () => resolve({ success: false, output: '' }), { once: true }))
+    },
+    wallTimeoutMs: 100,
+    mcpWaitBudgetMs: 50,
+  })
+  assert.match(result.error, /wall-clock limit/i)
+  assert.equal(nestedSignal?.aborted, true)
+})
+test('returning early cancels any started tool the script did not await', async () => {
+  let nestedSignal
+  const result = await executeCode({
+    code: "tools.call('mcp__fixture__never', {}); await tools.first({}); return 'done';",
+    callTool: (name, _args, signal) => {
+      if (name === 'first') return { success: true, output: '' }
+      nestedSignal = signal
+      return new Promise(resolve => signal.addEventListener('abort', () => resolve({ success: false, output: '' }), { once: true }))
+    },
+  })
+  assert.equal(result.output, 'done')
+  assert.equal(nestedSignal?.aborted, true)
+})
 test('failed nested tool output preserves the error text in its trace', async () => {
   const r = await executeCode({
     code: "await tools.fail({}); return 'done';",
@@ -88,15 +133,15 @@ test('denied nested call is returned to the guest instead of aborting the progra
 })
 test('Agent blocks execute_code recursion and unknown tools at the bridge', () => {
   const source = readFileSync('src/core/agent/Agent.ts', 'utf8')
-  assert.match(source, /toolName === 'execute_code' \|\| !allowedSchemas\.has\(toolName\)/)
+  assert.match(source, /toolName === 'execute_code' \|\| !activeSchemas\.some\(s => s\.function\.name === toolName\)/)
 })
 test('ToolChain shows execute_code calls in the collapsed card and arguments/results after opening', () => {
   const source = readFileSync('src/renderer/src/components/ui/ToolChain/ToolChain.tsx', 'utf8')
   assert.ok(source.includes('function CodeModeSummary'))
-  assert.ok(source.includes('<CodeModeSummary trace={iter.result.codeMode.trace} />'))
+  assert.match(source, /<CodeModeSummary trace=\{iter\.result\.codeMode\.trace\}/)
   assert.ok(source.includes('codeTraceArgs(entry.args)'))
-  assert.ok(source.includes('entry.result || \'(пустой вывод)\''))
-  assert.ok(source.includes('Показать TypeScript-код'))
+  assert.ok(source.includes('result={{ content: entry.result, success:'))
+  assert.ok(source.includes('title="Скрипт TypeScript"'))
 })
 test('live agent:step preserves execute_code trace in ToolStep', () => {
   const source = readFileSync('src/renderer/src/hooks/useToolProgress.ts', 'utf8')

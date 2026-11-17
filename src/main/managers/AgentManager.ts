@@ -1,4 +1,4 @@
-import { BrowserWindow, ipcMain } from 'electron'
+import { app, BrowserWindow, ipcMain } from 'electron'
 import { Worker } from 'worker_threads'
 import { attachBrowserWorkerBroker, disposeBrowserWorkerBroker } from '../../core/agent/browserWorkerBroker'
 import { join } from 'path'
@@ -11,6 +11,8 @@ import { getFileCacheSnapshot, mergeFileCache } from '../../core/context/fileRea
 import { getAccessToken } from '../services/tokenStore'
 import { getGatewayAuthToken, forceRefreshGatewayToken } from '../services/gatewayClient'
 import { getGatewayModelsCache } from '../../core/tokens/gatewayModelsCache'
+import { acceptAIUsage } from '../services/usageLedger'
+import type { AIRequestUsage } from '../../core/ai/requestUsage'
 import {
   createSubagentWorktree,
   mergeWorktreeBack,
@@ -669,6 +671,7 @@ class AgentManager {
             // (gateway:fetchModels только в main), а getModelContextWindow
             // для 'syntee-gateway' берёт contextWindow из этого кэша.
             gatewayModels: getGatewayModelsCache(),
+            catalogCachePath: join(app.getPath('userData'), 'modelsCatalog.json'),
             gatewayToken,
             fileCacheSnapshot: getFileCacheSnapshot(record.chatId),
             workdir: effectiveWorkdir,
@@ -790,6 +793,11 @@ class AgentManager {
       })
 
       worker.on('message', (msg: Record<string, unknown>) => {
+        // Usage already incurred belongs to the parent chat, even if cancelled.
+        if (msg.type === 'request_usage') {
+          acceptAIUsage({ ...(msg.event as AIRequestUsage), chatId: record.chatId })
+          return
+        }
         if (record.status !== 'running') return
         switch (msg.type) {
           // Worker поймал 401 от gateway и просит свежий JWT (сам рефрешить

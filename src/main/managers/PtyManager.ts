@@ -17,13 +17,12 @@ import * as pty from 'node-pty'
 import { BrowserWindow } from 'electron'
 import { randomUUID } from 'crypto'
 import { homedir } from 'os'
-import { existsSync } from 'fs'
+import { accessSync, constants, existsSync, statSync } from 'fs'
 import { join } from 'path'
-import { execSync } from 'child_process'
 import { stripAnsi } from '../../core/tools/_shared'
 import { PtyOutputBatcher } from './ptyOutputBatcher'
 
-export type ShellType = 'powershell' | 'cmd' | 'bash' | 'wsl' | 'nushell' | 'fish'
+export type ShellType = 'powershell' | 'cmd' | 'bash' | 'zsh' | 'wsl' | 'nushell' | 'fish'
 
 export interface ShellInfo {
   type: ShellType
@@ -170,7 +169,11 @@ export function detectShells(): ShellInfo[] {
     const bash = which('bash') ?? '/bin/bash'
     list.push({ type: 'bash', label: 'Bash', file: bash, args: ['-l'], available: existsSync(bash) })
     const zsh = which('zsh')
-    if (zsh) list.push({ type: 'bash', label: 'Zsh', file: zsh, args: ['-l'], available: true })
+    if (zsh) list.push({ type: 'zsh', label: 'Zsh', file: zsh, args: ['-l'], available: true })
+    const nu = which('nu')
+    if (nu) list.push({ type: 'nushell', label: 'Nushell', file: nu, args: ['-l'], available: true })
+    const fish = which('fish')
+    if (fish) list.push({ type: 'fish', label: 'Fish', file: fish, args: ['-l'], available: true })
   }
 
   cachedShells = list
@@ -179,15 +182,16 @@ export function detectShells(): ShellInfo[] {
 
 /** Имитация `which` — ищет executable в PATH, возвращает полный путь или undefined. */
 function which(name: string): string | undefined {
-  try {
-    const isWin = process.platform === 'win32'
-    const cmd = isWin ? `where ${name}` : `which ${name}`
-    const out = execSync(cmd, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
-    // `where` может вернуть несколько строк — берём первую
-    return out.split(/\r?\n/)[0] || undefined
-  } catch {
-    return undefined
+  const separator = process.platform === 'win32' ? ';' : ':'
+  for (const directory of (process.env.PATH ?? '').split(separator)) {
+    if (!directory) continue
+    const candidate = join(directory, name)
+    try {
+      accessSync(candidate, constants.X_OK)
+      if (statSync(candidate).isFile()) return candidate
+    } catch { /* absent or not executable */ }
   }
+  return undefined
 }
 
 class PtyManager {
@@ -228,14 +232,15 @@ class PtyManager {
     // Базовый env: UTF-8 для Python (PYTHONIOENCODING + PYTHONUTF8) и для
     // unix-шеллов (LANG/LC_ALL) — устраняет кракозябры в Git Bash/WSL при
     // выводе кириллицы нативными exe (git, tsc, aapt2) и python-скриптами.
-    const isUnixLikeShell = info.type === 'bash' || info.type === 'wsl' || info.type === 'nushell' || info.type === 'fish'
+    const isUnixLikeShell = info.type === 'bash' || info.type === 'zsh' || info.type === 'wsl' || info.type === 'nushell' || info.type === 'fish'
+    const utf8Locale = process.platform === 'linux' ? 'C.UTF-8' : 'en_US.UTF-8'
     const env = {
       ...process.env,
       PYTHONIOENCODING: 'utf-8',
       PYTHONUTF8: '1',
       // #4,#12: убираем git pager (less), который виснет в non-interactive PTY
       GIT_PAGER: 'cat',
-      ...(isUnixLikeShell ? { LANG: 'en_US.UTF-8', LC_ALL: 'en_US.UTF-8' } : {}),
+      ...(isUnixLikeShell ? { LANG: utf8Locale, LC_ALL: utf8Locale } : {}),
     } as Record<string, string>
     const effectiveCwd = cwd || homedir()
 
@@ -478,14 +483,17 @@ class PtyManager {
 
   /** Экранирует путь для cd-команды в зависимости от шелла. */
   private buildCdCommand(shell: ShellType, cwd: string): string | null {
-    const escaped = cwd.replace(/'/g, "'\\''")
     switch (shell) {
       case 'powershell':
-        return `Set-Location -LiteralPath '${escaped}'`
+        return `Set-Location -LiteralPath '${cwd.replace(/'/g, "''")}'`
       case 'cmd':
         return `cd /d "${cwd.replace(/"/g, '""')}"`
-      default: // bash, wsl, fish, nushell
-        return `cd '${escaped}'`
+      case 'fish':
+        return `cd '${cwd.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`
+      case 'nushell':
+        return `cd "${cwd.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r')}"`
+      default: // bash, zsh, wsl
+        return `cd '${cwd.replace(/'/g, "'\\''")}'`
     }
   }
 

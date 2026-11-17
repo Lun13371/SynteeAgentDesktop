@@ -3,6 +3,7 @@ import { runInitialSchema } from './initialSchema'
 import { runIncrementalMigrations } from './incremental'
 import { runDelegatedChatSchema } from './delegatedChats'
 import { runCodeMapSchema } from './codeMap'
+import { runAIUsageSchema } from './aiUsage'
 
 export { runInitialSchema } from './initialSchema'
 export { runIncrementalMigrations } from './incremental'
@@ -17,4 +18,5 @@ export function runMigrations(db: Database.Database): void {
   runIncrementalMigrations(db)
   runDelegatedChatSchema(db)
   runCodeMapSchema(db)
+  runAIUsageSchema(db)
 }

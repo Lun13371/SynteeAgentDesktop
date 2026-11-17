@@ -32,7 +32,7 @@ import {
 } from 'fs'
 import { dirname, join } from 'path'
 import { spawn } from 'child_process'
-import { updatesBase } from './config'
+import { updatesBase, usesWindowsInstallerUpdates } from './config'
 
 /** Base URL of the public launcher API (…/api/public/launcher). */
 const LAUNCHER_API = updatesBase.replace('/api/public/updates', '/api/public/launcher')
@@ -208,6 +208,7 @@ export async function downloadUpdater(dst = defaultUpdaterDst()): Promise<string
  * Returns the path to the updater, or null if it couldn't be found/downloaded.
  */
 export async function ensureUpdater(): Promise<string | null> {
+  if (process.platform !== 'win32' || usesWindowsInstallerUpdates()) return null
   // 1. Fix a stale update_server first — this alone revives old binaries.
   healLauncherJson()
 

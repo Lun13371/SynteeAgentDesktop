@@ -22,6 +22,7 @@ import {
   toggleExtension,
 } from '../browser/extensions'
 import type Store from 'electron-store'
+import { userConfigDirectory } from '../platform/xdg'
 
 export function registerBrowserIPC(store: Store, getWindow: () => BrowserWindow | null): void {
   setBrowserExtras(BrowserExtras)
@@ -30,7 +31,8 @@ export function registerBrowserIPC(store: Store, getWindow: () => BrowserWindow 
   browserManager.setSettingsStore(store)
   browserManager.setProfileStore(store)
 
-  const importer = new BrowserImporter(process.env.LOCALAPPDATA || '', app.getPath('userData'),
+  const browserConfig = process.platform === 'linux' ? userConfigDirectory() : process.env.LOCALAPPDATA || ''
+  const importer = new BrowserImporter(browserConfig, app.getPath('userData'),
     () => browserManager.listProfiles(),
     profile => store.set('browser.profiles', [...browserManager.listProfiles(), profile]))
   const requireMainUI = (event: IpcMainInvokeEvent): void => {

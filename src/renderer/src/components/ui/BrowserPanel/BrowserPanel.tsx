@@ -372,8 +372,8 @@ export default function BrowserPanel() {
               {activeProfileId !== 'default' && (
                 <button onClick={() => { setProfileOpen(false); setDeleteProfile(profiles.find(p => p.id === activeProfileId) ?? null) }}>Удалить профиль</button>
               )}
-              <button onClick={openChromeDialog}>🌐 Использовать оригинальный Chrome</button>
-              <button onClick={() => { setProfileOpen(false); setDataDialog('import') }}>↓ Импортировать из Chrome / Edge</button>
+              <button onClick={openChromeDialog}>🌐 Открыть Chrome / Chromium</button>
+              <button onClick={() => { setProfileOpen(false); setDataDialog('import') }}>↓ Импортировать из браузера</button>
               <div className="browser-profile-divider" />
               <button onClick={() => { setProfileOpen(false); setDataDialog('bookmarks') }}>Импортированные закладки</button>
               <button onClick={() => { setProfileOpen(false); setDataDialog('history') }}>Импортированная история</button>
@@ -443,10 +443,10 @@ export default function BrowserPanel() {
       {chromeOpen && createPortal(
         <div className="browser-chrome-modal" role="dialog" aria-modal="true">
           <div className="browser-chrome-modal__card">
-            <h3>Использовать оригинальный Chrome</h3>
-            <p>Откроется внешнее окно настоящего Chrome. Авторизации оригинального профиля сохраняются; управление Syntee к нему не подключено.</p>
+            <h3>Открыть Chrome / Chromium</h3>
+            <p>Откроется внешнее окно браузера с выбранным профилем и его авторизациями.</p>
             {chromeLoading && <p>Поиск профилей…</p>}
-            {!chromeLoading && chromeState && !chromeState.available && <p>Chrome не найден в стандартных папках Windows.</p>}
+            {!chromeLoading && chromeState && !chromeState.available && <p>Chrome или Chromium со стандартным каталогом профилей не найден.</p>}
             {!chromeLoading && chromeState?.profiles.map(profile => (
               <button key={profile.id} disabled={chromeBusy} onClick={() => launchChrome(profile.id)}>{chromeBusy ? 'Открытие…' : profile.name}</button>
             ))}

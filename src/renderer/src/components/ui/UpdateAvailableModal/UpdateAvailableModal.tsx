@@ -12,7 +12,7 @@
 import { useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { AnimatePresence, motion } from 'framer-motion'
-import { RotateCcw, X } from 'lucide-react'
+import { Download, RotateCcw, X } from 'lucide-react'
 import AppIcon from '../AppIcon/AppIcon'
 import ChangelogMarkdown from '../ChangelogMarkdown/ChangelogMarkdown'
 import { useUpdateStore } from '../../../store/update.store'
@@ -41,6 +41,7 @@ export default function UpdateAvailableModal({ open, onClose }: Props) {
   const quitAndInstall = useUpdateStore((s) => s.quitAndInstall)
   const dismiss = useUpdateStore((s) => s.dismiss)
   const [installError, setInstallError] = useState<string | null>(null)
+  const installer = available?.delivery === 'installer'
 
   // Restart-now: the app exits only when the updater actually spawned — on
   // failure we stay open and show why, instead of dying silently.
@@ -49,6 +50,8 @@ export default function UpdateAvailableModal({ open, onClose }: Props) {
     const res = await quitAndInstall()
     if (!res.ok) {
       setInstallError(res.error ?? 'Неизвестная ошибка')
+    } else if (installer) {
+      onClose()
     }
   }
 
@@ -119,14 +122,14 @@ export default function UpdateAvailableModal({ open, onClose }: Props) {
               className="update-modal-btn update-modal-btn--secondary"
               onClick={onClose}
             >
-              При следующем запуске
+              {installer ? 'Позже' : 'При следующем запуске'}
             </button>
             <button
               className="update-modal-btn update-modal-btn--primary"
               onClick={handleRestartNow}
             >
-              <RotateCcw size={15} />
-              Перезапустить сейчас
+              {installer ? <Download size={15} /> : <RotateCcw size={15} />}
+              {installer ? 'Скачать установщик' : 'Перезапустить сейчас'}
             </button>
           </div>
         </motion.div>

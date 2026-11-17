@@ -10,7 +10,7 @@ if (-not $cargo) {
 
 Push-Location $sidecarRoot
 try {
-    & $cargo.Source build --release
+    & $cargo.Source build --release --locked
     if ($LASTEXITCODE -ne 0) { throw "cargo build failed with exit code $LASTEXITCODE" }
     $built = Join-Path $sidecarRoot "target\release\$binaryName"
     if (-not (Test-Path $built)) { throw "Cargo completed but binary was not found: $built" }
