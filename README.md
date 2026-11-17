@@ -88,7 +88,7 @@ The Linux port review, measured memory usage and remaining runtime checks are in
 
 Download and run the `Syntee-Helper-Setup-<version>-x64.exe` asset from a
 `windows-v<version>` release in the [GitHub fork](https://github.com/zaxdevv/SynteeAgentDesktop/releases).
-For future updates, open **Настройки → Список изменений → Проверить обновления**.
+For future updates, open **Настройки → Обновления → Проверить обновления**.
 Click **Скачать**, then run the downloaded installer over the existing
 standalone installation. Chats and settings use `%APPDATA%\SynteeHelper`.
 The standalone install has its own Start menu entry, **Syntee Helper Desktop**.
