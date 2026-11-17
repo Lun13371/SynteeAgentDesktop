@@ -20,15 +20,11 @@
  */
 
 import type { Readable } from 'stream'
+import type { RequestOptions } from '@modelcontextprotocol/sdk/shared/protocol.js'
+import type { CallToolRequest, CallToolResult, ErrorCode } from '@modelcontextprotocol/sdk/types.js'
 import type { McpServerConfig, McpToolRuntime, McpConnectionStatus, McpLogLevel, McpLogEntry } from '../../shared/types'
 import { log } from '../logger'
-
-// Защитный таймаут одного вызова MCP-тула. MCP-сервер (особенно stdio)
-// может зависнуть намертво — процесс жив, пайп заблокирован, SDK
-// await callTool() никогда не резолвится. Без потолка агентский цикл
-// блокируется навсегда (MAX_TOOL_TIMEOUT_MS в Agent.ts — внешний слой,
-// этот — внутренний, с информативным сообщением именно про MCP).
-export const MCP_CALL_TIMEOUT_MS = 120 * 1000  // 120 секунд
+import { DEFAULT_MCP_TOOL_TIMEOUT_SECONDS } from '../../shared/mcpTimeout'
 
 // SDK импортируется лениво через require, чтобы:
 //  1) не тащить ESM-парсер на статический анализ vite
@@ -37,7 +33,7 @@ type McpSdkClient = {
   connect: (transport: unknown) => Promise<void>
   close: () => Promise<void>
   listTools: () => Promise<{ tools: Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }> }>
-  callTool: (params: { name: string; arguments?: Record<string, unknown> }) => Promise<{ content?: Array<{ type: string; text?: string }> }>
+  callTool: (params: CallToolRequest['params'], schema: undefined, options: RequestOptions) => Promise<CallToolResult>
 }
 
 interface TransportLike {
@@ -51,7 +47,6 @@ interface TransportLike {
 export class McpClient {
   config: McpServerConfig
   private client: McpSdkClient | null = null
-  private transport: TransportLike | null = null
   private _status: McpConnectionStatus = 'disconnected'
   private _error: string | undefined
   private _tools: McpToolRuntime[] = []
@@ -171,12 +166,13 @@ export class McpClient {
       ? `stdio: ${this.config.command}${this.config.args?.length ? ' ' + this.config.args.join(' ') : ''}`
       : `${this.config.transport}: ${this.config.url ?? '(нет url)'}`
     this.addLog('info', `Начало подключения (${transportDesc})`)
+    let timer: ReturnType<typeof setTimeout> | undefined
     try {
       await Promise.race([
         this.doConnect(),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error(`Connection timeout (${McpClient.CONNECT_TIMEOUT_MS / 1000}s)`)), McpClient.CONNECT_TIMEOUT_MS),
-        ),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`Connection timeout (${McpClient.CONNECT_TIMEOUT_MS / 1000}s)`)), McpClient.CONNECT_TIMEOUT_MS)
+        }),
       ])
       this.setStatus('connected')
       this.onToolsChange?.(this._tools)
@@ -190,7 +186,8 @@ export class McpClient {
       // Частичный клейнап
       try { await this.client?.close() } catch { /* ignore */ }
       this.client = null
-      this.transport = null
+    } finally {
+      clearTimeout(timer)
     }
   }
 
@@ -201,7 +198,6 @@ export class McpClient {
       Client: new (info: { name: string; version: string }, opts?: Record<string, unknown>) => McpSdkClient
     }
     const transport = this.buildTransport()
-    this.transport = transport
     // clientInfo ОБЯЗАТЕЛЕН — серверы со строгой валидацией (Context7,
     // filesystem) отклоняют initialize- handshake если clientInfo undefined.
     this.client = new Client({ name: 'SynteeHelper', version: '1.0.0' })
@@ -214,15 +210,14 @@ export class McpClient {
     if (transport?.stderr) {
       transport.stderr.on('data', (chunk: Buffer) => {
         const text = chunk.toString('utf-8')
-        this._stderrText += text
+        this._stderrText = (this._stderrText + text).slice(-4_000)
         // Логируем построчно для отладки в консоли main-процесса и в UI-журнал.
         for (const line of text.split('\n')) {
           const trimmed = line.trim()
           if (!trimmed) continue
-          log('[MCP stderr]', this.config.name, ':', trimmed)
           // stderr часто содержит предупреждения/диагностику процесса сервера —
           // показываем как warn (не error, т.к. сервер может работать нормально).
-          this.addLog('warn', `stderr: ${trimmed}`)
+          this.addLog('warn', `stderr: ${trimmed.slice(0, 4_000)}`)
         }
       })
     }
@@ -272,7 +267,6 @@ export class McpClient {
     this.addLog('info', 'Отключение (по запросу)')
     try { await this.client?.close() } catch { /* ignore */ }
     this.client = null
-    this.transport = null
     this._tools = []
     this.setStatus('disconnected')
     this.onToolsChange?.([])
@@ -282,35 +276,47 @@ export class McpClient {
    * Вызов тулза. Возвращает текстовый результат (агент получает как output).
    * нетекстовые content-блоки сериализуются в строку.
    */
-  async callTool(toolName: string, args: Record<string, unknown>): Promise<{ success: boolean; output: string; error?: string }> {
+  async callTool(
+    toolName: string,
+    args: Record<string, unknown>,
+    timeoutSeconds = DEFAULT_MCP_TOOL_TIMEOUT_SECONDS,
+    signal?: AbortSignal,
+  ): Promise<{ success: boolean; output: string; error?: string }> {
     if (!this.client || this._status !== 'connected') {
       const msg = `MCP-сервер ${this.config.name} не подключён (статус: ${this._status})`
       this.addLog('warn', `Вызов тула ${toolName} отклонён: сервер не подключён`)
       return { success: false, output: '', error: msg }
     }
     try {
-      // Защитный таймаут: MCP-сервер может зависнуть (повисший процесс,
-      // заблокированный пайп), и SDK await callTool() никогда не
-      // резолвится. Promise.race отвязывает ожидание и возвращает
-      // информативную ошибку — внешний MAX_TOOL_TIMEOUT_MS в Agent.ts
-      // остаётся страховкой верхнего уровня.
-      const callPromise = this.client.callTool({ name: toolName, arguments: args })
-      const timeoutPromise = new Promise<{ content?: Array<{ type: string; text?: string }> }>((_, reject) => {
-        setTimeout(() => reject(new Error(`MCP-вызов ${toolName} превысил таймаут (${Math.round(MCP_CALL_TIMEOUT_MS / 1000)}с) — сервер ${this.config.name} не отвечает`)), MCP_CALL_TIMEOUT_MS)
-      })
-      const result = await Promise.race([callPromise, timeoutPromise])
+      signal?.throwIfAborted()
+      const result = await this.client.callTool(
+        { name: toolName, arguments: args },
+        undefined,
+        { timeout: timeoutSeconds * 1000, signal },
+      )
       const content = result.content ?? []
-      const textParts = content
-        .filter(c => c.type === 'text' && c.text)
-        .map(c => c.text as string)
-      const otherParts = content
-        .filter(c => c.type !== 'text')
-        .map(c => `[${c.type}]`)
-      const output = [...textParts, ...otherParts].join('\n').slice(0, 8000)
+      const limit = 8_000
+      let output = ''
+      const append = (text: string): void => {
+        if (output) output += '\n'
+        output += text.slice(0, limit - output.length)
+      }
+      for (const block of content) {
+        if (output.length >= limit) break
+        if (block.type === 'text' && block.text) append(block.text)
+      }
+      for (const block of content) {
+        if (output.length >= limit) break
+        if (block.type !== 'text') append(`[${block.type}]`)
+      }
+      if (result.isError) return { success: false, output: '', error: output || 'MCP-сервер вернул ошибку инструмента' }
       return { success: true, output: output || '(пустой результат)' }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      log('[MCP] callTool error:', this.config.name, toolName, msg)
+      if (signal?.aborted) return { success: false, output: '', error: 'MCP-вызов отменён' }
+      const code = (err as { code?: ErrorCode } | null)?.code
+      const msg = code === -32001 // SDK ErrorCode.RequestTimeout
+        ? `MCP-вызов ${toolName} на сервере ${this.config.name} превысил таймаут (${timeoutSeconds} с). Лимит можно изменить в настройках сервера.`
+        : err instanceof Error ? err.message : String(err)
       this.addLog('error', `Ошибка вызова тула ${toolName}: ${msg}`)
       return { success: false, output: '', error: msg }
     }

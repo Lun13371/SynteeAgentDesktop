@@ -23,6 +23,7 @@ import Store from 'electron-store'
 import { getMcpManager } from '../../core/mcp/McpManager'
 import { getProjectById, getChatWorkdirContext, getAllProjects } from '../../core/db'
 import type { McpServerConfig, McpToolState, ExtensionScope } from '../../shared/types'
+import { MAX_MCP_TOOL_TIMEOUT_SECONDS, isMcpToolTimeout } from '../../shared/mcpTimeout'
 
 export function registerMcpIPC(store: Store, getWindow: () => BrowserWindow | null): void {
   // Обновляем окно в менеджере при каждом вызове (оно может пересоздаваться).
@@ -83,15 +84,21 @@ export function registerMcpIPC(store: Store, getWindow: () => BrowserWindow | nu
     projectId?: string
     enabled?: boolean
     scope?: ExtensionScope
+    toolTimeoutSeconds?: number
   }) => {
     // Для проектного MCP обязательно передаём projectId, иначе его состояние
     // ошибочно прочитается/запишется как глобальное.
     const project = params.projectId ? getProjectById(params.projectId) : undefined
-    const all = mgr().getAllServers({ projectWorkdir: project?.workdir, projectId: params.projectId })
+    const manager = mgr()
+    const all = manager.getAllServers({ projectWorkdir: project?.workdir, projectId: params.projectId })
     const config = all.find(c => c.id === params.serverId)
     if (!config) return { ok: false, error: 'Сервер не найден' }
-    if (params.enabled !== undefined) mgr().setServerEnabled(config, params.enabled)
-    if (params.scope !== undefined) mgr().setServerScope(config, params.scope)
+    if (params.toolTimeoutSeconds !== undefined && !isMcpToolTimeout(params.toolTimeoutSeconds)) {
+      return { ok: false, error: `Введите целое число от 1 до ${MAX_MCP_TOOL_TIMEOUT_SECONDS} секунд` }
+    }
+    if (params.enabled !== undefined) manager.setServerEnabled(config, params.enabled)
+    if (params.scope !== undefined) manager.setServerScope(config, params.scope)
+    if (params.toolTimeoutSeconds !== undefined) manager.setToolTimeout(config, params.toolTimeoutSeconds)
     return { ok: true }
   })
 

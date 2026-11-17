@@ -92,6 +92,9 @@ Which tool to prefer:
 execute_code runs ONE TypeScript program that calls other tools internally — you pay one
 model round-trip instead of N. This is your lever for saving latency and tokens on
 mechanical multi-step work.
+For MCP tools available in this run, use tools.call("mcp__server__tool", args)
+inside the script. Each call uses its server's configured timeout and the usual
+permissions. Filter intermediate results in the script and return the relevant data.
 
 CORE RULE — batch the WHOLE chain, not a minimum
 - When the answer needs several steps (search → filter → read several files →

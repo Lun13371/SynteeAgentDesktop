@@ -75,6 +75,7 @@ export interface McpLogEntry {
 
 /** Полное состояние сервера для UI (конфиг + runtime). */
 export interface McpServerRuntime extends McpServerConfig {
+  toolTimeoutSeconds: number
   status: McpConnectionStatus
   error?: string
   tools: McpToolRuntime[]

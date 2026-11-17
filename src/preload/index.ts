@@ -1045,7 +1045,7 @@ const synteeAPI = {
   // getAll — все серверы с runtime-состоянием (для popover).
   // save/delete — CRUD глобальных серверов.
   // connect/disconnect/reconnect — управление подключением.
-  // setServerState — enabled/scope сервера.
+  // setServerState — enabled/scope/таймаут сервера.
   // setToolState — per-tool enabled/requireApproval.
   mcp: {
     getAll: (params?: { projectId?: string; chatId?: string }) => ipcRenderer.invoke('mcp:getAll', params),
@@ -1054,7 +1054,7 @@ const synteeAPI = {
     connect: (serverId: string) => ipcRenderer.invoke('mcp:connect', serverId),
     disconnect: (serverId: string) => ipcRenderer.invoke('mcp:disconnect', serverId),
     reconnect: (serverId: string) => ipcRenderer.invoke('mcp:reconnect', serverId),
-    setServerState: (params: { serverId: string; projectId?: string; enabled?: boolean; scope?: unknown }) =>
+    setServerState: (params: { serverId: string; projectId?: string; enabled?: boolean; scope?: unknown; toolTimeoutSeconds?: number }) =>
       ipcRenderer.invoke('mcp:setServerState', params),
     setServersEnabled: (params: { serverIds: string[]; projectId?: string; enabled: boolean }) =>
       ipcRenderer.invoke('mcp:setServersEnabled', params),

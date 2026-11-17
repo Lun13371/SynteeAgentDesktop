@@ -6,8 +6,8 @@ const { existsSync } = require('node:fs')
 const { resolve } = require('node:path')
 const { test } = require('node:test')
 
-// Exercise the same module-resolution base and native ABI as the built AI
-// worker, without starting a chat, opening user data or calling a provider.
+// Import the built worker entry using Electron's worker-thread runtime.
+// No chat is started and no provider is contacted.
 const root = resolve(__dirname, '..')
 const entry = resolve(root, 'out/main/ai-worker.js')
 
@@ -15,8 +15,9 @@ if (process.argv.includes('--electron-probe')) {
   const { Worker } = require('node:worker_threads')
   const worker = new Worker(`
     const { parentPort, workerData } = require('node:worker_threads')
-    const req = require('node:module').createRequire(workerData)
+    const req = require('node:module').createRequire(workerData.entry)
     ;(async () => {
+      req(workerData.entry)
       const quickjs = await req('quickjs-emscripten').getQuickJS()
       const context = quickjs.newContext()
       try {
@@ -32,17 +33,18 @@ if (process.argv.includes('--electron-probe')) {
         const Database = req('better-sqlite3')
         const db = new Database(':memory:')
         try { db.prepare('SELECT 1').get() } finally { db.close() }
-        parentPort.postMessage({ quickjs: true, wasmResult: value, sqlite: true })
+        parentPort.postMessage({ workerBoot: true, quickjs: true, wasmResult: value, sqlite: true })
       } finally {
         context.dispose()
+        parentPort.close()
       }
     })().catch(error => { console.error(error); process.exit(1) })
-  `, { eval: true, workerData: entry })
+  `, { eval: true, workerData: { entry, storeData: {} } })
   worker.on('message', result => console.log(JSON.stringify(result)))
   worker.on('error', error => { console.error(error); process.exitCode = 1 })
   worker.on('exit', code => { if (code) process.exitCode = code })
 } else {
-  test('built AI worker dependencies load in Electron with a working QuickJS WASM runtime', () => {
+  test('built AI worker boots in Electron with a working QuickJS WASM runtime', () => {
     assert.ok(existsSync(entry), 'Build the app with electron-vite build first')
     const electron = require('electron')
     const result = spawnSync(electron, [__filename, '--electron-probe'], {
@@ -54,6 +56,7 @@ if (process.argv.includes('--electron-probe')) {
     })
     assert.ifError(result.error)
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`)
+    assert.match(result.stdout, /"workerBoot":true/)
     assert.match(result.stdout, /"quickjs":true/)
     assert.match(result.stdout, /"wasmResult":42/)
     assert.match(result.stdout, /"sqlite":true/)

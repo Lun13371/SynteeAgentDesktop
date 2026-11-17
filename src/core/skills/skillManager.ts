@@ -1,5 +1,5 @@
 /** Skill discovery, per-file overrides and persistent folder inheritance. */
-import Store from 'electron-store'
+import type Store from 'electron-store'
 import { join } from 'path'
 import { loadAllSkills, scanSkillDirectory, tagProjectSkills } from './skillLoader'
 import { isSkillInFolder, skillFolderKey } from '../../shared/skillsTree'
@@ -9,7 +9,7 @@ type StateMap = Record<string, Partial<SkillState>>
 
 export class SkillManager {
   private globalSkills: Skill[] | null = null
-  constructor(private store: Store) {}
+  constructor(private store: Store, private userDataPath: string) {}
 
   invalidate(): void {
     this.globalSkills = null
@@ -32,7 +32,7 @@ export class SkillManager {
   }
 
   loadSkills(projectWorkdir?: string, projectId?: string): Skill[] {
-    if (this.globalSkills === null) this.globalSkills = loadAllSkills()
+    if (this.globalSkills === null) this.globalSkills = loadAllSkills(this.userDataPath)
     let projectSkills: Skill[] = []
     if (projectWorkdir) {
       projectSkills = scanSkillDirectory(join(projectWorkdir, '.syntee', 'skills'), 'project')
@@ -158,8 +158,8 @@ export class SkillManager {
 }
 
 let skillManagerInstance: SkillManager | null = null
-export function initSkillManager(store: Store): SkillManager {
-  skillManagerInstance = new SkillManager(store)
+export function initSkillManager(store: Store, userDataPath: string): SkillManager {
+  skillManagerInstance = new SkillManager(store, userDataPath)
   return skillManagerInstance
 }
 export function getSkillManager(): SkillManager {

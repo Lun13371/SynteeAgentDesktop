@@ -815,10 +815,8 @@ export class Agent {
     let finalAnswerNudges = 0
     const nativeImageAnalysis = new NativeImageAnalysis()
     const runCallbacks = callbacks
-    let codeModeInternalCallDepth = 0
     callbacks = {
       ...runCallbacks,
-      onStep: (event) => { if (codeModeInternalCallDepth === 0) runCallbacks.onStep(event) },
       onDone: (answer, details) => {
         // §goal — завершение прогона само по себе не вердикт: цель остаётся
         // set, если оценщик её не закрыл (как в [CC]).
@@ -1462,7 +1460,11 @@ export class Agent {
           }
         })
 
-        const executeCall = async (item: NormalizedToolCall): Promise<void> => {
+        const executionCallbacks = callbacks
+        const executeCall = async (item: NormalizedToolCall, nestedSignal?: AbortSignal): Promise<void> => {
+          const callSignal = nestedSignal ?? signal
+          if (callSignal?.aborted) return
+          const callbacks = nestedSignal ? { ...executionCallbacks, onStep: () => {} } : executionCallbacks
           const { callId, fn, isHiddenTool, pendingCallId, parseError } = item
           if (goalRuntime && !goalRuntime.reserveTool()) {
             if (goalRuntime.active) goalRuntime.stop('limit', 'Goal tool-call or time budget exhausted')
@@ -1544,7 +1546,7 @@ export class Agent {
                 const loopMsg = alternation
                   ? `Loop guard: you are alternating ${fingerprint.toolName} with another tool in a loop (${fpCount} recent calls, 2 unique). Change strategy: analyze what is already done and choose a different approach.`
                   : `Loop guard: you repeated ${fn.name} with effectively the same arguments ${maxRepeatedToolCalls} times. Stop retrying it unchanged and switch strategy.`
-                if (codeModeInternalCallDepth === 0) messages.push({
+                if (!nestedSignal) messages.push({
                   role: 'user',
                   content: hardBlock
                     ? `${loopMsg}\n\nATTENTION: tool "${fn.name}" is blocked for this run() after ${guardHits} loop-guard warnings (${guardHits * maxRepeatedToolCalls} actual calls). It was NOT executed. Change strategy or ask the user.`
@@ -1616,7 +1618,7 @@ export class Agent {
 
               if (shouldHardBlock) {
                 const hardStopMsg = `Loop guard: ${fn.name} produced invalid JSON ${parseFailCount} times. The tool is blocked for this run. Explain the issue to the user — you may need to simplify the edit, use a different edit mode, or split the work into smaller steps.`
-                if (codeModeInternalCallDepth === 0) messages.push({ role: 'user', content: hardStopMsg })
+                if (!nestedSignal) messages.push({ role: 'user', content: hardStopMsg })
                 resultMap.set(callId, {
                   contentForAI: `${hardStopMsg}\n\nLast parse error: ${parseError.message}\nYou sent (first 200 chars): ${parseError.snippet}`,
                   callId,
@@ -1643,7 +1645,7 @@ export class Agent {
                 // т.к. ремонт провалился), но модель НЕ блокируется —
                 // может retry с другим JSON в следующем раунде.
                 const softMsg = `Loop guard (soft): ${fn.name} produced invalid JSON ${parseFailCount} times. Parse error: ${parseError.message}. You sent (first 200 chars): ${parseError.snippet}. Please retry with valid JSON — make sure all string values are properly quoted (e.g. "mode": "str_replace", not "mode": str_replace).`
-                if (codeModeInternalCallDepth === 0) messages.push({ role: 'user', content: softMsg })
+                if (!nestedSignal) messages.push({ role: 'user', content: softMsg })
                 resultMap.set(callId, {
                   contentForAI: softMsg,
                   callId,
@@ -1773,7 +1775,7 @@ export class Agent {
           // use this exact approval decision. Its optional policy only adds a
           // stricter boundary in Auto mode; it never weakens normal approvals.
           const codeModePolicy = autoSettings.codeModePolicy
-          const codeModeInternal = codeModeInternalCallDepth > 0
+          const codeModeInternal = !!nestedSignal
           const approval = needsApproval(fn.name, args, mode, {
             auto: autoSettings,
             forbiddenPaths,
@@ -1870,6 +1872,7 @@ export class Agent {
           }
           if (effectiveApproval.confirm && callbacks.onConfirm) {
             const decision = await callbacks.onConfirm(fn.name, args)
+            if (callSignal?.aborted) return
             const approved = typeof decision === 'boolean' ? decision : decision?.approved === true
             if (!approved) {
               resultMap.set(callId, { contentForAI: 'Действие отклонено пользователем.', callId, name: fn.name })
@@ -1885,7 +1888,7 @@ export class Agent {
             }
           }
 
-          if (signal?.aborted || (goalRuntime && !goalRuntime.active)) return
+          if (callSignal?.aborted || (goalRuntime && !goalRuntime.active)) return
           callbacks.onStatus?.(`${fn.name}...`)
           console.log('[Agent] exec tool: %s callId=%s (step=%d)', fn.name, callId, step)
           log('[Agent] exec tool: %s callId=%s', fn.name, callId)
@@ -1910,37 +1913,31 @@ export class Agent {
             }
             if (fn.name === 'execute_code') {
               const code = typeof args.code === 'string' ? args.code : ''
-              const codeAbort = new AbortController()
-              const forwardAbort = () => codeAbort.abort()
-              if (signal?.aborted) codeAbort.abort()
-              else signal?.addEventListener('abort', forwardAbort, { once: true })
-              let codeResult: Awaited<ReturnType<typeof executeCode>>
-              try { codeResult = await executeCode({
-                code, chatId: this.chatId, signal: codeAbort.signal,
+              const codeResult = await executeCode({
+                code, chatId: this.chatId, signal: callSignal,
                 artifacts,
                 sanitizeTrace: value => this.toolDispatcher.maskSecretValuesInText(JSON.stringify(value ?? null)),
                 callTool: async (toolName, toolArgs, childSignal) => {
                   if (childSignal?.aborted || signal?.aborted) return { success: false, output: '', error: 'Execution aborted' }
-                  const allowedSchemas = new Set(activeSchemas.map(s => s.function.name))
-                  if (toolName === 'execute_code' || !allowedSchemas.has(toolName)) {
+                  if (toolName === 'execute_code' || !activeSchemas.some(s => s.function.name === toolName)) {
                     const reason = `Tool "${toolName}" is unavailable in the current run.`
                     return { success: false, output: '', error: reason }
                   }
                   const internalId = `code-${callId}-${Math.random().toString(36).slice(2, 9)}`
+                  const toolArguments = JSON.stringify(toolArgs ?? {})
                   const internalItem = {
                     callId: internalId,
-                    call: { id: internalId, type: 'function', function: { name: toolName, arguments: JSON.stringify(toolArgs ?? {}) } },
-                    fn: { name: toolName, arguments: JSON.stringify(toolArgs ?? {}) },
+                    call: { id: internalId, type: 'function', function: { name: toolName, arguments: toolArguments } },
+                    fn: { name: toolName, arguments: toolArguments },
                     args: (toolArgs && typeof toolArgs === 'object' ? toolArgs : {}) as Record<string, unknown>,
                     parseError: undefined,
                     isHiddenTool: false,
                     pendingCallId: undefined,
                   } as unknown as NormalizedToolCall
-                  codeModeInternalCallDepth++
-                  try { await executeCall(internalItem) }
-                  finally { codeModeInternalCallDepth-- }
+                  await executeCall(internalItem, childSignal)
                   const internalResult = resultMap.get(internalId)
-                  if (!internalResult) return { success: false, output: '', error: signal?.aborted ? 'Execution aborted' : 'Tool was blocked or cancelled.' }
+                  resultMap.delete(internalId)
+                  if (!internalResult) return { success: false, output: '', error: childSignal?.aborted ? 'Execution aborted' : 'Tool was blocked or cancelled.' }
                   const text = internalResult.contentForAI
                   const failed = internalResult.success === false || /(?:Action blocked|Rejected by the user|Действие отклонено пользователем|Approval required; tool not executed|unavailable in the current run|Permission block|Permission denied|blocked by loop guard|Hard loop guard|Loop guard|is disabled|unavailable in the current mode|not available in the current mode)/i.test(text)
                   // Failure/отказ НЕ обрывает скрипт: возвращаем его внутрь гостя как
@@ -1952,7 +1949,7 @@ export class Agent {
                     ...(internalResult.diff ? { diff: internalResult.diff } : {}),
                   }
                 },
-              }) } finally { signal?.removeEventListener('abort', forwardAbort) }
+              })
               codeTrace = codeResult.trace
               result = { success: codeResult.success, output: codeResult.output, error: codeResult.error }
               // Подсказка только при успешном прогоне: у упавшего скрипта в
@@ -1969,28 +1966,18 @@ export class Agent {
                 }
               }
             } else {
-            const toolPromise = this.executeTool(fn.name, args, callbacks, dryRunMode, callId)
-            if (fn.name === 'spawn_agent') {
-              // spawn_agent — блокирующий вызов до полного завершения суб-агента
-              // (его собственный цикл до MAX_STEPS). Суб-агент имеет свои потолки
-              // на каждый свой тул (MAX_TOOL_TIMEOUT_MS 180с, MCP_CALL_TIMEOUT_MS
-              // 120с) — зависший тул внутри суб-агента ловится там. Внешний
-              // MAX_TOOL_TIMEOUT_MS тут только убивал легитимно длинные суб-агенты
-              // (большой рефакторинг/исследование много минут). Безопасность
-              // висения: worker'а on('error'/'exit') и cancel() в AgentManager
-              // резолвят промис spawn_agent → родитель не блокируется навсегда.
-              result = await toolPromise
-            } else {
-              // Защитный потолок выполнения одного тула. Без этого зависший
-              // тул (MCP stdio с повисшим пайпом, исключение до эмита результата)
-              // блокирует агентский цикл навсегда — UI крутит спиннер
-              // «Выполняется…» пока весь агент не завершится. Таймер гарантированно
-              // закрывает итерацию tool_result'ом с понятной причиной.
-              const timeoutPromise = new Promise<ToolResult>((_, reject) => {
-                setTimeout(() => reject(new Error(`Tool ${fn.name} exceeded the execution timeout (${Math.round(MAX_TOOL_TIMEOUT_MS / 1000)}s). The MCP server may be hung or the transport is blocked.`)), MAX_TOOL_TIMEOUT_MS)
-              })
-              result = await Promise.race([toolPromise, timeoutPromise])
-            }
+              const toolPromise = this.executeTool(fn.name, args, callbacks, dryRunMode, callId, callSignal)
+              // MCP and sub-agents manage their own timeouts and cancellation.
+              if (isMcpTool || fn.name === 'spawn_agent') {
+                result = await toolPromise
+              } else {
+                let timer: ReturnType<typeof setTimeout> | undefined
+                const timeout = new Promise<never>((_, reject) => {
+                  timer = setTimeout(() => reject(new Error(`Tool ${fn.name} exceeded the execution timeout (${MAX_TOOL_TIMEOUT_MS / 1000}s).`)), MAX_TOOL_TIMEOUT_MS)
+                })
+                try { result = await Promise.race([toolPromise, timeout]) }
+                finally { clearTimeout(timer) }
+              }
             }
           } catch (toolErr) {
             // Раньше throw из executeTool протекал в outer try/catch и
@@ -2000,6 +1987,7 @@ export class Agent {
             const errMsg = toolErr instanceof Error ? toolErr.message : String(toolErr)
             result = { success: false, output: '', error: `Internal tool error in ${fn.name}: ${errMsg}` }
           }
+          if (isMcpTool && callSignal?.aborted) return
 
           // Fix 3: сброс loop-guard при успешном выполнении. Модель вышла
           // из лупа — не держим прошлые неудачи против неё весь session.
@@ -2186,7 +2174,7 @@ export class Agent {
             const repeatedErrors = this.recentErrorFingerprints.length >= maxRepeatedErrors &&
               this.recentErrorFingerprints.every(entry => entry === errorFingerprint)
             if (repeatedErrors) {
-              if (codeModeInternalCallDepth === 0) messages.push({
+              if (!nestedSignal) messages.push({
                 role: 'user',
                 content: `Loop guard: ${fn.name} produced the same error ${maxRepeatedErrors} times. Do not retry it unchanged. Use a different tool or explain the blocker.`,
               })
@@ -2276,7 +2264,7 @@ export class Agent {
           // Serial evidence ordering: a concurrent read cannot verify a mutation.
           for (const item of normalizedCalls) await goalWait(executeCall(item))
         } else {
-          if (parallelCalls.length > 0) await Promise.all(parallelCalls.map(executeCall))
+          if (parallelCalls.length > 0) await Promise.all(parallelCalls.map(item => executeCall(item)))
           for (const item of sequentialCalls) await executeCall(item)
         }
 
@@ -2483,9 +2471,10 @@ export class Agent {
     args: Record<string, unknown>,
     callbacks?: AgentCallbacks,
     dryRun?: boolean,
-    callId?: string
+    callId?: string,
+    signal?: AbortSignal,
   ): Promise<ToolResult> {
-    return this.toolDispatcher.executeTool(name, args, callbacks, dryRun, callId)
+    return this.toolDispatcher.executeTool(name, args, callbacks, dryRun, callId, signal)
   }
 
   /**

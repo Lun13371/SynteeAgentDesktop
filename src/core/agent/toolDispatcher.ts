@@ -181,7 +181,8 @@ export class ToolDispatcher {
     args: Record<string, unknown>,
     callbacks?: AgentCallbacks,
     dryRun?: boolean,
-    callId?: string
+    callId?: string,
+    signal = callbacks?.signal,
   ): Promise<ToolResult> {
     // Подстановка ${{KEY}} → реальное значение в аргументах тула
     const resolvedArgs = this.substituteSecrets(args) as Record<string, unknown>
@@ -809,7 +810,7 @@ export class ToolDispatcher {
       }
       default:
         if (name.startsWith('mcp__') && callbacks?.onMcpCall) {
-          const result = await callbacks.onMcpCall(name, resolvedArgs)
+          const result = await callbacks.onMcpCall(name, resolvedArgs, signal)
           return result
         }
         if (name.startsWith('plugin__') && callbacks?.onPluginCall) {
