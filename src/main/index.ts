@@ -90,6 +90,7 @@ import { initActivityManager } from './managers/ActivityManager'
 import { initGitSyncManager, registerGitSyncIPC } from './managers/GitSyncManager'
 import { startUpdatePolling, stopUpdatePolling } from './updater/UpdateChecker'
 import { ensureUpdater } from './updater/LauncherBridge'
+import { usesWindowsInstallerUpdates } from './updater/config'
 import { initModelCatalog, refreshCatalog } from '../core/tokens/modelCatalog'
 import { initSkillManager } from '../core/skills/skillManager'
 import { initCommandManager } from '../core/commands/commandManager'
@@ -290,7 +291,7 @@ app.whenReady().then(async () => {
   configurePerformanceDiagnostics(join(app.getPath('userData'), 'logs'))
   const stopPerformanceSampling = startPerformanceSampling()
   app.once('before-quit', stopPerformanceSampling)
-  electronApp.setAppUserModelId('com.synteehelper.app')
+  electronApp.setAppUserModelId(usesWindowsInstallerUpdates() ? 'com.synteehelper.desktop' : 'com.synteehelper.app')
 
   // ── syntee-plugin:// — файлы UI плагинов (iframe-панели) ──
   protocol.handle('syntee-plugin', handlePluginProtocol)

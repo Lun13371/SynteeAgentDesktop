@@ -84,6 +84,29 @@ sudo pacman -U dist/syntee-helper-1.1.4-2-x86_64.pkg.tar.zst
 The Linux port review, measured memory usage and remaining runtime checks are in
 [docs/arch-review.md](docs/arch-review.md).
 
+### Windows x64
+
+Download and run the `Syntee-Helper-Setup-<version>-x64.exe` asset from a
+`windows-v<version>` release in the [GitHub fork](https://github.com/zaxdevv/SynteeAgentDesktop/releases).
+For future updates, open **Настройки → Список изменений → Проверить обновления**.
+Click **Скачать**, then run the downloaded installer over the existing
+standalone installation. Chats and settings use `%APPDATA%\SynteeHelper`.
+The standalone install has its own Start menu entry, **Syntee Helper Desktop**.
+Exit any running Syntee instance before installing.
+
+To build the standalone installer on Windows, install Node.js, Rust with the
+MSVC toolchain and Visual Studio C++ Build Tools, then run:
+
+```powershell
+npm ci --ignore-scripts
+npm run build:win:installer
+```
+
+Publish the generated installer from `dist/windows` using a
+`windows-v<version>` tag matching the version in `package.json`. The app only
+discovers Windows releases with the matching installer asset. The launcher
+ZIP remains available through `npm run build:win` and uses the Syntee Gateway.
+
 ## Examples
 
 - [electron-vite-bytecode-example](https://github.com/alex8088/electron-vite-bytecode-example), source code protection

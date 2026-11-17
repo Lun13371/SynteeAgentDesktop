@@ -13,7 +13,7 @@
  * only coordinates UI state. See src/main/updater/UpdateChecker.ts for the
  * polling logic and src/shared/types for UpdateManifest/UpdateState shapes.
  */
-import { ipcMain, type BrowserWindow } from 'electron'
+import { app, ipcMain, type BrowserWindow } from 'electron'
 import type { ChangelogEntry, QuitAndInstallResult, UpdateState } from '../../shared/types'
 import {
   checkForUpdates,
@@ -22,7 +22,8 @@ import {
   quitAndInstall,
   subscribeUpdates,
 } from '../updater/UpdateChecker'
-import { changelogUrl } from '../updater/config'
+import { changelogUrl, usesWindowsInstallerUpdates } from '../updater/config'
+import { fetchWindowsInstallerReleases } from '../updater/windowsInstallerFeed'
 
 export function registerUpdatesIPC(getMainWindow: () => BrowserWindow | null): void {
   // Manual check — returns the new state so the renderer can react inline.
@@ -41,7 +42,14 @@ export function registerUpdatesIPC(getMainWindow: () => BrowserWindow | null): v
     'updates:getHistory',
     async (_e, params?: { channel?: string; limit?: number }): Promise<ChangelogEntry[]> => {
       const channel = params?.channel ?? 'stable'
-      const limit = Math.min(params?.limit ?? 50, 100)
+      const limit = Math.max(0, Math.min(params?.limit ?? 50, 100))
+      if (usesWindowsInstallerUpdates()) {
+        const current = app.getVersion()
+        return (await fetchWindowsInstallerReleases()).slice(0, limit).map(release => ({
+          version: release.version, changelog: release.changelog, released_at: release.released_at,
+          force: false, is_current: release.version === current,
+        }))
+      }
       const url = changelogUrl(channel, limit)
       const controller = new AbortController()
       const timer = setTimeout(() => controller.abort(), 10000)

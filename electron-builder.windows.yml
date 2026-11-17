@@ -1,0 +1,22 @@
+extends: ./electron-builder.yml
+appId: com.synteehelper.desktop
+productName: Syntee Helper Desktop
+# Locked packages include Windows x64 prebuilds. Avoid rebuilding them with
+# a different local Node toolchain than the packaged Electron uses.
+npmRebuild: false
+
+directories:
+  output: dist/windows
+
+win:
+  target: nsis
+  extraResources:
+    - from: packaging/windows/installer-channel
+      to: windows-installer-channel
+
+nsis:
+  oneClick: true
+  perMachine: false
+  runAfterFinish: true
+  deleteAppDataOnUninstall: false
+  artifactName: Syntee-Helper-Setup-${version}-${arch}.${ext}
