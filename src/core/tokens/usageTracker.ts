@@ -14,6 +14,7 @@ import { getGatewayModelsCache, GATEWAY_PROVIDER_ID } from './gatewayModelsCache
 import { BUILTIN_MODELS } from '../../shared/data/builtinModels'
 import { IMAGE_TOKEN_COST } from '../../shared/imageFormat'
 import { getModelPrice as getModelPriceStatic, type ModelPrice } from './ModelPricing'
+import type { ModelMeta } from '../../shared/types'
 
 // ─── Кэшированный энкодер ──────────────────────────────────────────────────────
 
@@ -84,6 +85,8 @@ type MessageLike = {
   tool_calls?: unknown
   tool_call_id?: string
   name?: string
+  reasoning_content?: string
+  thinking_blocks?: Array<{ thinking: string; signature: string }>
 }
 
 /**
@@ -126,6 +129,8 @@ function estimateMessageTokens(m: MessageLike): number {
   }
   if (m.tool_call_id) n += estimateTokens(m.tool_call_id)
   if (m.name) n += estimateTokens(m.name)
+  if (m.reasoning_content) n += estimateTokens(m.reasoning_content)
+  for (const block of m.thinking_blocks ?? []) n += estimateTokens(block.thinking) + estimateTokens(block.signature)
   return n
 }
 
@@ -161,7 +166,7 @@ function messageTokenFingerprint(m: MessageLike): string {
   }
   let toolCalls = ''
   try { toolCalls = m.tool_calls ? JSON.stringify(m.tool_calls) : '' } catch { toolCalls = String(m.tool_calls) }
-  return JSON.stringify([1, m.role, content, toolCalls, m.tool_call_id ?? '', m.name ?? ''])
+  return JSON.stringify([2, m.role, content, toolCalls, m.tool_call_id ?? '', m.name ?? '', m.reasoning_content, m.thinking_blocks])
 }
 
 function getCachedMessageTokens(m: MessageLike): number {
@@ -242,6 +247,8 @@ function messageTokenParts(m: MessageLike): string[] {
   }
   if (m.tool_call_id) parts.push(m.tool_call_id)
   if (m.name) parts.push(m.name)
+  if (m.reasoning_content) parts.push(m.reasoning_content)
+  for (const block of m.thinking_blocks ?? []) parts.push(block.thinking, block.signature)
   return parts
 }
 
@@ -299,16 +306,16 @@ export async function truncateToTokensAsync(
     } catch { /* fall through to the JS path */ }
   }
   if (estimateTokens(text) <= maxTokens) return { text, tokens: estimateTokens(text), truncated: false }
-  const words = text.split(/\s+/)
-  let out = ''
-  let used = 0
-  for (const word of words) {
-    const cost = estimateTokens(word)
-    if (used + cost > maxTokens) break
-    out += (out ? ' ' : '') + word
-    used += cost
+  let low = 0
+  let high = text.length
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2)
+    if (estimateTokens(text.slice(0, middle)) <= maxTokens) low = middle
+    else high = middle - 1
   }
-  return { text: out, tokens: used, truncated: true }
+  const prefix = text.slice(0, low)
+  const trimmed = /[\uD800-\uDBFF]$/.test(prefix) ? prefix.slice(0, -1) : prefix
+  return { text: trimmed, tokens: estimateTokens(trimmed), truncated: true }
 }
 
 // ─── Единые пороги компакции контекста ────────────────────────────────────────
@@ -491,6 +498,16 @@ export function computeContextSnapshot(
   }
 }
 
+/** Account for the exact messages and schemas of one provider request. */
+export function computeRequestContextSnapshot(messages: MessageLike[], limit: number, toolSchemas: unknown[]): UsageSnapshot {
+  const system = messages[0]?.role === 'system' ? messages[0] : undefined
+  return computeContextSnapshot(system ? messages.slice(1) : messages, limit, {
+    systemPrompt: typeof system?.content === 'string' ? system.content : undefined,
+    includeToolSchemas: true,
+    toolSchemas,
+  })
+}
+
 export function buildSnapshotFromEstimate(
   messages: Array<{ role: string; content: string }>,
   limit: number,
@@ -513,6 +530,26 @@ export function buildSnapshotFromEstimate(
 // ─── Сессионная стоимость ─────────────────────────────────────────────────────
 // Map<chatId, { totalCents, requests }> — живёт пока жив процесс
 const sessionCosts = new Map<string, { totalCents: number; requests: number }>()
+
+/** Tariff estimate from provider token usage, never an authoritative invoice.
+ * Unknown cache rates use the ordinary input price rather than free tokens.
+ */
+export function calculateUsageCost(
+  pricing: ModelPrice | null,
+  inputTokens: number,
+  outputTokens: number,
+  cacheReadTokens = 0,
+  cacheWriteTokens = 0,
+): number | null {
+  if (!pricing || ![pricing.inputPerM, pricing.outputPerM, inputTokens, outputTokens]
+    .every(value => Number.isFinite(value) && value >= 0)) return null
+  const read = Math.min(inputTokens, Math.max(0, Number.isFinite(cacheReadTokens) ? cacheReadTokens : 0))
+  const write = Math.min(inputTokens - read, Math.max(0, Number.isFinite(cacheWriteTokens) ? cacheWriteTokens : 0))
+  const cacheRate = (rate: number | undefined): number =>
+    rate != null && Number.isFinite(rate) && rate >= 0 ? rate : pricing.inputPerM
+  return ((inputTokens - read - write) * pricing.inputPerM + outputTokens * pricing.outputPerM
+    + read * cacheRate(pricing.cacheReadPerM) + write * cacheRate(pricing.cacheWritePerM)) / 1_000_000
+}
 
 export function recordSessionCost(
   chatId: string,
@@ -537,15 +574,8 @@ export function recordSessionCost(
   //     AIClient нормализует: totalPrompt = input + cache_read + cache_creation
   //
   // Поэтому nonCachedInput = promptTokens - cacheRead - cacheWrite
-  const nonCachedInput = Math.max(0, inputTokens - (cacheReadTokens ?? 0) - (cacheWriteTokens ?? 0))
-  let cents = (nonCachedInput / 1_000_000) * pricing.inputPerM
-  cents += (outputTokens / 1_000_000) * pricing.outputPerM
-  if (cacheReadTokens && pricing.cacheReadPerM) {
-    cents += (cacheReadTokens / 1_000_000) * pricing.cacheReadPerM
-  }
-  if (cacheWriteTokens && pricing.cacheWritePerM) {
-    cents += (cacheWriteTokens / 1_000_000) * pricing.cacheWritePerM
-  }
+  const cents = calculateUsageCost(pricing, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens)
+  if (cents == null) return null
 
   const entry = sessionCosts.get(chatId) ?? { totalCents: 0, requests: 0 }
   entry.totalCents += cents
@@ -564,7 +594,7 @@ export function resetSessionCost(chatId: string): void {
 
 // ─── Цены моделей (catalog → builtin → static pricing table) ──────────────────
 
-export function getModelPriceInfo(providerId: string, modelId: string): ModelPrice | null {
+export function getModelPriceInfo(providerId: string, modelId: string, customModels: ModelMeta[] = []): ModelPrice | null {
   if (!modelId) return null
 
   // 1. Модели Syntee-Gateway — цены отдаёт сам gateway (pricing per_1k →
@@ -572,17 +602,27 @@ export function getModelPriceInfo(providerId: string, modelId: string): ModelPri
   // substring-матчингом подменяет модель похожей (glm-5.3 → zai:glm-5).
   if (providerId === GATEWAY_PROVIDER_ID) {
     const gw = getGatewayModelsCache().find(m => m.id === modelId)
-    if (gw && (gw.inputPrice != null || gw.outputPrice != null)) {
+    if (gw && gw.inputPrice != null && gw.outputPrice != null
+      && [gw.inputPrice, gw.outputPrice].every(p => Number.isFinite(p) && p >= 0)) {
       return {
-        inputPerM: Math.round((gw.inputPrice ?? 0) * 100),
-        outputPerM: Math.round((gw.outputPrice ?? 0) * 100),
+        inputPerM: (gw.inputPrice ?? 0) * 100,
+        outputPerM: (gw.outputPrice ?? 0) * 100,
       }
     }
+    // A similarly named public model is not the gateway's actual tariff.
+    return null
+  }
+
+  // Explicit user tariffs belong to the exact provider+model pair only.
+  const custom = Array.isArray(customModels) ? customModels.find(m => m.providerId === providerId && m.id === modelId) : undefined
+  if (custom && custom.inputPrice != null && custom.outputPrice != null
+    && [custom.inputPrice, custom.outputPrice].every(p => Number.isFinite(p) && p >= 0)) {
+    return { inputPerM: custom.inputPrice * 100, outputPerM: custom.outputPrice * 100 }
   }
 
   // 2. Каталог models.dev
   const fromCatalog = getCatalogModel(providerId, modelId)
-  if (fromCatalog && (fromCatalog.inputPricePerM > 0 || fromCatalog.outputPricePerM > 0)) {
+  if (fromCatalog && (fromCatalog.hasPricing || fromCatalog.inputPricePerM > 0 || fromCatalog.outputPricePerM > 0)) {
     return {
       inputPerM: fromCatalog.inputPricePerM,
       outputPerM: fromCatalog.outputPricePerM,
@@ -594,7 +634,7 @@ export function getModelPriceInfo(providerId: string, modelId: string): ModelPri
   // 3. Builtin модели (цены в $ за 1M → переводим в центы ×100)
   const builtin = BUILTIN_MODELS.find(m => m.id === modelId && (providerId ? m.providerId === providerId : true))
   if (builtin?.inputPrice != null && builtin?.outputPrice != null) {
-    return { inputPerM: Math.round(builtin.inputPrice * 100), outputPerM: Math.round(builtin.outputPrice * 100) }
+    return { inputPerM: builtin.inputPrice * 100, outputPerM: builtin.outputPrice * 100 }
   }
 
   // 4. Статичная таблица ModelPricing (substring fallback)

@@ -35,6 +35,7 @@ export const PROTECTED_CORE_TOOLS = [
   'read_file', 'read_files', 'find_files', 'search_code', 'project_map', 'list_directory',
   'edit_file', 'write_file', 'run_command', 'get_diagnostics',
   'update_todo', 'update_working_memory', 'ask_user', 'request_access',
+  'recall_context',
 ] as const
 const coreTools = new Set<string>(PROTECTED_CORE_TOOLS)
 

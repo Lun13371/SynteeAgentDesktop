@@ -20,14 +20,18 @@ interface ActiveAssistant {
   projectWorkdir?: string
   lastHash: string
   lastErrorHash: string
+  controller: AbortController
 }
 
 const active = new Map<string, ActiveAssistant>()
+function isCurrent(a: ActiveAssistant): boolean {
+  return active.get(a.chatId) === a && !a.controller.signal.aborted && a.settings.enabled
+}
 const assistantLog: AssistantLogEntry[] = []
 // W1 feedback: веса источников и последние инжектированные хинты per chat.
 const sourceWeights = new Map<string, number>()
 const capabilityWeights = new Map<string, number>()
-const injectedHints = new Map<string, Array<{ id: string; source: string; capId?: string }>>()
+const injectedHints = new Map<string, Array<{ id: string; source: string; capId?: string; content: string }>>()
 
 // Дедуп хинтов по тексту per chat: navigator/capability шлют одно и то же
 // («Возвращайся к цели: X») каждые N раундов — для модели шум, для контекста
@@ -40,7 +44,13 @@ function normalizeHintText(s: string): string {
 /** true — текст впервые (можно инжектить), false — дубль. */
 function markHintText(chatId: string, content: string): boolean {
   let set = recentHintTexts.get(chatId)
-  if (!set) { set = new Set(); recentHintTexts.set(chatId, set) }
+  if (!set) set = new Set()
+  recentHintTexts.delete(chatId)
+  recentHintTexts.set(chatId, set)
+  if (recentHintTexts.size > 128) {
+    const oldestChat = recentHintTexts.keys().next().value
+    if (oldestChat) recentHintTexts.delete(oldestChat)
+  }
   const key = normalizeHintText(content)
   if (set.has(key)) return false
   set.add(key)
@@ -111,11 +121,20 @@ export function getAssistantsSettings(): AssistantsSettings {
 }
 
 export function updateAssistantsSettings(patch: Partial<AssistantsSettings>): AssistantsSettings {
+  const previous = globalSettings
   const wasEnabled = globalSettings.enabled
   globalSettings = { ...globalSettings, ...patch }
+  // Retire pending advisory work even if a role/source is re-enabled before it finishes.
+  const advisorySettingsChanged = previous.watcherEnabled !== globalSettings.watcherEnabled
+    || previous.navigatorEnabled !== globalSettings.navigatorEnabled
+    || previous.janitorEnabled !== globalSettings.janitorEnabled
+    || previous.sources?.memory !== globalSettings.sources?.memory
+    || previous.sources?.skills !== globalSettings.sources?.skills
   persistFn?.(globalSettings)
   for (const a of active.values()) {
     a.settings = globalSettings
+    if (!globalSettings.enabled || advisorySettingsChanged) a.controller.abort()
+    if (globalSettings.enabled && a.controller.signal.aborted) a.controller = new AbortController()
     a.watcher.updateSettings(globalSettings)
     a.worker?.postMessage({ type: 'assistants_settings', settings: globalSettings })
   }
@@ -169,15 +188,16 @@ function serverReady(): boolean {
 // мусора у watcher'а). Несколько секунд ожидания для advisory-события ничего
 // не блокируют, а хинт всё равно consumed на следующей границе раунда.
 const SERVER_WAKE_TIMEOUT_MS = 12_000
-async function serverReadyOrWake(): Promise<boolean> {
+async function serverReadyOrWake(signal?: AbortSignal): Promise<boolean> {
+  if (signal?.aborted) return false
   if (serverReady()) return true
   const deadline = Date.now() + SERVER_WAKE_TIMEOUT_MS
   while (Date.now() < deadline) {
-    if (!globalSettings.enabled) return false
+    if (!globalSettings.enabled || signal?.aborted) return false
     // 'error' — сервер упал окончательно (исчерпал рестарты): ждём зря.
     if (localModels.getState() === 'error') return false
     await new Promise(r => setTimeout(r, 400))
-    if (serverReady()) return true
+    if (!signal?.aborted && serverReady()) return true
   }
   return false
 }
@@ -192,14 +212,20 @@ export function attachAssistants(chatId: string, worker: Worker, opts: { project
   // W1 feedback: веса источников (корректируются в onRunDone) влияют на
   // отбор memory-хинтов — «расстроенный» источник замолкает.
   watcher.setSourceWeightProvider((src) => sourceWeights.get(src) ?? 1)
-  active.set(chatId, { watcher, chatId, worker, settings: globalSettings, capabilities: [], projectWorkdir: opts.projectWorkdir, lastHash: '', lastErrorHash: '' })
+  active.get(chatId)?.controller.abort()
+  const a: ActiveAssistant = { watcher, chatId, worker, settings: globalSettings, capabilities: [], projectWorkdir: opts.projectWorkdir, lastHash: '', lastErrorHash: '', controller: new AbortController() }
+  active.set(chatId, a)
+  worker.once('exit', () => { if (active.get(chatId) === a) detachAssistants(chatId, true) })
   worker.postMessage({ type: 'assistants_settings', settings: globalSettings })
   log('[Assistants] attached to chat %s (watcher=%s janitor=%s)', chatId, globalSettings.watcherEnabled, globalSettings.janitorEnabled)
 }
 
-export function detachAssistants(chatId: string): void {
+export function detachAssistants(chatId: string, preserveHintHistory = false): void {
+  const a = active.get(chatId)
+  a?.controller.abort()
+  if (a) a.worker = null
   active.delete(chatId)
-  recentHintTexts.delete(chatId)
+  if (!preserveHintHistory) recentHintTexts.delete(chatId)
   injectedHints.delete(chatId)
 }
 
@@ -209,6 +235,7 @@ export async function onAgentEvent(chatId: string, trigger: WatcherTrigger): Pro
     log('[Assistants] watcher skip chat=%s attached=%s enabled=%s', chatId, !!a, a?.settings.enabled)
     return
   }
+  const signal = a.controller.signal
   try {
     const ctx = buildTriggerContext(trigger, a.projectWorkdir)
     // Novelty-gate: нет новой информации — нет повода говорить (кроме старта).
@@ -221,24 +248,36 @@ export async function onAgentEvent(chatId: string, trigger: WatcherTrigger): Pro
       a.lastErrorHash = eh
     }
     appendLog({ ts: Date.now(), role: 'watcher', kind: 'trigger', detail: `${trigger.kind}: оценка возможностей` })
-    const ready = await serverReadyOrWake()
+    const ready = await serverReadyOrWake(signal)
+    if (signal.aborted || !isCurrent(a) || !a.settings.watcherEnabled) return
     if (ready) {
+      // Local memory retrieval also runs with the LLM router online. It uses
+      // E5 only (no extra generation) and shares the normal novelty gate.
+      const memoryHints = await a.watcher.onTrigger(trigger, [], true)
+      if (signal.aborted || !isCurrent(a) || !a.settings.watcherEnabled) return
+      for (const hint of memoryHints.slice(0, 1)) {
+        if (!markHintText(chatId, hint.content)) continue
+        a.worker?.postMessage({ type: 'hint', hint })
+        appendLog({ ts: Date.now(), role: 'watcher', kind: 'hint_injected', detail: `[memory] ${hint.content.slice(0, 80)}` })
+        bump('watcher', 'fired')
+      }
       // Capability router: prefilter каталога → точный структурный вердикт.
       let caps = prefilterCapabilities(a.capabilities, ctx, 10)
       if (caps.length === 0 && a.capabilities.length > 0) {
         // Keyword-overlap пуст (RU-запрос против EN-имён скиллов). Семантический
         // скоринг вместо «первых 10 по порядку» — порядок кандидатов для судьи.
-        const semantic = await scoreCapabilitiesSemantic(a.capabilities, ctx)
+        const semantic = await scoreCapabilitiesSemantic(a.capabilities, ctx, signal)
         caps = semantic.filter(s => s.score >= 0.1).slice(0, 10).map(s => s.cap)
       }
-      const verdict = await judgeCapability(ctx, caps.sort((x, y) => (capabilityWeights.get(y.id) ?? 1) - (capabilityWeights.get(x.id) ?? 1)))
+      const verdict = await judgeCapability(ctx, caps.sort((x, y) => (capabilityWeights.get(y.id) ?? 1) - (capabilityWeights.get(x.id) ?? 1)), signal)
+      if (signal.aborted || !isCurrent(a) || !a.settings.watcherEnabled) return
       if (verdict.helpful && verdict.confidence >= 0.6) {
         const cap = a.capabilities.find(c => c.id === verdict.id)
         const hint: HintCandidate = { id: `cap-${verdict.id}-${Date.now()}`, source: 'capability', content: verdict.action, score: verdict.confidence, title: cap?.name ?? verdict.id }
         if (markHintText(chatId, hint.content)) {
           a.worker?.postMessage({ type: 'hint', hint })
           const inj = injectedHints.get(chatId) ?? []
-          inj.push({ id: hint.id, source: hint.source, capId: verdict.id })
+          inj.push({ id: hint.id, source: hint.source, capId: verdict.id, content: hint.content.slice(0, 400) })
           injectedHints.set(chatId, inj.slice(-20))
           appendLog({ ts: Date.now(), role: 'watcher', kind: 'hint_injected', detail: `[capability:${hint.title}] ${hint.content.slice(0, 80)}` })
           bump('watcher', 'fired')
@@ -253,6 +292,7 @@ export async function onAgentEvent(chatId: string, trigger: WatcherTrigger): Pro
     } else {
       // Fallback без LLM: память/скиллы, не более одной подсказки.
       const hints = await a.watcher.onTrigger(trigger)
+      if (signal.aborted || !isCurrent(a) || !a.settings.watcherEnabled) return
       for (const hint of hints.slice(0, 1)) {
         if (!markHintText(chatId, hint.content)) { bump('watcher', 'skipped'); continue }
         a.worker?.postMessage({ type: 'hint', hint })
@@ -338,9 +378,28 @@ export async function onAssistantEvent(chatId: string, evt: Record<string, unkno
   const a = active.get(chatId)
   if (!a || !a.settings.enabled) return
   const s = a.settings
-  const ready = await serverReadyOrWake()
   const kind = String(evt.kind ?? '')
+  // Bookkeeping must never wake/download a local LLM or wait behind startup.
+  switch (kind) {
+    case 'capabilities': a.capabilities = (evt.capabilities as Capability[]) ?? []; return
+    case 'watcher_trigger': {
+      const trigger = evt.trigger as WatcherTrigger | undefined
+      if (trigger) await onAgentEvent(chatId, trigger)
+      return
+    }
+    case 'economist': bump('economist', 'fired'); return
+    case 'briefing': bump('briefing', 'fired'); return
+    case 'janitor_skip': bump('janitor', 'skipped'); return
+  }
+  if ((kind === 'navigator' && !s.navigatorEnabled) || (kind === 'archivist' && !s.archivistEnabled) || (kind === 'janitor_refine' && !s.janitorEnabled)) return
+  if (!['navigator', 'archivist', 'constitution_extract', 'janitor_refine'].includes(kind)) return
+  // Archivist intentionally outlives the worker: it persists durable memory
+  // emitted just before the terminal event. Other advisory jobs are run-bound.
+  const signal = kind === 'archivist' ? undefined : a.controller.signal
+  const ready = await serverReadyOrWake(signal)
+  if (!ready || !globalSettings.enabled || (signal && (signal.aborted || !isCurrent(a)))) return
   const post = (hint: HintCandidate): boolean => {
+    if (signal?.aborted || !isCurrent(a) || (hint.source === 'navigator' && !a.settings.navigatorEnabled)) return false
     const role: AssistantLogEntry['role'] = (hint.source === 'memory' || hint.source === 'skill' || hint.source === 'constitution' || hint.source === 'capability') ? 'watcher' : (hint.source as AssistantLogEntry['role'])
     if (!markHintText(chatId, hint.content)) {
       appendLog({ ts: Date.now(), role, kind: 'skip', detail: `дубль текста хинта — не инжектится: ${hint.content.slice(0, 60)}` })
@@ -352,18 +411,9 @@ export async function onAssistantEvent(chatId: string, evt: Record<string, unkno
   }
   try {
     switch (kind) {
-      case 'capabilities': {
-        a.capabilities = (evt.capabilities as Capability[]) ?? []
-        break
-      }
-      case 'watcher_trigger': {
-        const t = evt.trigger as WatcherTrigger | undefined
-        if (t) await onAgentEvent(chatId, t)
-        break
-      }
       case 'navigator': {
         if (!s.navigatorEnabled || !ready) return
-        const verdict = await judgeDrift(String(evt.objective ?? ''), String(evt.transcript ?? ''), Array.isArray(evt.constraints) ? evt.constraints as string[] : [], String(evt.todo ?? ''))
+        const verdict = await judgeDrift(String(evt.objective ?? ''), String(evt.transcript ?? ''), Array.isArray(evt.constraints) ? evt.constraints as string[] : [], String(evt.todo ?? ''), signal)
         if (verdict.drift || verdict.violation) {
           const content = verdict.violation
             ? `Нарушаешь ограничение: ${verdict.reason || 'соблюдай закреплённые правила.'}`
@@ -387,6 +437,7 @@ export async function onAssistantEvent(chatId: string, evt: Record<string, unkno
         }
         const files = Array.isArray(evt.modifiedFiles) ? (evt.modifiedFiles as unknown[]).filter((f): f is string => typeof f === 'string').slice(0, 10) : []
         const facts = await distillSession(transcript, files)
+        if (!globalSettings.enabled || !globalSettings.archivistEnabled) return
         let savedCount = 0
         for (const f of facts) {
           if (await isE5Duplicate(f.content, evt.projectId as string | undefined)) {
@@ -415,19 +466,16 @@ export async function onAssistantEvent(chatId: string, evt: Record<string, unkno
       }
       case 'constitution_extract': {
         if (!ready) return
-        const items = await extractConstraints(String(evt.text ?? ''))
-        if (items.length) a.worker?.postMessage({ type: 'constitution', items })
+        const items = await extractConstraints(String(evt.text ?? ''), signal)
+        if (items.length && !signal?.aborted && isCurrent(a)) a.worker?.postMessage({ type: 'constitution', items })
         break
       }
       case 'janitor_refine': {
         if (!ready) return
-        const summary = await summarizeTool(String(evt.toolName ?? 'tool'), String(evt.content ?? ''))
-        if (summary) a.worker?.postMessage({ type: 'janitor_refined', archiveId: evt.archiveId, summary })
+        const summary = await summarizeTool(String(evt.toolName ?? 'tool'), String(evt.content ?? ''), signal)
+        if (summary && !signal?.aborted && isCurrent(a) && a.settings.janitorEnabled) a.worker?.postMessage({ type: 'janitor_refined', archiveId: evt.archiveId, summary })
         break
       }
-      case 'economist': bump('economist', 'fired'); break
-      case 'briefing': bump('briefing', 'fired'); break
-      case 'janitor_skip': bump('janitor', 'skipped'); break
     }
   } catch (err) {
     log('[Assistants] agent %s error chat=%s: %s', kind, chatId, (err as Error).message)
@@ -442,7 +490,7 @@ export async function onRunDone(chatId: string, transcriptTail: string, invoked?
   injectedHints.delete(chatId)
   if (inj.length === 0 || !globalSettings.enabled || !serverReady()) return
   try {
-    const list = inj.map(h => h.id).join(', ')
+    const list = inj.map(h => h.content).join('; ')
     const verdict = await judgeRelevance(`session transcript: ${transcriptTail.slice(0, 400)}`, `hints used: ${list}`)
     // Простая эвристика: если судья считает контекст релевантным — поднимаем веса источников.
     const invokedSet = new Set([...(invoked?.tools ?? []), ...(invoked?.skills ?? [])])

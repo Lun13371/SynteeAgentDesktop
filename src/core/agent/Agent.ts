@@ -20,7 +20,7 @@ import {
   getHardLimitTokens, getHardLimitTargetTokens,
 } from '../context/contextManager'
 import type { ChatMessage } from '../context/contextManager'
-import { computeContextSnapshot } from '../tokens/usageTracker'
+import { computeRequestContextSnapshot, estimateTokens } from '../tokens/usageTracker'
 import { MAX_TOOL_TIMEOUT_MS } from '../ai/shared'
 import { getSubagentRole } from '../../shared/subagent-roles'
 import type { FileCacheEntry } from '../context/fileCacheTypes'
@@ -52,9 +52,10 @@ import type { CodeTraceEntry } from '../codeMode'
 import { Janitor } from '../context/janitor'
 import { loadAssistantState, saveAssistantState } from '../context/assistantState'
 import { Constitution } from '../context/constitution'
+import { consumeHintBudget, MAX_PENDING_HINTS } from '../context/hintBudget'
 import { getSkillManager } from '../skills/skillManager'
 import type { Capability } from './watcher'
-import { HINT_MARKER, JANITOR_MARKER, CONSTITUTION_MARKER, BRIEFING_MARKER, DEFAULT_ASSISTANTS_SETTINGS, type AssistantsSettings, type HintCandidate } from '../../shared/assistants'
+import { JANITOR_MARKER, CONSTITUTION_MARKER, BRIEFING_MARKER, DEFAULT_ASSISTANTS_SETTINGS, type AssistantsSettings, type HintCandidate } from '../../shared/assistants'
 
 // Ограниченное хранилище Code Mode живёт в worker-процессе, а записи изолированы chatId.
 // Если worker завершён, артефакты очищаются вместе с ним.
@@ -68,6 +69,7 @@ const NON_DESTRUCTIVE_TOOLS = new Set([
   'edit_file',
   'save_memory',
   'recall_memory',
+  'recall_context',
   'update_working_memory',
   'update_todo',
   'ask_user',
@@ -199,7 +201,7 @@ export class Agent {
   private forceJanitorMode: 'light' | 'deep' | null = null
   private ecoStage = 0
   private tokenCalibration = 1
-  private pendingApproxTokens = 0
+  private pendingEstimatedTokens = 0
   private navigatorRoundCounter = 0
   /** Probe-флаги navigator'а: свежая ошибка/зацикливание — повод свериться
    *  с целью и ограничениями раньше обычного интервала (см. блок Navigator). */
@@ -261,15 +263,16 @@ export class Agent {
 
   pushHint(hint: HintCandidate): void {
     if (!this.assistantsSettings.enabled || !this.hintSourceEnabled(hint.source)) return
-    if (this.recentHintIds.has(hint.id)) return
-    if (this.pendingHints.length >= 3) return
+    if (this.recentHintIds.has(hint.id) || this.pendingHints.some(pending => pending.id === hint.id)) return
+    if (this.pendingHints.length >= MAX_PENDING_HINTS) return
     this.pendingHints.push(hint)
   }
 
   private hintSourceEnabled(source: HintCandidate['source']): boolean {
     const s = this.assistantsSettings
     switch (source) {
-      case 'memory': case 'skill': case 'capability': return s.watcherEnabled
+      case 'memory': return s.watcherEnabled && s.sources.memory
+      case 'skill': case 'capability': return s.watcherEnabled && s.sources.skills
       case 'briefing': return s.briefingEnabled
       case 'navigator': return s.navigatorEnabled
       case 'archivist': return s.archivistEnabled
@@ -342,18 +345,22 @@ export class Agent {
   }
 
   /** Применяет отчёт janitor + пост-обработка (конституция, якорь, refine-запросы). */
-  private applyJanitorReport(messages: AgentMessage[], report: import('../../shared/assistants').JanitorReport, callbacks: AgentCallbacks, step: number): void {
+  private applyJanitorReport(messages: AgentMessage[], report: import('../../shared/assistants').JanitorReport, callbacks: AgentCallbacks, toolSchemas: unknown[], contextWindow: number): void {
+    const before = computeRequestContextSnapshot(messages, contextWindow, toolSchemas)
     const optimized = this.janitor.apply(messages as ChatMessage[], report)
     messages.length = 0
     messages.push(...(optimized as AgentMessage[]))
     this.reinjectConstitution(messages)
     this.markCacheAnchor(messages)
+    const after = computeRequestContextSnapshot(messages, contextWindow, toolSchemas)
+    const saved = Math.max(0, before.estimated - after.estimated)
     callbacks.onStep({
       type: 'janitor',
-      content: `Оптимизировано: ${report.actions.length} действ., −${report.totalTokensSaved} токенов`,
-      janitorTokensSaved: report.totalTokensSaved,
+      content: `Контекст запроса ≈${before.estimated} → ≈${after.estimated} токенов (${after.pct}% окна). Сэкономлено ≈${saved}; свёрнуто ${report.actions.length} результатов инструментов.`,
+      janitorTokensSaved: saved,
       janitorActions: report.actions.map(a => ({ kind: a.kind, description: a.description, tokensSaved: a.tokensSaved, archiveId: a.archiveId })),
     })
+    callbacks.onContextUpdate?.({ promptTokens: after.estimated, breakdown: after.breakdown })
     // J4: просим локальную модель улучшить структурные резюме (async, не блокирует).
     if (this.onAssistantEvent) {
       for (const a of report.actions) {
@@ -403,8 +410,13 @@ export class Agent {
     if (!this.liveMessages || !summary) return
     const tag = `[recall:${archiveId}]`
     for (const m of this.liveMessages) {
-      if (typeof m.content === 'string' && m.content.includes(tag)) {
-        m.content = `${JANITOR_MARKER} ${summary} ${tag}`
+      if (m.role === 'tool' && typeof m.content === 'string' && m.content.includes(tag)) {
+        const replacement = `${JANITOR_MARKER} ${summary} ${tag}`
+        if (estimateTokens(replacement) <= estimateTokens(m.content)) {
+          m.content = replacement
+          this.janitor.updateSummary(archiveId, replacement)
+          this.persistStateNow()
+        }
       }
     }
   }
@@ -643,6 +655,7 @@ export class Agent {
         this.janitor.hydrateArchive(st.janitorArchive ?? [])
       }
     }
+    this.janitor.restoreSummaries(messages as ChatMessage[])
     // J1: детерминированное извлечение ограничений из нового user-сообщения.
     if (this.assistantsSettings.enabled && typeof userMessage === 'string') {
       const added = this.constitution.addFromUserText(userMessage)
@@ -681,7 +694,7 @@ export class Agent {
         this.continuityStarted = true
         void this.computeContinuity().then(text => {
           if (!text) return
-          this.pendingHints.push({ id: `continuity-${Date.now()}`, source: 'briefing', content: text, score: 1, title: 'continuity' })
+          this.pushHint({ id: `continuity-${Date.now()}`, source: 'briefing', content: text, score: 1, title: 'continuity' })
         }).catch(() => {})
       }
     }
@@ -755,6 +768,20 @@ export class Agent {
     }
     const filteredSchemas = filterToolSchemas(activeSchemas, toolSettings)
     activeSchemas.splice(0, activeSchemas.length, ...filteredSchemas)
+    if (!activeSchemas.some(schema => schema.function.name === 'recall_context')
+      && (this.janitor.getArchiveSize() > 0 || (this.assistantsSettings.enabled && this.assistantsSettings.janitorEnabled))) {
+      activeSchemas.push({
+        type: 'function',
+        function: {
+          name: 'recall_context',
+          description: 'Read an original tool result replaced by a [recall:id] summary. Paginated; use the returned next offset for more.',
+          parameters: {
+            type: 'object', required: ['archive_id'],
+            properties: { archive_id: { type: 'string' }, offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 8000 } },
+          },
+        },
+      })
+    }
     // execute_code — обычный тул реестра (schemas/code.ts). Набор приходит из
     // getToolSchemas: normal-режим даёт его, ask/planning/read-only — нет.
     const artifacts = CODE_MODE_ARTIFACTS
@@ -907,22 +934,17 @@ export class Agent {
       }
 
       if (this.pendingHints.length > 0 && !signal?.aborted && this.hintCooldown <= 0) {
-        const budget = this.assistantsSettings.hintBudgetTokens
-        const incoming = this.pendingHints.splice(0)
-        let injected = 0
-        for (const hint of incoming) {
-          if (injected >= budget) break
-          const text = hint.title ? `[${hint.source}: ${hint.title}] ${hint.content}` : `[${hint.source}] ${hint.content}`
-          messages.push({ role: 'user', content: `${HINT_MARKER}\n\n${text}` })
+        const incoming = this.assistantsSettings.enabled ? this.pendingHints.filter(hint => this.hintSourceEnabled(hint.source)) : []
+        const { selected, remaining } = consumeHintBudget(incoming, this.assistantsSettings.hintBudgetTokens)
+        this.pendingHints = remaining
+        for (const { hint, text, message } of selected) {
+          messages.push({ role: 'user', content: message })
           this.recentHintIds.add(hint.id)
           if (this.recentHintIds.size > 50) {
             const first = this.recentHintIds.values().next().value
             if (first) this.recentHintIds.delete(first)
           }
           callbacks.onStep({ type: 'hint', content: text, hintSource: hint.source, hintId: hint.id })
-          // Бюджет задан в токенах (hintBudgetTokens=300), а не в символах —
-          // считаем оценкой ~3.5 символа/токен, иначе лимит срезал всё до 1 хинта.
-          injected += Math.ceil(text.length / 3.5)
           log('[Agent] hint injected (round %s): %s', step, text.slice(0, 100))
         }
         this.hintCooldown = this.assistantsSettings.hintCooldownRounds
@@ -933,11 +955,9 @@ export class Agent {
       // Economist + умный триггер Janitor: не спамим компакцией на ранних
       // ходах. Сжимаем только когда ран созрел (>25 шагов), есть реальные
       // повторы тулов, или контекст подбирается к лимиту.
-      const approxTokens = messages.reduce((s, m) => s + (typeof m.content === 'string' ? m.content.length : 0) / 4, 0)
-      this.pendingApproxTokens = approxTokens
-      // Калибровка chars/4 по реальным prompt_tokens из API (EMA): для русского
-      // текста chars/4 занижает токены в ~1.5-2 раза, пороги должны быть точными.
-      const calibratedTokens = approxTokens * this.tokenCalibration
+      const requestContext = computeRequestContextSnapshot(messages, realContextWindow, activeSchemas)
+      this.pendingEstimatedTokens = requestContext.estimated
+      const calibratedTokens = requestContext.estimated * this.tokenCalibration
       // Economist: порог относительно окна контекста модели.
       // 1M → 30%, 500k → 60%, 256k → 70%, <256k → 80%.
       const ecoFrac = realContextWindow >= 1_000_000 ? 0.3 : realContextWindow >= 500_000 ? 0.6 : realContextWindow >= 256_000 ? 0.7 : 0.8
@@ -973,7 +993,7 @@ export class Agent {
       const janitorDue = typeof this.janitor?.shouldScan === 'function'
         && this.janitor.shouldScan(this.janitorRoundCounter)
         && (matureRun || heavyRepeats || contextPressure)
-      if (janitorDue || this.forceJanitorMode) {
+      if (this.assistantsSettings.enabled && this.assistantsSettings.janitorEnabled && (janitorDue || this.forceJanitorMode)) {
         const scanMode = this.forceJanitorMode ?? 'deep'
         this.forceJanitorMode = null
         // Emergency (economist stage 2 — ecoStage ещё активен): активный хвост
@@ -985,7 +1005,8 @@ export class Agent {
         log('[Agent] janitor scan round=%s mode=%s actions=%d saved=%d enabled=%s', this.janitorRoundCounter, scanMode, report.actions.length, report.totalTokensSaved, this.assistantsSettings.enabled)
         // J2: не применяем микро-компакции — они инвалидируют кэш чаще, чем экономят.
         if (report.actions.length > 0 && report.totalTokensSaved >= this.assistantsSettings.janitorMinSavingsTokens) {
-          this.applyJanitorReport(messages, report, callbacks, step)
+          this.applyJanitorReport(messages, report, callbacks, activeSchemas, realContextWindow)
+          this.pendingEstimatedTokens = computeRequestContextSnapshot(messages, realContextWindow, activeSchemas).estimated
         } else {
           this.onAssistantEvent?.({ kind: 'janitor_skip' })
         }
@@ -1051,12 +1072,10 @@ export class Agent {
           }, INACTIVITY_TIMEOUT_MS)
         }
         resetInactivityTimer()
-        // Калибровка Economist: реальные prompt_tokens этого раунда против
-        // нашей оценки chars/4 → EMA-коэффициент (clamp 0.5..4).
+        // Match provider tokenization against the complete request, including tools.
         const trackUsage = (promptTokens: number, completionTokens: number, cacheRead?: number, cacheWrite?: number) => {
-          if (this.pendingApproxTokens > 0 && promptTokens > 0) {
-            const ratio = Math.min(4, Math.max(0.5, promptTokens / this.pendingApproxTokens))
-            this.tokenCalibration = this.tokenCalibration * 0.7 + ratio * 0.3
+          if (this.pendingEstimatedTokens > 0 && promptTokens > 0) {
+            this.tokenCalibration = Math.min(4, Math.max(0.5, promptTokens / this.pendingEstimatedTokens))
           }
           if (goalRuntime) goalRuntime.addTokens(promptTokens + completionTokens)
           callbacks.onUsage?.(promptTokens, completionTokens, cacheRead, cacheWrite)
@@ -1790,7 +1809,7 @@ export class Agent {
             && fn.name !== 'read_file' && fn.name !== 'read_files' && fn.name !== 'find_files'
             && fn.name !== 'search_code' && fn.name !== 'list_directory'
             && fn.name !== 'get_diagnostics'
-            && fn.name !== 'recall_memory') {
+            && fn.name !== 'recall_memory' && fn.name !== 'recall_context') {
             approval.block = true
             approval.reason = 'Code Mode настроен только для чтения и анализа'
           }
@@ -2119,6 +2138,7 @@ export class Agent {
             || fn.name === 'read_file' || fn.name === 'read_files'
             || fn.name === 'spawn_agent'
             || fn.name === 'manage_chats' // Own bounded output + offset pagination; preserve valid JSON.
+            || fn.name === 'recall_context' // Already paged to <=8000 chars; keep the advertised next offset valid.
             || fn.name === 'fetch_page'  // своя обрезка по maxChars (default 50000) с сообщением
             // Плагинные и MCP-тулы — НЕ обрезаем вообще: автор тула сам
             // отвечает за размер вывода (plugin_docs отдаёт секции доков
@@ -2308,13 +2328,7 @@ export class Agent {
           // с tool_calls+tool results+current user). breakdown консистентен
           // с computeContextSnapshot / AIClient.onContextCounted — больше
           // никаких отдельных формул, дающих другие числа.
-          const systemMsg = messages[0]?.role === 'system' ? messages[0] : undefined
-          const rest = systemMsg ? messages.slice(1) : messages
-          const snap = computeContextSnapshot(rest, Number.MAX_SAFE_INTEGER, {
-            systemPrompt: systemMsg?.content as string | undefined,
-            includeToolSchemas: true,
-            toolSchemas: activeSchemas,
-          })
+          const snap = computeRequestContextSnapshot(messages, realContextWindow, activeSchemas)
           callbacks.onContextUpdate({
             promptTokens: snap.estimated,
             breakdown: {
@@ -2452,6 +2466,12 @@ export class Agent {
     callId?: string,
     signal?: AbortSignal,
   ): Promise<ToolResult> {
+    if (name === 'recall_context') {
+      const output = this.janitor.recallPage(String(args.archive_id ?? ''), Number(args.offset ?? 0), Number(args.limit ?? 4000))
+      return output === null
+        ? { success: false, output: '', error: 'Context archive entry not found. Repeat the original read/search if available.' }
+        : { success: true, output }
+    }
     return this.toolDispatcher.executeTool(name, args, callbacks, dryRun, callId, signal)
   }
 

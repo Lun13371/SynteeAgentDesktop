@@ -58,6 +58,7 @@ export const TOOL_META: Record<string, ToolMeta> = {
   update_working_memory: { label: 'Память чата', icon: 'database',    color: '#34d399' },
   save_memory:    { label: 'Сохранить в память',  icon: 'database',    color: '#10b981' },
   recall_memory:  { label: 'Поиск в памяти',      icon: 'database',    color: '#059669' },
+  recall_context: { label: 'Восстановить контекст', icon: 'database',   color: '#059669' },
 
   // ── Расширения ──
   list_extensions:{ label: 'Расширения',        icon: 'puzzle',      color: '#a78bfa' },

@@ -46,7 +46,7 @@ export async function autoNameChat(chatId: string, firstMessage: string, store: 
   autoNameInFlight.add(chatId)
   try {
     const prompt = `Придумай короткое название (3-5 слов) для чата, который начинается с этого сообщения: "${firstMessage.slice(0, 200)}". Ответь только названием без кавычек и лишних слов.`
-    const client = new AIClient(store)
+    const client = new AIClient(store, { chatId, source: 'title' })
     const messages = [{ role: 'user' as const, content: prompt }]
 
     // 1. fast-модель

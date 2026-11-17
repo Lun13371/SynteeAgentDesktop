@@ -24,6 +24,7 @@ export interface CompleteOptions {
   maxTokens?: number
   temperature?: number
   timeoutMs?: number
+  signal?: AbortSignal
 }
 
 export interface ManagerStatus {
@@ -62,6 +63,8 @@ interface QueueItem {
   resolve: (text: string) => void
   reject: (err: Error) => void
   ts: number
+  signal?: AbortSignal
+  cleanup: () => void
 }
 
 const DEFAULT_PORT = 18474
@@ -69,6 +72,7 @@ const HEALTH_INTERVAL_MS = 10_000
 const IDLE_UNLOAD_MS = 5 * 60_000
 const STARTUP_TIMEOUT_MS = 60_000
 const MAX_QUEUE = 8
+const MAX_QUEUE_WAIT_MS = 45_000
 // llama-server стартует с n_slots=4 и общим KV-пулом, но декод CPU-bound:
 // при 3 параллельных запросах каждый становится ~2.5× медленнее. Два слота
 // дают лучший баланс — длинный janitor/archivist больше не блокирует
@@ -213,8 +217,20 @@ class LocalModelManager {
 
   /** Queued completion. Auto-ensures readiness; rejects cleanly if unavailable. */
   async complete(prompt: string, opts: CompleteOptions = {}): Promise<string> {
+    opts.signal?.throwIfAborted()
     this.lastActivity = Date.now()
-    const ready = await this.ensureReady()
+    const startup = this.ensureReady()
+    const ready = opts.signal ? await new Promise<boolean>((resolve, reject) => {
+      const signal = opts.signal!
+      const onAbort = () => {
+        signal.removeEventListener('abort', onAbort)
+        reject(signal.reason ?? new Error('Request cancelled'))
+      }
+      signal.addEventListener('abort', onAbort, { once: true })
+      startup.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort))
+      if (signal.aborted) onAbort()
+    }) : await startup
+    opts.signal?.throwIfAborted()
     if (!ready || this.shuttingDown || this.state !== 'ready') throw new Error(this.lastError ?? 'Local model not ready')
     return this.enqueue(prompt, opts)
   }
@@ -227,7 +243,7 @@ class LocalModelManager {
     this.stopWatchdog()
     this.killProcess()
     this.activeDevice = null
-    for (const item of this.queue.splice(0)) item.reject(new Error('Manager shutting down'))
+    this.rejectQueued('Manager shutting down')
     this.setState('idle')
   }
 
@@ -255,11 +271,13 @@ class LocalModelManager {
         this.lastError = undefined
         if (resetRestarts) this.restarts = 0
         this.setState('ready')
+        this.dispatch()
         this.startWatchdog()
         this.emit({ phase: 'ready', percent: 100 })
         return true
       }
       this.setState('error')
+      this.rejectQueued('Local model failed to start')
       this.emit({ phase: 'error', percent: 0, error: this.lastError })
       return false
     } catch (err) {
@@ -267,6 +285,7 @@ class LocalModelManager {
       this.lastError = (err as Error).message
       log('[LocalModels] ensure failed: %s', this.lastError)
       this.setState('error')
+      this.rejectQueued(this.lastError)
       this.emit({ phase: 'error', percent: 0, error: this.lastError })
       return false
     }
@@ -504,6 +523,7 @@ class LocalModelManager {
       this.lastError = `server crashed ${this.restarts}× — giving up`
       log('[LocalModels] %s', this.lastError)
       this.emit({ phase: 'error', percent: 0, error: this.lastError })
+      this.rejectQueued(this.lastError)
       return
     }
     const restartDelay = RESTART_BACKOFF_MS[Math.min(this.restarts, RESTART_BACKOFF_MS.length - 1)]
@@ -547,17 +567,35 @@ class LocalModelManager {
     const priority = opts.priority ?? 'default'
     if (this.queue.length >= MAX_QUEUE) {
       const dropIdx = this.queue.findIndex(q => q.priority === 'janitor')
-      if (dropIdx >= 0) this.queue.splice(dropIdx, 1)[0].reject(new Error('Queue overflow'))
+      if (dropIdx >= 0) {
+        const dropped = this.queue.splice(dropIdx, 1)[0]
+        dropped.cleanup()
+        dropped.reject(new Error('Queue overflow'))
+      }
       else return Promise.reject(new Error('Queue full'))
     }
     return new Promise((resolve, reject) => {
-      this.queue.push({
+      const cancelQueued = (error: Error) => {
+        const index = this.queue.indexOf(item)
+        if (index < 0) return
+        this.queue.splice(index, 1)
+        item.cleanup()
+        reject(error)
+      }
+      const onAbort = () => cancelQueued(new Error('Request cancelled'))
+      const timer = setTimeout(() => cancelQueued(new Error('Local model queue timed out')), MAX_QUEUE_WAIT_MS)
+      const item: QueueItem = {
         priority, prompt,
         maxTokens: opts.maxTokens ?? 100,
         temperature: opts.temperature ?? 0.1,
         timeoutMs: opts.timeoutMs ?? 15_000,
         resolve, reject, ts: Date.now(),
-      })
+        signal: opts.signal,
+        cleanup: () => { clearTimeout(timer); opts.signal?.removeEventListener('abort', onAbort) },
+      }
+      this.queue.push(item)
+      opts.signal?.addEventListener('abort', onAbort, { once: true })
+      if (opts.signal?.aborted) { onAbort(); return }
       this.queue.sort((a, b) => PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority] || a.ts - b.ts)
       this.dispatch()
     })
@@ -572,8 +610,16 @@ class LocalModelManager {
     if (this.shuttingDown || this.state !== 'ready') return
     while (this.inFlight < MAX_PARALLEL && this.queue.length > 0) {
       const item = this.queue.shift()!
+      item.cleanup()
       this.inFlight++
       void this.runItem(item)
+    }
+  }
+
+  private rejectQueued(reason: string): void {
+    for (const item of this.queue.splice(0)) {
+      item.cleanup()
+      item.reject(new Error(reason))
     }
   }
 
@@ -589,6 +635,7 @@ class LocalModelManager {
   }
 
   private async callLlm(item: QueueItem): Promise<string> {
+    item.signal?.throwIfAborted()
     this.lastActivity = Date.now()
     const controller = new AbortController()
     const lifecycleSignal = this.lifecycle.signal
@@ -606,11 +653,12 @@ class LocalModelManager {
           temperature: item.temperature,
           stream: false,
         }),
-        signal: AbortSignal.any([controller.signal, lifecycleSignal]),
+        signal: AbortSignal.any([controller.signal, lifecycleSignal, ...(item.signal ? [item.signal] : [])]),
       })
       if (!res.ok) throw new Error(`LLM HTTP ${res.status}`)
       const data = await res.json() as { choices?: Array<{ message?: { content?: string } }> }
       lifecycleSignal.throwIfAborted()
+      item.signal?.throwIfAborted()
       return data.choices?.[0]?.message?.content?.trim() ?? ''
     } finally {
       clearTimeout(timer)

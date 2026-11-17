@@ -51,7 +51,8 @@ import {
   applyRollingWindowAsync, getContextSettings, estimateMessagesTokensAsync,
   estimateTokens, getModelContextWindow,
 } from '../../core/context/contextManager'
-import { buildSnapshotFromEstimate, buildSnapshotFromReal, getSessionCost, resetSessionCost, getModelPriceInfo } from '../../core/tokens/usageTracker'
+import { buildSnapshotFromEstimate, buildSnapshotFromReal, getModelPriceInfo } from '../../core/tokens/usageTracker'
+import { getChatCost, deleteChatCosts, installUsageAccounting } from '../services/usageLedger'
 import {} from '../../core/tokens/gatewayModelsCache'
 import { clearFileCache } from '../../core/context/fileReadCache'
 import {} from '../../core/context/historyCompressor'
@@ -108,6 +109,11 @@ export type { ProgrammaticChatSendParams } from './chatRunSupport'
 
 export function registerChatIPC(store: Store, mainWindow: { getWindow: () => BrowserWindow | null }): void {
   initDB(app.getPath('userData'))
+  installUsageAccounting(snapshot => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.isDestroyed()) window.webContents.send('context:cost', snapshot)
+    }
+  })
   recoverInterruptedTaskSummaries()
   setGlobalMemorySettingsStore(store)
 
@@ -211,7 +217,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     clearFileCache(chatId)
     agentManager.clearChat(chatId)
     ptyManager.killByChat(chatId)
-    resetSessionCost(chatId)
+    deleteChatCosts(chatId)
   })
   ipcMain.handle('chat:rename', (_, chatId: string, title: string) => renameChat(chatId, title))
   ipcMain.handle('chat:pinMsg', (_, messageId: string) => pinMessage(messageId))
@@ -412,7 +418,6 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
         log('[context:calculate] chatId=%s dbMsgs=%d rawHistoryMsgs=%d historyTokens=%d systemTokens=%d estimated=%d sysPromptLen=%d (no lastUsage — tiktoken estimate)',
           chatId, history.length, rawHistory.length, snapshot.breakdown.history, snapshot.breakdown.system, snapshot.estimated, sysPrompt?.length ?? 0)
       }
-      const sess = getSessionCost(chatId)
 
       // Метаданные для legacy-полей ContextRing (historyMessages / toolCallsCount)
       const historyMessagesCount = history.length
@@ -422,7 +427,6 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       }, 0)
 
       win.webContents.send(IPC_EVENTS.CONTEXT_USAGE, {
-        chatId,
         pct: snapshot.pct,
         estimated: snapshot.estimated,
         limit: snapshot.limit,
@@ -438,8 +442,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
           const providerId = model?.modelProvider ?? main?.providerId ?? ''
           return getModelPriceInfo(providerId, modelId)
         })(),
-        sessionCostCents: sess?.totalCents ?? null,
-        sessionRequests: sess?.requests ?? 0,
+        ...getChatCost(chatId),
         historyMessages: historyMessagesCount,
         toolCallsCount,
       })
@@ -906,7 +909,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       emitRunStatus(mainWindow.getWindow(), chatId, 'compacting')
 
       const summaryFn = async (systemPrompt: string, userContent: string): Promise<string> => {
-        const aiClient = new AIClient(store)
+        const aiClient = new AIClient(store, { chatId, source: 'compaction' })
         let result = ''
         // Сигнал рендереру: начало стрима резюме (сброс накопленного текста
         // в compacting-индикаторе). Только manual /compact — авто-компакция
@@ -1081,10 +1084,8 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
             currentMsgTokens: 0,
             includeToolSchemas: true,
           })
-          const sess = getSessionCost(chatId)
           const win = mainWindow.getWindow()
           win?.webContents.send(IPC_EVENTS.CONTEXT_USAGE, {
-            chatId,
             pct: snapshot.pct,
             estimated: snapshot.estimated,
             limit: snapshot.limit,
@@ -1092,8 +1093,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
             source: 'real',
             compressed: true,
             breakdown: snapshot.breakdown,
-            sessionCostCents: sess?.totalCents ?? null,
-            sessionRequests: sess?.requests ?? 0,
+            ...getChatCost(chatId),
             // Кол-во сообщений должно соответствовать breakdown.history —
             // он посчитан по result.messages (tail). Раньше здесь стоял
             // liveMessages.length (до-сжатия) и ринг показывал «5k tok (40 сообщ.)»,

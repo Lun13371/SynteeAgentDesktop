@@ -24,7 +24,8 @@ function formatNum(n: number): string {
 }
 
 function formatCost(cents: number): string {
-  if (cents < 1) return '<$0.01'
+  if (cents === 0) return '$0.000'
+  if (cents < 0.1) return '<$0.001'
   if (cents < 100) return `$${(cents / 100).toFixed(3)}`
   return `$${(cents / 100).toFixed(2)}`
 }
@@ -37,12 +38,30 @@ export default function ContextRing({ info, compactSessionStats, chatId, goal }:
   const [tooltipPos, setTooltipPos] = useState<{ x: number; y: number } | null>(null)
   const [panelPos, setPanelPos] = useState({ bottom: 0, left: 0 })
   const ringRef = useRef<HTMLButtonElement>(null)
+  const [accountCost, setAccountCost] = useState<number | null>(null)
+  const [accountLoading, setAccountLoading] = useState(false)
+  const lastAccountFetch = useRef(0)
+
+  useEffect(() => {
+    if (!panelOpen || Date.now() - lastAccountFetch.current < 30_000) return
+    let active = true
+    setAccountLoading(true)
+    window.syntee.billing.summary({ hours: 24 }).then((summary: { total_cost?: number } | null) => {
+      if (!active) return
+      const cost = summary?.total_cost
+      setAccountCost(typeof cost === 'number' && Number.isFinite(cost) && cost >= 0 ? cost * 100 : null)
+      lastAccountFetch.current = Date.now()
+    }).catch(() => { if (active) setAccountCost(null) }).finally(() => { if (active) setAccountLoading(false) })
+    return () => { active = false }
+  }, [panelOpen])
 
   const SIZE = 28
   const STROKE = 3
   const R = (SIZE - STROKE) / 2
   const CIRC = 2 * Math.PI * R
   const percent = info?.percent ?? 0
+  const hasRecordedRequests = (info?.sessionRequests ?? 0) > 0
+  const requestCost = hasRecordedRequests ? info?.lastRequestCostCents : info?.estimatedCostCents
   const offset = CIRC - (percent / 100) * CIRC
 
   const color = info?.critical
@@ -168,15 +187,14 @@ export default function ContextRing({ info, compactSessionStats, chatId, goal }:
                 </div>
                 {info.toolCallsTokens > 0 && (
                   <div className="ctx-row ctx-row-indent">
-                    <span className="ctx-row-label">↳ Tool calls</span>
+                    <span className="ctx-row-label">Схемы инструментов</span>
                     <span className="ctx-row-val">
                       {formatNum(info.toolCallsTokens)} tok
-                      <span className="ctx-row-sub"> ({info.toolCallsCount} вызовов)</span>
                     </span>
                   </div>
                 )}
                 <div className="ctx-row">
-                  <span className="ctx-row-label">Текущий ввод</span>
+                    <span className="ctx-row-label">Черновик</span>
                   <span className="ctx-row-val">{formatNum(info.currentInput)} tok</span>
                 </div>
                 {info.breakdown?.cacheReadTokens != null && info.breakdown.cacheReadTokens > 0 && (
@@ -184,7 +202,6 @@ export default function ContextRing({ info, compactSessionStats, chatId, goal }:
                     <span className="ctx-row-label">↳ Кэш (чтение)</span>
                     <span className="ctx-row-val">
                       {formatNum(info.breakdown.cacheReadTokens)} tok
-                      <span className="ctx-row-sub"> -90%</span>
                     </span>
                   </div>
                 )}
@@ -193,14 +210,13 @@ export default function ContextRing({ info, compactSessionStats, chatId, goal }:
                     <span className="ctx-row-label">↳ Кэш (запись)</span>
                     <span className="ctx-row-val">
                       {formatNum(info.breakdown.cacheWriteTokens)} tok
-                      <span className="ctx-row-sub"> +25%</span>
                     </span>
                   </div>
                 )}
-                <div className="ctx-row ctx-row-reserved">
+                {info.reserved > 0 && <div className="ctx-row ctx-row-reserved">
                   <span className="ctx-row-label">Резерв ответа</span>
                   <span className="ctx-row-val">{formatNum(info.reserved)} tok</span>
-                </div>
+                </div>}
                 <div className="ctx-row ctx-row-total">
                   <span className="ctx-row-label">Итого</span>
                   <span className="ctx-row-val">{formatNum(info.total)} / {formatNum(info.limit)}</span>
@@ -221,20 +237,12 @@ export default function ContextRing({ info, compactSessionStats, chatId, goal }:
               }}>Управлять контекстом</button>}
 
               <div className="ctx-pricing">
+                <div className="ctx-pricing-row">
+                  <span className="ctx-pricing-label">{hasRecordedRequests ? 'Последний вызов API ≈' : 'Следующий вызов ≈'}</span>
+                  <span className="ctx-pricing-val">{requestCost != null ? formatCost(requestCost) : '—'}</span>
+                </div>
                 {info.pricing ? (
                   <>
-                    <div className="ctx-pricing-row">
-                      <span className="ctx-pricing-label">Этот запрос:</span>
-                      <span className="ctx-pricing-val">
-                        {info.estimatedCostCents != null ? formatCost(info.estimatedCostCents) : '—'}
-                      </span>
-                    </div>
-                    {info.sessionCostCents != null && info.sessionRequests > 0 && (
-                      <div className="ctx-pricing-row">
-                        <span className="ctx-pricing-label">Сессия ({info.sessionRequests} запр.):</span>
-                        <span className="ctx-pricing-val">{formatCost(info.sessionCostCents)}</span>
-                      </div>
-                    )}
                     <div className="ctx-pricing-rates">
                       ${(info.pricing.inputPerM / 100).toFixed(2)}/M in · ${(info.pricing.outputPerM / 100).toFixed(2)}/M out
                     </div>
@@ -242,6 +250,22 @@ export default function ContextRing({ info, compactSessionStats, chatId, goal }:
                 ) : (
                   <span className="ctx-pricing-nodata">Нет данных о ценах</span>
                 )}
+                {info.sessionRequests > 0 && <>
+                  <div className="ctx-pricing-row">
+                    <span className="ctx-pricing-label">Чат · {info.sessionRequests} выз. API ≈</span>
+                    <span className="ctx-pricing-val">{info.sessionCostCents != null ? formatCost(info.sessionCostCents) : '—'}</span>
+                  </div>
+                  <div className="ctx-pricing-rates">
+                    {info.sessionIncludesAuxiliary ? 'Текстовые API, субагенты и фоновая обработка.' : 'Учтённые запросы.'}
+                    {info.accountingStartedAt ? ` Учёт с ${new Date(info.accountingStartedAt).toLocaleDateString()}.` : ''}
+                  </div>
+                  {info.sessionUnpricedRequests > 0 && <div className="ctx-pricing-incomplete">Без цены или usage · {info.sessionUnpricedRequests} выз. Сумма неполная.</div>}
+                </>}
+                <div className="ctx-pricing-rates">Оценка по токенам и тарифам. Медиа и неизвестные списания сверяйте с сервером.</div>
+                <div className="ctx-pricing-row ctx-pricing-account" title="Все запросы аккаунта Syntee за последние 24 часа, включая другие чаты и устройства. Данные сервера на момент открытия панели.">
+                  <span className="ctx-pricing-label">Аккаунт · 24 ч · сервер</span>
+                  <span className="ctx-pricing-val">{accountLoading ? '…' : accountCost != null ? formatCost(accountCost) : '—'}</span>
+                </div>
                 {info.breakdown?.cacheReadTokens != null && info.breakdown.cacheReadTokens > 0 && (
                   <div className="ctx-cache-badge">
                     ⚡ Кэшировано {Math.round((info.breakdown.cacheReadTokens / Math.max(1, info.total)) * 100)}% контекста

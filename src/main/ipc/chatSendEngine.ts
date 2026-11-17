@@ -46,7 +46,9 @@ import {
   applyRollingWindowAsync, getContextSettings, estimateTokens, estimateMessagesTokensAsync,
   getModelContextWindow,
 } from '../../core/context/contextManager'
-import { buildSnapshotFromEstimate, getSessionCost } from '../../core/tokens/usageTracker'
+import { computeRequestContextSnapshot } from '../../core/tokens/usageTracker'
+import { withAIUsageContext, type AIRequestUsage } from '../../core/ai/requestUsage'
+import { acceptAIUsage, getChatCost } from '../services/usageLedger'
 import { getGatewayModelsCache } from '../../core/tokens/gatewayModelsCache'
 import { getFileCacheSnapshot, mergeFileCache } from '../../core/context/fileReadCache'
 import { invalidateHistoryCache, getMessagesAfterLatestCompactCached } from './historyCache'
@@ -104,7 +106,7 @@ const pendingAttachmentPaths = new Map<string, Map<string, number>>()
    *  store / mainWindow / getSystemPrompt — из замыкания registerChatIPC.
    */
 
-export async function runChatSend(
+async function runChatSendScoped(
     store: Store,
     params: {
       chatId: string
@@ -504,39 +506,6 @@ export async function runChatSend(
       ? undefined
       : await getSystemPrompt(store, dbChatId, params.incognito, params.oneShotSkill, undefined,
         !!params.imageMode || params.slashCommand?.name === 'image' || getChatModes(dbChatId).imageMode)
-    if (ctxSettings.tokenCounterEnabled) {
-      const contextWindow = getModelContextWindow(storeData)
-      const sysPrompt = sendSystemPrompt
-      const currentMsgTokens = estimateTokens(params.content)
-      const snapshot = buildSnapshotFromEstimate(processedHistory, contextWindow, {
-        systemPrompt: sysPrompt,
-        currentMsgTokens,
-        includeToolSchemas: true,
-      })
-      const sess = getSessionCost(params.chatId)
-      // Если сжатие произошло в этом запросе — эмитим как 'real', чтобы
-      // рендерер принял значение поверх устаревшего lastRealRef (до-сжатия).
-      // tiktoken-оценка пост-сжатого processedHistory достаточно точна для
-      // индикатора; следующий ответ модели перезапишет её честным real.
-      const compactionSource: 'real' | 'estimate' = contextCompressed ? 'real' : 'estimate'
-      win?.webContents.send(IPC_EVENTS.CONTEXT_USAGE, {
-        chatId: params.chatId,
-        pct: snapshot.pct,
-        estimated: snapshot.estimated,
-        limit: snapshot.limit,
-        status: snapshot.status,
-        source: compactionSource,
-        compressed: contextCompressed,
-        breakdown: snapshot.breakdown,
-        sessionCostCents: sess?.totalCents ?? null,
-        sessionRequests: sess?.requests ?? 0,
-        historyMessages: history.length,
-        toolCallsCount: history.reduce((sum, msg) => {
-          const steps = msg.toolSteps as Array<{ type: string }> | undefined
-          return sum + (steps?.filter(s => s.type === 'tool_call').length ?? 0)
-        }, 0),
-      })
-    }
 
     // Request-scoped состояние этого запуска. Каждый chat:send имеет свой
     // собственный экземпляр — буферы не пересекаются между запусками.
@@ -1062,7 +1031,7 @@ export async function runChatSend(
     run.worker = worker
     activeRuns.set(params.chatId, run)
     attachAssistants(params.chatId, worker, { projectWorkdir: chatWorkdir, projectId: chatProjectId })
-    void onAgentEvent(params.chatId, { kind: 'task_start', text: params.message?.slice(0, 300) ?? '' })
+    void onAgentEvent(params.chatId, { kind: 'task_start', text: params.content.slice(0, 300) })
     updateForegroundBusy()
 
     // Plugins: хук chat:message — fire-and-forget, не блокирует чат.
@@ -1168,7 +1137,7 @@ export async function runChatSend(
           processAttachmentsAndStream(store,
             // effectiveContent (не params.content): уже может содержать
             // реплай-цитату поверх — инлайн-блоки файлов добавляются после неё.
-            win, params.chatId, assistantMsgId, effectiveContent, params.attachments,
+            win, params.chatId, assistantMsgId, effectiveContent, params.attachments, getModelContextWindow(storeData),
           ),
           new Promise<never>((_, reject) => {
             const t = setTimeout(() => reject(new Error('Таймаут обработки вложений')), ATTACHMENT_TIMEOUT_MS)
@@ -2294,6 +2263,10 @@ export async function runChatSend(
           // Handled by the scoped browser broker attached to this worker.
           break
 
+        case 'request_usage':
+          acceptAIUsage({ ...(msg.event as AIRequestUsage), chatId: params.chatId })
+          break
+
         case 'context_usage':
           // Сохраняем последний real usage в БД — переживает перезапуск.
           // context:calculate читает его, чтобы показывать точный контекст
@@ -2319,20 +2292,19 @@ export async function runChatSend(
             }
           }
           win?.webContents.send(IPC_EVENTS.CONTEXT_USAGE, {
-            chatId: params.chatId,
             pct: msg.pct,
             estimated: msg.estimated,
             limit: msg.limit,
             status: msg.status,
             source: msg.source ?? 'estimate',
+            scope: msg.scope,
             compressed: contextCompressed,
             breakdown: msg.breakdown,
             pricing: msg.pricing ?? null,
             estimatedCostCents: msg.estimatedCostCents ?? null,
             providerId: msg.providerId,
             modelId: msg.modelId,
-            sessionCostCents: msg.sessionCostCents ?? null,
-            sessionRequests: msg.sessionRequests ?? 0,
+            ...getChatCost(params.chatId),
             historyMessages: history.length,
             toolCallsCount: history.reduce((sum, m) => {
               const steps = m.toolSteps as Array<{ type: string }> | undefined
@@ -2358,7 +2330,7 @@ export async function runChatSend(
                 if (typeof skill === 'string' && skill) invokedSkills.push(skill)
               }
             }
-            void onRunDone(params.chatId, String((msg as { answer?: unknown; content?: unknown }).answer ?? (msg as { content?: unknown }).content ?? ''), { tools: invokedTools, skills: invokedSkills })
+            void onRunDone(params.chatId, String(msg.fullText ?? run.bufferedText ?? ''), { tools: invokedTools, skills: invokedSkills })
           }
           if (msg.updatedProviders) {
             store.set('providers', msg.updatedProviders)
@@ -2704,6 +2676,21 @@ ${await getSystemPrompt(store, dbChatId, params.incognito, params.oneShotSkill)}
         broadcastGoal(params.chatId, saved)
       }
     })
+    if (ctxSettings.tokenCounterEnabled) {
+      const snapshot = computeRequestContextSnapshot([
+        { role: 'system', content: systemPrompt ?? '' },
+        ...processedHistory,
+        { role: 'user', content: run.imageParts?.length
+          ? [...run.imageParts, { type: 'text', text: effectiveContent }] : effectiveContent },
+      ], getModelContextWindow(storeData), sideToolSchemas)
+      win?.webContents.send(IPC_EVENTS.CONTEXT_USAGE, {
+        ...snapshot,
+        scope: 'request',
+        compressed: contextCompressed,
+        ...getChatCost(params.chatId),
+        historyMessages: processedHistory.length,
+      })
+    }
     worker.postMessage({
       goal: activeGoal,
       chatId: params.chatId,
@@ -2758,6 +2745,10 @@ ${await getSystemPrompt(store, dbChatId, params.incognito, params.oneShotSkill)}
 
   // Регистрируется и как IPC-хендлер, и как programmatic-API (см.
   // sendChatMessageProgrammatic выше): DotManager будит Dot'ов из main.
+export function runChatSend(...args: Parameters<typeof runChatSendScoped>): ReturnType<typeof runChatSendScoped> {
+  return withAIUsageContext({ chatId: args[1].chatId }, () => runChatSendScoped(...args))
+}
+
 export async function chatSendHandler(store: Store, mainWindow: IpcMainWindow, params: {
     chatId: string
     content: string

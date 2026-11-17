@@ -13,6 +13,7 @@ import fs from 'node:fs'
 import vm from 'node:vm'
 import ts from 'typescript'
 import path from 'node:path'
+import os from 'node:os'
 import { fileURLToPath } from 'node:url'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -30,6 +31,7 @@ function loadModule(rel) {
   const module = { exports: {} }
   const requireShim = (spec) => {
     if (spec === 'fs' || spec === 'node:fs') return fs
+    if (spec === 'path' || spec === 'node:path') return path
     const resolved = path.join(path.dirname(norm), spec).replace(/\\/g, '/')
     // type-only импорты стираются; шимим только живые зависимости
     if (resolved.endsWith('tokens/usageTracker')) return { estimateTokens: t => Math.ceil((t ?? '').length / 4) }
@@ -91,6 +93,17 @@ test('parseReadSections: full-mode / дефолт / read_files', () => {
   assert.equal(multi.length, 2)
   assert.equal(multi[1].range.to, 250)
   assert.equal(multi[1].range.total, 900)
+})
+
+test('mixed read_files diagnostics cannot disappear when successful sections are reread', () => {
+  const batch = '=== C:/test/a.ts | 30 lines ===\n' + Array.from({ length: 30 }, (_, i) => `${i + 1}|${'x'.repeat(80)}`).join('\n')
+    + '\n\n=== C:/test/b.ts ===\n[Read error: UNIQUE_PERMISSION_ERROR]'
+  assert.equal(parseReadSections('read_files', batch).length, 0)
+  const history = [
+    msg('mixed', [callStep(1, 'read_files', { paths: ['C:/test/a.ts', 'C:/test/b.ts'] }), resultStep(1, batch, { success: true })]),
+    msg('reread', [callStep(2, 'read_file', { path: 'C:/test/a.ts' }), resultStep(2, readResult('C:/test/a.ts', 1, 30, 30))]),
+  ]
+  assert.equal(compressStoredMessages(history, { tailKeep: 1 }).has('mixed'), false)
 })
 
 test('rangesCover: покрытие объединением, дыра не покрывает', () => {
@@ -192,7 +205,7 @@ test('дедуп: без мутаций между — свёрнуто; с run_
 
   const clean = [
     msg('m1', [callStep(1, 'search_code', args), resultStep(1, bigSearch('a'))]),
-    msg('m2', [callStep(2, 'search_code', args), resultStep(2, bigSearch('b'))]),
+    msg('m2', [callStep(2, 'search_code', args), resultStep(2, bigSearch('a'))]),
   ]
   const plansClean = compressStoredMessages(clean, { minSavingsTokens: 0, tailKeep: 1 })
   assert.ok(plansClean.has('m1'))
@@ -204,10 +217,7 @@ test('дедуп: без мутаций между — свёрнуто; с run_
     msg('m3', [callStep(3, 'search_code', args), resultStep(3, bigSearch('c'))]),
   ]
   const plansDirty = compressStoredMessages(dirty, { minSavingsTokens: 0, tailKeep: 1 })
-  assert.ok(plansDirty.has('m1'))
-  const dirtyContent = stepOf(plansDirty.get('m1'), 'call1').content
-  assert.ok(!dirtyContent.includes('с теми же аргументами'), 'дедуп через мутацию запрещён')
-  assert.ok(dirtyContent.includes('[search]'), 'вместо дедупа — резюме с запросом')
+  assert.equal(plansDirty.has('m1'), false, 'уникальный вывод нельзя безвозвратно удалять из БД')
 })
 
 test('protected: diff, ошибка, изображения, уже сжатое — не трогаются', () => {
@@ -389,4 +399,121 @@ test('computeTailBoundary: граница по ходам, не по сырым 
   // 4 хода по 4 сообщения; хвост 2 хода → граница = индекс 2-го хода с конца
   const boundary = computeTailBoundary(messages, 2)
   assert.equal(boundary, 8, 'ходы по 4 сообщения: граница на 3-м ходе (индекс 8)')
+})
+
+test('discarded scans do not allocate archives; accepted scans reuse the original', () => {
+  const messages = flatten(runMsg(1, 'mcp__rea__analysis', {}, 'unique output '.repeat(500)), runMsg(2, 'update_todo', {}, 'ok'))
+  const janitor = new Janitor({ ...SETTINGS, janitorTailSteps: 1 })
+  for (let round = 1; round <= 20; round++) janitor.scan(messages, round)
+  assert.equal(janitor.getArchiveSize(), 0, 'scan must not commit unaccepted plans')
+  const report = janitor.scan(messages, 21)
+  janitor.apply(messages, report)
+  assert.equal(janitor.getArchiveSize(), 1)
+  janitor.apply(messages, janitor.scan(messages, 22))
+  assert.equal(janitor.getArchiveSize(), 1, 'same call and original must not duplicate')
+})
+
+test('archive capacity preserves existing recalls and leaves new unique results intact', () => {
+  const janitor = new Janitor({ ...SETTINGS, janitorTailSteps: 1 })
+  const entries = Array.from({ length: janitorMod.MAX_JANITOR_ARCHIVE_ENTRIES }, (_, i) => ({
+    id: `jan-${i + 1}-1`, summary: 'kept', ts: 1,
+    originalMessages: [{ role: 'tool', tool_call_id: `old-${i}`, content: `original-${i}` }],
+  }))
+  janitor.hydrateArchive(entries)
+  const messages = flatten(runMsg(1, 'mcp__rea__analysis', {}, 'new unique output '.repeat(500)), runMsg(2, 'update_todo', {}, 'ok'))
+  const applied = janitor.apply(messages, janitor.scan(messages, 8))
+  assert.equal(applied[1].content, messages[1].content)
+  assert.equal(janitor.recall(entries[0].id)[0].content, 'original-0')
+  const oversized = new Janitor({ ...SETTINGS, janitorTailSteps: 1 })
+  const large = flatten(runMsg(1, 'mcp__rea__analysis', {}, 'x'.repeat(janitorMod.MAX_JANITOR_ARCHIVE_CHARS + 1)), runMsg(2, 'update_todo', {}, 'ok'))
+  assert.equal(oversized.scan(large, 8).actions.length, 0)
+})
+
+test('committed summary and paginated original survive a state-file round trip', () => {
+  const { saveAssistantState, loadAssistantState } = loadModule('src/core/context/assistantState.ts')
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'syntee-janitor-test-'))
+  try {
+    const original = 'first line\n' + 'unique middle '.repeat(600) + '\nLAST ERROR: preserve me'
+    const messages = flatten(runMsg(1, 'mcp__rea__analysis', {}, original), runMsg(2, 'update_todo', {}, 'ok'))
+    const janitor = new Janitor({ ...SETTINGS, janitorTailSteps: 1 })
+    const report = janitor.scan(messages, 8)
+    const compressed = janitor.apply(messages, report)
+    const id = report.actions[0].archiveId
+    saveAssistantState(temp, 'restart-test', { janitorArchive: janitor.getArchiveEntries() })
+    const restarted = new Janitor(SETTINGS)
+    restarted.hydrateArchive(loadAssistantState(temp, 'restart-test').janitorArchive)
+    const rawHistory = JSON.parse(JSON.stringify(messages))
+    restarted.restoreSummaries(rawHistory)
+    assert.equal(rawHistory[1].content, compressed[1].content, 'next worker must not expand the raw DB output')
+    let recalled = ''
+    for (let offset = 0; offset < original.length; offset += 700) recalled += restarted.recallPage(id, offset, 700).split('\n').slice(1).join('\n')
+    assert.equal(recalled, original, 'all original bytes remain accessible via pagination')
+    const reusedId = JSON.parse(JSON.stringify(messages))
+    reusedId[1].content = 'different original'
+    restarted.restoreSummaries(reusedId)
+    assert.equal(reusedId[1].content, 'different original', 'a reused call id alone must not replace different data')
+  } finally {
+    fs.unlinkSync(path.join(temp, 'assistants-state', 'restart-test.json'))
+    fs.rmdirSync(path.join(temp, 'assistants-state'))
+    fs.rmdirSync(temp)
+  }
+})
+
+test('multifile sections never borrow line counts or truncation from the next file; POSIX case is distinct', () => {
+  const sections = parseReadSections('read_files', '=== /src/A.ts | 1 lines ===\n1|all A\n=== /src/b.ts | 1000 lines ===\n1|b\n...[shown 250 of 1000 lines]')
+  assert.equal(sections[0].range.to, 1)
+  assert.equal(sections[1].range.to, 250)
+  assert.notEqual(janitorMod.normalizePath('/src/A.ts'), janitorMod.normalizePath('/src/a.ts'))
+})
+
+test('one stale file in a read_files batch cannot delete another unique file', () => {
+  const batch = `=== C:/test/a.ts | 20 lines ===\n${'1|a\n'.repeat(20)}=== C:/test/b.ts | 300 lines ===\n${'1|unique b content\n'.repeat(250)}...[shown 250 of 300 lines]`
+  const rounds = [runMsg(1, 'read_files', { paths: ['C:/test/a.ts', 'C:/test/b.ts'] }, batch), runMsg(2, 'edit_file', { path: 'C:/test/a.ts' }, 'edited'), runMsg(3, 'update_todo', {}, 'ok')]
+  const janitor = new Janitor({ ...SETTINGS, janitorTailSteps: 1 })
+  assert.equal(janitor.scan(flatten(...rounds), 8).actions.length, 0)
+  const rows = rounds.map((round, i) => msg(`m${i}`, [callStep(i + 1, round[0].tool_calls[0].function.name, JSON.parse(round[0].tool_calls[0].function.arguments)), resultStep(i + 1, round[1].content)]))
+  assert.equal(compressStoredMessages(rows, { minSavingsTokens: 0, tailKeep: 1 }).has('m0'), false)
+})
+
+test('changed MCP responses with identical arguments are never deduplicated', () => {
+  const first = 'analysis state 1 '.repeat(300), second = 'analysis state 2 '.repeat(300)
+  const rounds = [runMsg(1, 'mcp__rea__status', {}, first), runMsg(2, 'mcp__rea__status', {}, second), runMsg(3, 'update_todo', {}, 'ok')]
+  const janitor = new Janitor({ ...SETTINGS, janitorTailSteps: 1 })
+  assert.equal(janitor.scan(flatten(...rounds), 8, 'light').actions.length, 0)
+  const rows = [msg('a', [callStep(1, 'mcp__rea__status', {}), resultStep(1, first)]), msg('b', [callStep(2, 'mcp__rea__status', {}), resultStep(2, second)])]
+  assert.equal(compressStoredMessages(rows, { minSavingsTokens: 0, tailKeep: 1 }).size, 0)
+})
+
+test('persistent tail counts tool rounds within one assistant message and preserves call arguments', () => {
+  const steps = [], iterations = []
+  for (let i = 1; i <= 12; i++) {
+    const round = [callStep(i, 'search_code', { pattern: 'same' }), resultStep(i, 'same result '.repeat(300))]
+    steps.push(...round)
+    iterations.push({ textBefore: '', steps: round })
+  }
+  const row = { ...msg('long-run', steps), iterations }
+  const plans = compressStoredMessages([row], { minSavingsTokens: 0, tailKeep: 2 })
+  assert.ok(plans.has(row.id), 'one long assistant row still contains twelve tool rounds')
+  const plan = plans.get(row.id)
+  assert.ok(stepOf(plan, 'call1').content.includes('[Контекст оптимизирован'))
+  assert.equal(stepOf(plan, 'call11').content, steps[21].content)
+  assert.equal(stepOf(plan, 'call12').content, steps[23].content)
+  assert.equal(plan.iterations[0].steps[0].content, '', 'call content must not be replaced with its result summary')
+})
+
+test('disabled Janitor ignores even emergency scans, and shorter refinements persist across workers', () => {
+  const messages = flatten(runMsg(1, 'mcp__rea__analysis', {}, 'unique output '.repeat(500)), runMsg(2, 'update_todo', {}, 'ok'))
+  const disabled = new Janitor({ ...SETTINGS, janitorEnabled: false, janitorTailSteps: 1 })
+  assert.equal(disabled.scan(messages, 8, 'deep', 1).actions.length, 0)
+  const janitor = new Janitor({ ...SETTINGS, janitorTailSteps: 1 })
+  const report = janitor.scan(messages, 8)
+  janitor.apply(messages, report)
+  const id = report.actions[0].archiveId
+  const summary = `[Контекст оптимизирован локальным помощником] brief [recall:${id}]`
+  janitor.updateSummary(id, summary)
+  const restarted = new Janitor(SETTINGS)
+  restarted.hydrateArchive(JSON.parse(JSON.stringify(janitor.getArchiveEntries())))
+  const history = JSON.parse(JSON.stringify(messages))
+  restarted.restoreSummaries(history)
+  assert.equal(history[1].content, summary)
 })

@@ -236,7 +236,7 @@ export async function extractFromConversationLLM(
     return { extraction: { nodes: [], edges: [] } }
   }
 
-  const aiClient = new AIClient(store)
+  const aiClient = new AIClient(store, { chatId: params.chatId, source: 'memory_graph' })
   const prompt = `Extract entities and relationships for the knowledge graph from the dialogue summary:
 
 ${params.summary.slice(0, 4000)}
