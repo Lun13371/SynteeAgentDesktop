@@ -1,4 +1,4 @@
-import { ipcMain, BrowserWindow } from 'electron'
+import { app, ipcMain, BrowserWindow } from 'electron'
 import { disposeBrowserWorkerBroker } from '../../core/agent/browserWorkerBroker'
 import type Store from 'electron-store'
 import { agentManager } from '../managers/AgentManager'
@@ -108,7 +108,7 @@ export type { ProgrammaticChatSendParams } from './chatRunSupport'
 
 
 export function registerChatIPC(store: Store, mainWindow: { getWindow: () => BrowserWindow | null }): void {
-  initDB()
+  initDB(app.getPath('userData'))
   recoverInterruptedTaskSummaries()
   setGlobalMemorySettingsStore(store)
 

@@ -35,8 +35,8 @@ class Store {
 }
 const loader = load('src/core/skills/skillLoader.ts')
 const tree = load('src/shared/skillsTree.ts')
-const { SkillManager } = load('src/core/skills/skillManager.ts', { 'electron-store': Store, './skillLoader': loader, '../../shared/skillsTree': tree })
-const manager = new SkillManager(new Store())
+const { SkillManager } = load('src/core/skills/skillManager.ts', { './skillLoader': loader, '../../shared/skillsTree': tree })
+const manager = new SkillManager(new Store(), app.getPath('userData'))
 const { registerSkillsIPC } = load('src/main/ipc/skills.ipc.ts', {
   '../../core/skills/skillManager': { getSkillManager: () => manager },
   '../../core/skills/skillLoader': loader,

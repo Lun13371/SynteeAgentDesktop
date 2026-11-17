@@ -15,6 +15,7 @@ import { initModelCatalog } from '../../core/tokens/modelCatalog'
 import { setGatewayModelsCache } from '../../core/tokens/gatewayModelsCache'
 import { getToolSchemas } from '../../core/tools/index'
 import { requestBrowserOperation } from '../../core/agent/browserWorkerBroker'
+import { requestMcpTool } from '../../core/mcp/mcpWorkerBroker'
 import { filterToolSchemas, getToolSettings } from '../../shared/toolSettings'
 import { teardownSidecar } from '../../core/sidecar/sidecarClient'
 import { log } from '../../core/logger'
@@ -952,19 +953,8 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
               send({ type: 'get_main_chat_messages', chatId, msgId, replyId, limit: params.limit, search: params.search })
             })
           },
-          onMcpCall: (fullToolName, args) => {
-            return new Promise((resolve) => {
-              const replyId = `mcp-call-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
-              replyHandlers.set(replyId, (reply) => {
-                resolve({
-                  success: (reply.success as boolean) ?? false,
-                  output: (reply.output as string) ?? '',
-                  error: reply.error as string | undefined,
-                })
-              })
-              send({ type: 'mcp_call', chatId, msgId, replyId, toolName: fullToolName, args })
-            })
-          },
+          onMcpCall: (fullToolName, args, signal) =>
+            requestMcpTool(fullToolName, args, replyHandlers, send, signal ?? runAbort.signal),
           onMcpRequiresApproval: (fullToolName) => {
             // Синхронный ответ из кэша workerData.mcpApprovalMap (заполняется main
             // при spawn-е: { [toolFullName]: boolean }). По умолчанию true (безопаснее).

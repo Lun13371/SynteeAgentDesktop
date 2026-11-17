@@ -40,6 +40,7 @@ import { getGitSyncManager } from '../managers/GitSyncManager'
 import { agentManager } from '../managers/AgentManager'
 import { attachAssistants, onAgentEvent, onAssistantEvent, onRunDone, onJanitorAction, getAssistantsSettings } from '../assistants/bridge'
 import { attachBrowserWorkerBroker, disposeBrowserWorkerBroker } from '../../core/agent/browserWorkerBroker'
+import { attachMcpWorkerBroker } from '../../core/mcp/mcpWorkerBroker'
 import { compressStoredMessages } from '../../core/context/historyCompressor'
 import {
   applyRollingWindowAsync, getContextSettings, estimateTokens, estimateMessagesTokensAsync,
@@ -933,10 +934,10 @@ export async function runChatSend(
     let mcpTools: Array<{ name: string; shortName: string; description: string; inputSchema: Record<string, unknown>; serverId: string; serverName: string }> = []
     const mcpApprovalMap: Record<string, boolean> = {}
     const isIncognitoRun = !!params.incognito
+    let mcpProjectId: string | undefined
     try {
       const mgr = getMcpManager()
       // projectId для scope-фильтрации MCP-серверов
-      let mcpProjectId: string | undefined
       if (chatWorkdir) {
         const found = getAllProjects().find(p => p.workdir === chatWorkdir)
         mcpProjectId = found?.id
@@ -947,10 +948,12 @@ export async function runChatSend(
         isIncognito: isIncognitoRun,
       })
       // Approval map: для каждого активного тула — требует ли подтверждение.
-      const configs = mgr.getAllServers({ projectWorkdir: chatWorkdir, projectId: mcpProjectId })
-      for (const tool of mcpTools) {
-        const config = configs.find(c => c.id === tool.serverId)
-        mcpApprovalMap[tool.name] = config ? mgr.requiresApproval(config, tool.name) : true
+      if (mcpTools.length) {
+        const configs = new Map(mgr.getAllServers({ projectWorkdir: chatWorkdir, projectId: mcpProjectId }).map(c => [c.id, c]))
+        for (const tool of mcpTools) {
+          const config = configs.get(tool.serverId)
+          mcpApprovalMap[tool.name] = config ? mgr.requiresApproval(config, tool.name) : true
+        }
       }
     } catch (e) {
       // MCP недоступен — работаем без него, чат не должен падать из-за этого.
@@ -1049,6 +1052,14 @@ export async function runChatSend(
       // Preserve args, locator, frame/snapshot ids and all future backend fields.
       // BrowserManager owns action gating and live access revocation.
       return browserManager.execute(params.chatId, { ...payload, action: String(payload.action ?? '') } as Parameters<typeof browserManager.execute>[1], signal)
+    })
+    const mcpServersByTool = new Map(mcpTools.map(tool => [tool.name, tool.serverId]))
+    attachMcpWorkerBroker(worker, async (toolName, args, signal) => {
+      const serverId = mcpServersByTool.get(toolName)
+      if (!serverId || run.doneSent) return { success: false, output: '', error: 'MCP-инструмент недоступен в этом запуске' }
+      return getMcpManager().callToolByName(toolName, args, {
+        serverId, projectWorkdir: chatWorkdir, projectId: mcpProjectId, signal,
+      })
     })
     run.worker = worker
     activeRuns.set(params.chatId, run)
@@ -1943,45 +1954,6 @@ export async function runChatSend(
                 type: 'get_main_chat_messages_reply',
                 replyId: msg.replyId,
                 result: `Ошибка: ${(e as Error).message}`,
-              })
-            }
-          })()
-          break
-        }
-
-        case 'mcp_call': {
-          ;(async () => {
-            try {
-              const mgr = getMcpManager()
-              const wctx = (() => {
-                try { return getChatWorkdirContext(params.chatId) } catch { return {} as ReturnType<typeof getChatWorkdirContext> }
-              })()
-              const mcpWorkdir = wctx.workdir
-              // projectId из БД (getChatWorkdirContext не возвращает id).
-              let mcpProjectId: string | undefined
-              if (mcpWorkdir) {
-                const found = getAllProjects().find(p => p.workdir === mcpWorkdir)
-                mcpProjectId = found?.id
-              }
-              const result = await mgr.callToolByName(
-                msg.toolName as string,
-                (msg.args as Record<string, unknown>) ?? {},
-                { projectWorkdir: mcpWorkdir, projectId: mcpProjectId },
-              )
-              worker.postMessage({
-                type: 'mcp_call_reply',
-                replyId: msg.replyId,
-                success: result.success,
-                output: result.output,
-                error: result.error,
-              })
-            } catch (e) {
-              worker.postMessage({
-                type: 'mcp_call_reply',
-                replyId: msg.replyId,
-                success: false,
-                output: '',
-                error: (e as Error).message,
               })
             }
           })()

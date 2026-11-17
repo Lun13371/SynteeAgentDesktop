@@ -345,7 +345,7 @@ app.whenReady().then(async () => {
   setInterval(() => { refreshCatalog(catalogCachePath).catch(() => {}) }, 86_400_000)
 
   // Skills-менеджер (загрузка .md-скиллов, состояние вкл/выкл, scope).
-  initSkillManager(store)
+  initSkillManager(store, app.getPath('userData'))
 
   // Commands-менеджер (загрузка .md-кастомных slash-команд).
   initCommandManager()

@@ -1472,6 +1472,9 @@
   display: flex;
   gap: 6px;
 }
+.ext-form-input.ext-mcp-timeout-input {
+  width: 84px;
+}
 .ext-env-view-row {
   flex: 1;
   display: flex;

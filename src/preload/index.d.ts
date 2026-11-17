@@ -1024,7 +1024,8 @@ declare const synteeAPI: {
             projectId?: string;
             enabled?: boolean;
             scope?: unknown;
-        }) => Promise<any>;
+            toolTimeoutSeconds?: number;
+        }) => Promise<{ ok: boolean; error?: string }>;
         setServersEnabled: (params: {
             serverIds: string[];
             projectId?: string;
