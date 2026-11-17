@@ -44,13 +44,13 @@ import { attachMcpWorkerBroker } from '../../core/mcp/mcpWorkerBroker'
 import { compressStoredMessages } from '../../core/context/historyCompressor'
 import {
   applyRollingWindowAsync, getContextSettings, estimateTokens, estimateMessagesTokensAsync,
-  getModelContextWindow, type ChatMessage,
+  getModelContextWindow,
 } from '../../core/context/contextManager'
 import { buildSnapshotFromEstimate, getSessionCost } from '../../core/tokens/usageTracker'
 import { getGatewayModelsCache } from '../../core/tokens/gatewayModelsCache'
 import { getFileCacheSnapshot, mergeFileCache } from '../../core/context/fileReadCache'
 import { invalidateHistoryCache, getMessagesAfterLatestCompactCached } from './historyCache'
-import { messageToContextMessages, formatReplyQuote } from './chatContextHelpers'
+import { buildContextHistory, formatReplyQuote } from './chatContextHelpers'
 import { slimMessageForUI } from './slimMessages'
 import { log } from '../../core/logger'
 import { perfMark, perfEvent, perfPhaseAsync } from '../../core/performanceDiagnostics'
@@ -316,9 +316,7 @@ export async function runChatSend(
       ? getLiveMessages(history)
       : filterContextHistory(params.chatId, getMessagesAfterLatestCompactCached(params.chatId, userMsg.id), userMsg.id)
     perfEvent('chat.history.load', perfMark() - historyStarted)
-    const rawHistory: ChatMessage[] = liveMessages.flatMap(m =>
-      messageToContextMessages(m).map(cm => ({ ...cm, messageId: m.id })),
-    )
+    const rawHistory = buildContextHistory(liveMessages)
     // §secrets — маскируем tool-результаты в истории: шаги в БД хранят output
     // тулов, и до фикса onStep-маскировки туда попадали сырые значения секретов
     // → история «возвращала» их модели на следующих ходах. Роль 'tool' —

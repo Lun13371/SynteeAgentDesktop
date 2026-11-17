@@ -44,8 +44,9 @@ export function formatReplyQuote(replyTo: ReplyTarget[]): string {
  *   - planData с toolSteps → полный разворот tool_calls + tool_results
  * UI PlanCard читает planData из БД напрямую, эта функция его не затрагивает.
  */
-export function messageToContextMessages(message: Message): ChatMessage[] {
+export function messageToContextMessages(message: Message, includeTodo = true): ChatMessage[] {
   const steps = message.toolSteps ?? []
+  const todo = includeTodo ? message.todo : undefined
 
   // Нет toolSteps — обычное текстовое сообщение
   if (message.role !== 'assistant' || steps.length === 0) {
@@ -53,7 +54,7 @@ export function messageToContextMessages(message: Message): ChatMessage[] {
     // инжектим его (user-роль, после assistant) чтобы AI видел свой
     // незавершённый план из прошлой итерации. Без этого AI не знает
     // что todo сохраняется между сообщениями и не может продолжить.
-    if (message.role === 'assistant' && message.todo?.length) {
+    if (message.role === 'assistant' && todo?.length) {
       return [
         {
           role: 'assistant' as const,
@@ -61,7 +62,7 @@ export function messageToContextMessages(message: Message): ChatMessage[] {
           ...(message.thinkingBlocks?.length ? { thinking_blocks: message.thinkingBlocks } : {}),
           ...(message.thinking ? { reasoning_content: message.thinking } : {}),
         },
-        { role: 'user' as const, content: formatTodoForContext(message.todo) },
+        { role: 'user' as const, content: formatTodoForContext(todo) },
       ]
     }
     if (message.role === 'assistant' && message.thinkingBlocks?.length) {
@@ -163,7 +164,7 @@ export function messageToContextMessages(message: Message): ChatMessage[] {
     content: `${STEER_MARKER}\n\n${t}`,
   }))
   if (iterations.length === 0) {
-    if (message.todo?.length) {
+    if (todo?.length) {
       return [
         ...steerMessages,
         {
@@ -171,7 +172,7 @@ export function messageToContextMessages(message: Message): ChatMessage[] {
           content: message.content,
           ...(message.thinking ? { reasoning_content: message.thinking } : {}),
         },
-        { role: 'user' as const, content: formatTodoForContext(message.todo) },
+        { role: 'user' as const, content: formatTodoForContext(todo) },
       ]
     }
     if (message.thinking) {
@@ -301,11 +302,25 @@ export function messageToContextMessages(message: Message): ChatMessage[] {
   // работает со всеми провайдерами (system в середине некоторые
   // прокси отбрасывают). AI видит свой незавершённый план и может
   // продолжить работу по нему в следующем ответе.
-  if (message.role === 'assistant' && message.todo?.length) {
-    result.push({ role: 'user' as const, content: formatTodoForContext(message.todo) })
+  if (todo?.length) {
+    result.push({ role: 'user' as const, content: formatTodoForContext(todo) })
   }
 
   return result
+}
+
+/** A todo is a complete snapshot. Replay the latest visible snapshot only. */
+export function buildContextHistory(messages: Message[]): ChatMessage[] {
+  let latestTodo = messages.length - 1
+  while (latestTodo >= 0) {
+    const message = messages[latestTodo]
+    if (message.role === 'assistant' && Array.isArray(message.todo)) break
+    latestTodo--
+  }
+  return messages.flatMap((message, index) =>
+    messageToContextMessages(message, index === latestTodo)
+      .map(entry => ({ ...entry, messageId: message.id })),
+  )
 }
 
 // Форматирует todo-список для инъекции в контекст истории.
@@ -319,9 +334,5 @@ export function formatTodoForContext(todo: Array<{ text: string; status: 'pendin
       : '[ ]'
     return `${mark} ${t.text}`
   })
-  const unfinished = todo.filter(t => t.status === 'pending' || t.status === 'in_progress').length
-  const suffix = unfinished > 0
-    ? `\n\nThis is your unfinished plan from the previous response (${unfinished} item(s) remaining). Continue working on it — do not create a new plan if this one is still relevant.`
-    : '\n\nThis is your completed plan from the previous response (all items done).'
-  return `[CURRENT TASK PLAN — state as of the previous message]\n${lines.join('\n')}${suffix}`
+  return `[CURRENT TASK PLAN]\n${lines.join('\n')}`
 }

@@ -7,12 +7,6 @@
 import type { ProjectInstructions } from '../projectInstructions'
 import type { Skill } from '../../../shared/types'
 
-/** MCP server info for system-prompt injection. */
-export interface McpPromptInfo {
-  name: string
-  tools: Array<{ shortName: string; description?: string }>
-}
-
 /** Plugin info for system-prompt injection (see shared/types/plugin.ts). */
 export type PluginPromptInfo = import('../../../shared/types').PluginPromptInfo
 

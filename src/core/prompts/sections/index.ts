@@ -5,14 +5,13 @@
 export { buildCodeModeBlock } from './codeModeSection'
 export { buildPlanningInjection, buildAskInjection } from './planningSection'
 export { buildOneShotSkillBlock, buildSkillsBlock } from './skillsSection'
-export { buildMcpBlock, buildInstallPathsBlock } from './mcpSection'
+export { buildInstallPathsBlock } from './mcpSection'
 export { buildPluginsBlock } from './pluginsSection'
 export { buildMemoryStatsBlock, buildGraphStatsBlock } from './memorySection'
 export { buildSecretsBlock } from './secretsSection'
 export type { ProtectedVarPromptInfo } from './secretsSection'
 
 export type {
-  McpPromptInfo,
   PluginPromptInfo,
   MemoryStats,
   GraphStats,
