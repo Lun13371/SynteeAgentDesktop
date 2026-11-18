@@ -7,30 +7,20 @@ import type { UpdateManifest } from '../../shared/types'
  */
 const repository = 'Lun13371/SynteeAgentDesktop'
 
-/**
- * Текущая схема: один тег на релиз — `v<version>`, в нём лежат артефакты для
- * всех платформ. Старые релизы ставились под тегами `windows-v<version>`;
- * они всё ещё принимаются, чтобы уже установленные сборки не остались без
- * обновлений.
- */
-const tagPrefixes = ['windows-v', 'v'] as const
-
-type TagPrefix = (typeof tagPrefixes)[number]
+/** Один тег на релиз: `v<version>` со артефактами для всех платформ. */
+const tagPrefix = 'v'
 
 const versionPattern = /^(?:0|[1-9]\d{0,4})\.(?:0|[1-9]\d{0,4})\.(?:0|[1-9]\d{0,4})$/
 
-export function windowsInstallerUrl(version: string, tagPrefix: TagPrefix = 'v'): string | null {
+export function windowsInstallerUrl(version: string): string | null {
   if (!versionPattern.test(version)) return null
   return `https://github.com/${repository}/releases/download/${tagPrefix}${version}/Syntee-Helper-Setup-${version}-x64.exe`
 }
 
-function splitTag(tag: string): { prefix: TagPrefix; version: string } | null {
-  for (const prefix of tagPrefixes) {
-    if (!tag.startsWith(prefix)) continue
-    const version = tag.slice(prefix.length)
-    if (versionPattern.test(version)) return { prefix, version }
-  }
-  return null
+function versionFromTag(tag: string): string | null {
+  if (!tag.startsWith(tagPrefix)) return null
+  const version = tag.slice(tagPrefix.length)
+  return versionPattern.test(version) ? version : null
 }
 
 function compareVersions(a: string, b: string): number {
@@ -52,10 +42,9 @@ export function parseWindowsInstallerReleases(payload: unknown): UpdateManifest[
   const updates: UpdateManifest[] = []
   for (const release of payload as Release[]) {
     if (!release || release.draft !== false || typeof release.tag_name !== 'string') continue
-    const tagged = splitTag(release.tag_name)
-    if (!tagged) continue
-    const { prefix, version } = tagged
-    const url = windowsInstallerUrl(version, prefix)
+    const version = versionFromTag(release.tag_name)
+    if (!version) continue
+    const url = windowsInstallerUrl(version)
     if (!url || typeof release.published_at !== 'string' || !Array.isArray(release.assets)) continue
     const asset = release.assets.find(item => item?.browser_download_url === url && item.state === 'uploaded')
     if (!asset || typeof asset.size !== 'number' || !Number.isSafeInteger(asset.size) || asset.size <= 0
