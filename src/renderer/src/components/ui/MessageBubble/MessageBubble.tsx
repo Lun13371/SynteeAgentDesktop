@@ -10,8 +10,9 @@ import { containsMathMarkers } from '@shared/mathNormalize'
 import { SLASH_COMMANDS } from '@shared/slashCommands'
 import { useToast } from '../Toast/Toast'
 // ── Быстрый рендер код-блоков: языки подсветки ───────────────────────────
-// Регистрация ~23 языков в общем инстансе refractor — побочный эффект импорта.
-import '../../../utils/codeLanguages'
+// Регистрацию выполняет highlightCodeToHtml (utils/codeHighlightHTML →
+// registerLanguages). Побочный импорт здесь был ненадёжен: модуль без
+// используемых экспортов выпиливался из прод-бандла, и подсветка отключалась.
 import Logo from '../Logo/Logo'
 import AttachmentPreviewModal from '../AttachmentPreviewModal/AttachmentPreviewModal'
 import type { Message, ToolOutputMode, Attachment, ToolStep } from '../../../../../shared/types'

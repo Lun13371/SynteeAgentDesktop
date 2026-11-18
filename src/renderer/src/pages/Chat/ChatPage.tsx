@@ -611,7 +611,10 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
     const wasActive = previous.status === 'running' || previous.status === 'compacting'
     if (terminal && wasActive) {
       if (status === 'done') playDoneSound()
-      requestAnimationFrame(() => pinAutoscroll(true))
+      // НЕ прыгаем в низ, если пользователь читает выше: раньше pin(true) на
+      // каждом завершении прогона утаскивал его к последнему сообщению. Догон
+      // низа остаётся только для тех, кто и так прилип к низу.
+      if (pinnedRef.current) requestAnimationFrame(() => pinAutoscroll(true))
     }
     prevRunSoundStatusRef.current = { chatId: currentChatId, status }
     // pinAutoscroll объявлен ниже по коду (const), включать в deps нельзя —
@@ -647,9 +650,15 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
       // отражает пост-compact состояние и авто-скроллит к низу.
       window.syntee.chat.getMessagesPage(d.chatId, 50).then((res: { messages: Message[]; hasMore: boolean }) => {
         if (useChatStore.getState().currentChatId !== d.chatId) return
+        // Авто-компакция случается ПОСРЕДИ прогона: если пользователь читает
+        // выше, не выдёргиваем его к низу — окно истории заменяется, но
+        // scrollTop остаётся где был.
+        const wasPinned = pinnedRef.current
         setMessagesWindow(d.chatId, res.messages, res.hasMore)
-        isInitialScrollRef.current = true
-        requestAnimationFrame(() => pinAutoscroll(true))
+        if (wasPinned) {
+          isInitialScrollRef.current = true
+          requestAnimationFrame(() => pinAutoscroll(true))
+        }
         if (d.trigger === 'auto') {
           toast('Контекст автоматически сжат', 'info')
         }

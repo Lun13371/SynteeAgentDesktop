@@ -1931,6 +1931,12 @@ export class Agent {
                 code, chatId: this.chatId, signal: callSignal,
                 artifacts,
                 sanitizeTrace: value => this.toolDispatcher.maskSecretValuesInText(JSON.stringify(value ?? null)),
+                // Живой трейс: вложенный тул появляется в карточке сразу
+                // (status 'running'), а не только в финальном tool_result.
+                // Телеметрия не должна ломать выполнение скрипта.
+                onTrace: entry => {
+                  try { callbacks?.onCodeTrace?.(entry) } catch { /* ignore */ }
+                },
                 callTool: async (toolName, toolArgs, childSignal) => {
                   if (childSignal?.aborted || signal?.aborted) return { success: false, output: '', error: 'Execution aborted' }
                   if (toolName === 'execute_code' || !activeSchemas.some(s => s.function.name === toolName)) {

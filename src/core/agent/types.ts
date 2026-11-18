@@ -32,7 +32,7 @@ export interface AgentStep {
   // на настоящую вместо создания второго блока.
   pendingCallId?: string
   /** Code Mode execution source and internal tool trace, rendered by expandable tool UI. */
-  codeMode?: { code: string; trace: Array<{ name: string; args: unknown; result: string; status: 'success' | 'failure' }> }
+  codeMode?: { code: string; trace: Array<{ id?: string; name: string; args: unknown; result: string; status: 'success' | 'failure' | 'running' }> }
   /** type:'hint' — подсказка от watcher-агента, инжектированная между ходами. */
   hintSource?: import('../../shared/assistants').HintSource
   hintId?: string
@@ -57,6 +57,13 @@ export interface ContextCountedInfo {
 
 export interface AgentCallbacks {
   onStep: (step: AgentStep) => void
+  /**
+   * Живой трейс вложенных тулов execute_code: запись приходит ДВАЖДЫ —
+   * сначала со status:'running' (вызов начался), затем финальная
+   * (success/failure) с тем же id. UI апсертит строку по id, поэтому видно
+   * «что выполняется сейчас», а не только итог скрипта.
+   */
+  onCodeTrace?: (entry: { id?: string; name: string; args: unknown; result: string; status: 'success' | 'failure' | 'running'; diff?: string }) => void
   /**
    * §rollback-live — файл изменён тулом (write_file/edit_file): отдаём
    * {path, contentBefore} СРАЗУ после правки, а не только в финальном

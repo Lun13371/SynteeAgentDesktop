@@ -3,10 +3,14 @@ import ts from 'typescript'
 
 export interface CodeToolResult { success: boolean; output: string; error?: string; [key: string]: unknown }
 export interface CodeTraceEntry {
+  /** Стабильный id записи. Живой трейс приходит дважды — сначала со
+   *  status:'running' (вызов начался), потом финальный статус. Renderer
+   *  апсертит запись по id, поэтому строки не дублируются. */
+  id?: string
   name: string
   args: unknown
   result: string
-  status: 'success' | 'failure'
+  status: 'success' | 'failure' | 'running'
   /** unified diff для правок/записи файлов — в ленте вызова он и есть «вывод». */
   diff?: string
 }
@@ -121,9 +125,14 @@ export async function executeCode(options: ExecuteCodeOptions): Promise<ExecuteC
     finally { guestTimeLeft -= now() - start; guestDeadline = Infinity }
   }
   const deferreds = new Set<QuickJSDeferredPromise>()
+  // emitTrace — только отдать запись наверх (UI), не трогая итоговый массив;
+  // pushTrace — добавить в итоговый trace и сразу же отдать наверх.
+  const emitTrace = (entry: CodeTraceEntry): void => {
+    try { options.onTrace?.(entry) } catch { /* instrumentation must not break execution */ }
+  }
   const pushTrace = (entry: CodeTraceEntry): void => {
     if (trace.length < CODE_MODE_LIMITS.traceEntries) trace.push(entry)
-    try { options.onTrace?.(entry) } catch { /* instrumentation must not break execution */ }
+    emitTrace(entry)
   }
   const runtime = module.newRuntime()
   runtime.setMemoryLimit(CODE_MODE_LIMITS.memoryBytes)
@@ -149,10 +158,20 @@ export async function executeCode(options: ExecuteCodeOptions): Promise<ExecuteC
       inFlight++
       const deferred = ctx.newPromise()
       deferreds.add(deferred)
+      // Живой трейс: запись появляется в карточке СРАЗУ — до ответа тула
+      // (status 'running'), и обновляется на месте по завершении. Раньше
+      // вложенные вызовы становились видны только после конца скрипта.
+      const traceEntry: CodeTraceEntry = {
+        id: `tr_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+        name,
+        args: options.sanitizeTrace ? options.sanitizeTrace(args) : args,
+        result: '',
+        status: 'running',
+      }
+      pushTrace(traceEntry)
       const settle = (value: CodeToolResult, status: 'success' | 'failure'): void => {
         if (!active) return
         const bounded = { success: !!value.success, output: String(value.output ?? '').slice(0, CODE_MODE_LIMITS.outputChars), ...(value.error ? { error: String(value.error).slice(0, CODE_MODE_LIMITS.outputChars) } : {}) }
-        const safeArgs = options.sanitizeTrace ? options.sanitizeTrace(args) : args
         // Preserve failure details in the UI trace. Many tools return an empty
         // output plus an error field; recording only output made those calls
         // look like successful calls with no content.
@@ -161,13 +180,10 @@ export async function executeCode(options: ExecuteCodeOptions): Promise<ExecuteC
         // edit_file/write_file. Прокидываем в трейс, иначе карточка правки
         // внутри скрипта оставалась пустой (только плашка файла).
         const traceDiff = typeof value.diff === 'string' && value.diff ? value.diff.slice(0, 8_000) : undefined
-        pushTrace({
-          name,
-          args: safeArgs,
-          result: traceResult.slice(0, 1000),
-          status,
-          ...(traceDiff ? { diff: traceDiff } : {}),
-        })
+        traceEntry.result = traceResult.slice(0, 1000)
+        traceEntry.status = status
+        if (traceDiff) traceEntry.diff = traceDiff
+        emitTrace(traceEntry)
         const text = JSON.stringify(bounded)
         const response = Buffer.byteLength(text, 'utf8') > CODE_MODE_LIMITS.bridgeJsonChars
           ? JSON.stringify({ success: false, output: '', error: 'Tool result exceeds bridge size limit' }) : text
@@ -250,6 +266,14 @@ export async function executeCode(options: ExecuteCodeOptions): Promise<ExecuteC
     return fail(executionError() ?? errText(e))
   } finally {
     active = false
+    // Незавершённые вызовы (Stop, ошибка скрипта, дедлайн) не должны навсегда
+    // остаться «выполняется» в карточке — закрываем их как прерванные.
+    for (const entry of trace) {
+      if (entry.status !== 'running') continue
+      entry.status = 'failure'
+      if (!entry.result) entry.result = 'Вызов не завершён'
+      emitTrace(entry)
+    }
     executionController.abort()
     externalSignal?.removeEventListener('abort', forwardAbort)
     promise?.dispose()

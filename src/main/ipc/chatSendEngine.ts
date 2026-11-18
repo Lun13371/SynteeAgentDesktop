@@ -1561,6 +1561,15 @@ async function runChatSendScoped(
           })
           break
 
+        case 'code_trace':
+          // Живой трейс вложенных тулов execute_code (status:'running' →
+          // финал, апсерт по id в renderer). Ephemeral: в БД не персистим —
+          // итоговый трейс приходит в самом tool_result.
+          win?.webContents.send('agent:code_trace', {
+            msgId: msg.msgId, chatId: msg.chatId, entry: msg.entry,
+          })
+          break
+
         case 'spawn_agent': {
           ;(async () => {
             // Эмитим agent:spawn ДО запуска суб-агента — renderer сразу

@@ -135,6 +135,56 @@
   color: var(--text-primary);
 }
 
+/* Бейдж диапазона строк (выдача read_file: «568–607 / 631»). */
+.trr-code-range {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+  background: var(--overlay-4, rgba(255, 255, 255, 0.08));
+  border-radius: 4px;
+  padding: 1px 6px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* Подсветка приходит готовой HTML-строкой (refractor), pre — flex-контейнер
+   из двух колонок (номера строк + код) с горизонтальным скроллом.
+   Колонка кода НЕ имеет своего overflow (иначе overflow-y становится auto и
+   код скроллится отдельно от номеров). Скроллит сам pre. */
+.trr-code-pre {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  background: transparent;
+  border: none;
+  white-space: pre;
+}
+
+.trr-code-pre > code {
+  flex: 0 0 auto;
+}
+
+.trr-code-pre code {
+  background: transparent !important;
+  text-shadow: none !important;
+}
+
+/* read_file: несколько блоков (read_files) и примечание обрезки под кодом. */
+.trr-read {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.trr-read-note {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+  padding: 0 2px 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .trr-code-lines {
   overflow: auto;
   padding: 6px 0;

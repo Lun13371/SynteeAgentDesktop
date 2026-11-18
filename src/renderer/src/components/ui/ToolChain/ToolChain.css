@@ -811,6 +811,13 @@
 }
 .tc2-trace-row--fail .tc2-trace-status { color: #f85149; }
 .tc2-trace-row--fail .tc2-trace-label { color: #f87171; }
+/* Вызов выполняется прямо сейчас (живой трейс execute_code). */
+.tc2-trace-row--run .tc2-trace-status { color: var(--accent, #818cf8); }
+.tc2-trace-status--run { animation: tc2-trace-pulse 1.1s ease-in-out infinite; }
+@keyframes tc2-trace-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
+}
 
 /* «Ещё N вызовов» — настоящая кнопка: раскрывает карточку скрипта. */
 .tc2-trace-more {

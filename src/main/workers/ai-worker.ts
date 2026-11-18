@@ -562,6 +562,11 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
               { scope: 'request' },
             )
           },
+          // Живой трейс вложенных тулов execute_code — ephemeral, не пишется
+          // в collectedSteps/БД: карточка показывает «что выполняется сейчас».
+          onCodeTrace: (entry) => {
+            send({ type: 'code_trace', chatId, msgId, entry })
+          },
           onStep: (step) => {
             // §rollback-live — снапшоты файлов стримим отдельным сообщением
             // (см. onFileSnapshot ниже), здесь только шаги.

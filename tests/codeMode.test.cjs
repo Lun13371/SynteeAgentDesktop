@@ -138,10 +138,48 @@ test('Agent blocks execute_code recursion and unknown tools at the bridge', () =
 test('ToolChain shows execute_code calls in the collapsed card and arguments/results after opening', () => {
   const source = readFileSync('src/renderer/src/components/ui/ToolChain/ToolChain.tsx', 'utf8')
   assert.ok(source.includes('function CodeModeSummary'))
-  assert.match(source, /<CodeModeSummary trace=\{iter\.result\.codeMode\.trace\}/)
+  // Трейс берётся с шага результата, а до его прихода — с шага вызова
+  // (живой трейс agent:code_trace), иначе во время выполнения карточка пуста.
+  assert.ok(source.includes('iter.result?.codeMode ?? iter.call.codeMode'))
+  assert.match(source, /<CodeModeSummary trace=\{codeMode\.trace\}/)
   assert.ok(source.includes('codeTraceArgs(entry.args)'))
   assert.ok(source.includes('result={{ content: entry.result, success:'))
   assert.ok(source.includes('title="Скрипт TypeScript"'))
+})
+test('code mode streams nested tool trace while the script runs', () => {
+  const codeMode = readFileSync('src/core/codeMode/index.ts', 'utf8')
+  // Запись появляется со status:'running' ДО ответа тула, затем апсертится.
+  assert.ok(codeMode.includes("status: 'running'"))
+  assert.match(codeMode, /emitTrace\(traceEntry\)/)
+  const agent = readFileSync('src/core/agent/Agent.ts', 'utf8')
+  assert.match(agent, /onTrace: entry => \{/)
+  const hook = readFileSync('src/renderer/src/hooks/useToolProgress.ts', 'utf8')
+  assert.ok(hook.includes("window.syntee.on('agent:code_trace'"))
+})
+test('onTrace fires running first and final status with the same id', async () => {
+  const seen = []
+  let release
+  const gate = new Promise(resolve => { release = resolve })
+  const promise = executeCode({
+    code: "const r = await tools.slow({}); return r.output;",
+    callTool: async () => {
+      await gate
+      return { success: true, output: 'ok' }
+    },
+    onTrace: entry => seen.push({ id: entry.id, status: entry.status, result: entry.result }),
+  })
+  // Дать гостю дойти до вызова тула (он ждёт gate).
+  await new Promise(resolve => setTimeout(resolve, 50))
+  assert.equal(seen.length, 1)
+  assert.equal(seen[0].status, 'running')
+  assert.ok(seen[0].id)
+  release()
+  const r = await promise
+  assert.equal(r.success, true)
+  assert.equal(seen.length, 2)
+  assert.equal(seen[1].id, seen[0].id)
+  assert.equal(seen[1].status, 'success')
+  assert.equal(seen[1].result, 'ok')
 })
 test('live agent:step preserves execute_code trace in ToolStep', () => {
   const source = readFileSync('src/renderer/src/hooks/useToolProgress.ts', 'utf8')

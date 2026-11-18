@@ -30,6 +30,7 @@ const MAX_STEP = 90     // px/кадр — кап скорости догона 
 const SMOOTH_FACTOR = 0.22 // доля отставания за кадр (быстрый отклик)
 const MIN_STEP = 1.5    // px/кадр — минимальный шаг, чтобы не залипать
 const STICK_MS = 700    // мс «липкого низа» после мгновенного прыжка pin(true)
+const REPIN_GESTURE_MS = 600 // мс — «окно жеста»: без жеста пользователя не прилипаем
 
 export interface UseChatAutoscrollOptions {
   /** Скролл-контейнер ленты (.chat-messages). */
@@ -83,6 +84,15 @@ export function useChatAutoscroll({ scrollContainerRef, onScrollExtra, isStreami
   const isStreamingRef = useRef(isStreaming)
   const stickRafRef = useRef<number | null>(null)
   const stickUntilRef = useRef(0)
+  // Метка времени последнего ЖЕСТА пользователя (колесо/тач/средний клик).
+  // Нужна, чтобы отличать «пользователь сам доехал до низа» от программных
+  // сдвигов scrollTop: виртуализатор и пересчёт высот рядов меняют scrollTop
+  // без всякого жеста, и раньше любой такой сдвиг вниз у самого низа
+  // заново включал прилипание → чат «телепал» вниз, пока читаешь выше.
+  const userGestureAtRef = useRef(0)
+  // Зажата ли кнопка мыши над лентой (перетаскивание скроллбара не даёт
+  // wheel-событий — без этого флага якорь-гард боролся бы с пользователем).
+  const pointerDownRef = useRef(false)
 
   // Свежая ссылка на onScrollExtra без пересоздания handleScroll.
   const onScrollExtraRef = useRef(onScrollExtra)
@@ -207,6 +217,71 @@ export function useChatAutoscroll({ scrollContainerRef, onScrollExtra, isStreami
     lastScrollHeightRef.current = el.scrollHeight
   }, [scrollContainerRef])
 
+  // ── «Якорь чтения» ───────────────────────────────────────────────────────
+  // Пока пользователь НЕ прилип к низу, фиксируем сообщение у верхнего края
+  // вьюпорта и его пиксельное смещение. Любой сдвиг scrollTop без жеста
+  // (виртуализатор перемерил высоты рядов, схлопнулся тул-шаг, догрузился
+  // код-блок, Chromium клампнул scrollTop при сжатии контента) компенсируется
+  // так, чтобы то же сообщение осталось на том же месте экрана.
+  // Без этого читающего выше «телепало» вниз после каждого вызова тула.
+  // Объявлено ДО pin/unpin: их deps-массивы читают captureAnchor на рендере
+  // (иначе TDZ: Cannot access 'captureAnchor' before initialization).
+  const anchorRef = useRef<{ el: Element; top: number } | null>(null)
+
+  const captureAnchor = useCallback(() => {
+    const el = scrollContainerRef.current
+    if (!el) return
+    const items = el.firstElementChild ? Array.from(el.firstElementChild.children) : []
+    if (!items.length) { anchorRef.current = null; return }
+    const boxTop = el.getBoundingClientRect().top
+    for (const item of items) {
+      const r = item.getBoundingClientRect()
+      if (r.bottom > boxTop + 1) {
+        anchorRef.current = { el: item, top: r.top - boxTop }
+        return
+      }
+    }
+    anchorRef.current = null
+  }, [scrollContainerRef])
+
+  /** Вернуть якорь на место. true — была компенсация. */
+  const restoreAnchor = useCallback(() => {
+    const el = scrollContainerRef.current
+    const anchor = anchorRef.current
+    if (!el || !anchor || !anchor.el.isConnected) return false
+    const boxTop = el.getBoundingClientRect().top
+    const delta = (anchor.el.getBoundingClientRect().top - boxTop) - anchor.top
+    if (Math.abs(delta) < 1) return false
+    el.scrollTop += delta
+    lastScrollTopRef.current = el.scrollTop
+    lastScrollHeightRef.current = el.scrollHeight
+    return true
+  }, [scrollContainerRef])
+
+  // Слежение за ростом/сжатием контента: сдвиг без scroll-события (контент
+  // ВЫШЕ вьюпорта поменял высоту) тоже компенсируем якорем.
+  useEffect(() => {
+    const el = scrollContainerRef.current
+    const inner = el?.firstElementChild
+    if (!inner || typeof ResizeObserver === 'undefined') return
+    let raf: number | null = null
+    const ro = new ResizeObserver(() => {
+      if (raf !== null) return
+      raf = requestAnimationFrame(() => {
+        raf = null
+        if (pinnedRef.current) return
+        if (performance.now() - userGestureAtRef.current < REPIN_GESTURE_MS) return
+        if (!anchorRef.current) captureAnchor()
+        restoreAnchor()
+      })
+    })
+    ro.observe(inner)
+    return () => {
+      ro.disconnect()
+      if (raf !== null) cancelAnimationFrame(raf)
+    }
+  }, [scrollContainerRef, captureAnchor, restoreAnchor])
+
   const pin = useCallback((instant = false) => {
     pinnedRef.current = true
     setShowScrollDownBtn(false)
@@ -232,14 +307,61 @@ export function useChatAutoscroll({ scrollContainerRef, onScrollExtra, isStreami
       cancelAnimationFrame(stickRafRef.current)
       stickRafRef.current = null
     }
+    // Запоминаем, что человек читает — дальше позицию держит якорь-гард.
+    captureAnchor()
     setShowScrollDownBtn(true)
-  }, [])
+  }, [captureAnchor])
+
+  // Отпускание кнопки мыши — конец перетаскивания скроллбара. Слушаем window:
+  // mouseup может прийти вне контейнера.
+  useEffect(() => {
+    const onUp = (): void => {
+      if (!pointerDownRef.current) return
+      pointerDownRef.current = false
+      userGestureAtRef.current = performance.now()
+      if (!pinnedRef.current) captureAnchor()
+    }
+    window.addEventListener('mouseup', onUp)
+    window.addEventListener('pointerup', onUp)
+    window.addEventListener('blur', onUp)
+    return () => {
+      window.removeEventListener('mouseup', onUp)
+      window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('blur', onUp)
+    }
+  }, [captureAnchor])
+
+  // Клавиатурная прокрутка (PageUp/Down, стрелки, Home/End, Space) — тоже
+  // жест пользователя: без этого якорь-гард отменял бы её.
+  useEffect(() => {
+    const KEYS = new Set(['PageUp', 'PageDown', 'ArrowUp', 'ArrowDown', 'Home', 'End', ' '])
+    const onKeyDown = (e: KeyboardEvent): void => {
+      if (!KEYS.has(e.key)) return
+      const el = scrollContainerRef.current
+      if (!el) return
+      const target = e.target as Node | null
+      // Реагируем только когда фокус/мышь внутри ленты — иначе стрелки в
+      // инпуте считались бы прокруткой чата.
+      if (!target || !(el === target || el.contains(target))) return
+      userGestureAtRef.current = performance.now()
+      if (!pinnedRef.current) requestAnimationFrame(() => captureAnchor())
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [scrollContainerRef, captureAnchor])
 
   // Средний клик колесика → отлеп (браузерный autoscroll-жест не должен
   // конкурировать с rAF-loop'ом догона). preventDefault НЕ зовём — жест нужен.
   const handleMouseDown = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    userGestureAtRef.current = performance.now()
+    // 0 — обычный клик/перетаскивание скроллбара, 1 — средний (autoscroll).
+    if (e.button === 0 || e.button === 1) {
+      pointerDownRef.current = true
+      // Захватываем якорь ДО того, как браузер начнёт двигать содержимое.
+      if (!pinnedRef.current) captureAnchor()
+    }
     if (e.button === 1) unpin()
-  }, [unpin])
+  }, [unpin, captureAnchor])
 
   const handleScroll = useCallback(() => {
     if (scrollPendingRef.current) return
@@ -262,10 +384,38 @@ export function useChatAutoscroll({ scrollContainerRef, onScrollExtra, isStreami
         return
       }
       const dist = sh - st - el.clientHeight
+      const gestureFresh = performance.now() - userGestureAtRef.current < REPIN_GESTURE_MS
 
-      // Движение ВНИЗ + доехали до низа — прилип (только ручной доезд:
-      // у низа больше нет перезакрепления «по любому событию»).
-      if (st > prevSt + 0.5 && dist < REPIN_DIST) {
+      // ── Отлип: пользователь читает выше ────────────────────────────────
+      if (!pinnedRef.current) {
+        // Ручной скролл (колесо/тач/скроллбар/клавиатура) — это его воля:
+        // запоминаем якорь и не трогаем позицию.
+        if (gestureFresh || pointerDownRef.current) {
+          captureAnchor()
+          setShowScrollDownBtn(dist > BTN_DIST)
+          return
+        }
+        // Сдвиг БЕЗ жеста = виртуализатор/пересчёт высот/клампинг/догрузка.
+        // Сначала пробуем вернуть якорь (сохраняет читаемое сообщение на
+        // месте при росте контента ВЫШЕ), иначе жёстко откатываем scrollTop
+        // вниз-сдвиг — иначе ленту «телепает» после каждого вызова тула.
+        if (!restoreAnchor() && st > prevSt + 0.5) {
+          el.scrollTop = prevSt
+          lastScrollTopRef.current = el.scrollTop
+          lastScrollHeightRef.current = el.scrollHeight
+        }
+        const fixedDist = el.scrollHeight - el.scrollTop - el.clientHeight
+        setShowScrollDownBtn(fixedDist > BTN_DIST)
+        return
+      }
+
+      // ── Прилип к низу ─────────────────────────────────────────────────
+      // Движение ВНИЗ + доехали до низа — прилип. Только РУЧНОЙ доезд:
+      // нужен свежий жест пользователя (колесо/тач/скроллбар/средний клик).
+      // Без этого условия любой программный сдвиг scrollTop у низа заново
+      // включал прилипание — и читающего выше человека утаскивало вниз.
+      const layoutStable = Math.abs(sh - prevSh) < 1
+      if (st > prevSt + 0.5 && dist < REPIN_DIST && (gestureFresh || layoutStable)) {
         pinnedRef.current = true
         setShowScrollDownBtn(false)
         ensureLoop()
@@ -274,6 +424,7 @@ export function useChatAutoscroll({ scrollContainerRef, onScrollExtra, isStreami
       // Движение ВВЕРХ не из-за сжатия контента — отлип.
       if (st < prevSt - 2 && sh >= prevSh - 1) {
         pinnedRef.current = false
+        captureAnchor()
         setShowScrollDownBtn(true)
         return
       }
@@ -281,21 +432,31 @@ export function useChatAutoscroll({ scrollContainerRef, onScrollExtra, isStreami
       if (!pinnedRef.current && dist > BTN_DIST) setShowScrollDownBtn(true)
       else if (dist < BTN_DIST && pinnedRef.current) setShowScrollDownBtn(false)
     })
-  }, [ensureLoop, scrollContainerRef])
+  }, [ensureLoop, scrollContainerRef, captureAnchor, restoreAnchor])
 
-  // Колесо вверх → мгновенный отлип (не ждём scroll-событие).
+  // Колесо ЛЮБОЕ (вверх или вниз) — жест пользователя. Раньше отлип был
+  // только на deltaY < 0: читаешь карточку кода и листаешь её ВНИЗ колесом,
+  // pinned остаётся true, rAF-loop тянет ленту к низу — «телепает вниз».
+  // Если лента далеко от низа, крутить колесо = читать, а не «хочу вниз».
   const handleWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
-    if (e.deltaY < 0 && pinnedRef.current) {
+    userGestureAtRef.current = performance.now()
+    const el = scrollContainerRef.current
+    if (!el) return
+    const dist = el.scrollHeight - el.scrollTop - el.clientHeight
+    if (dist > BTN_DIST && pinnedRef.current) {
       pinnedRef.current = false
+      captureAnchor()
       setShowScrollDownBtn(true)
     }
-  }, [])
+  }, [scrollContainerRef, captureAnchor])
 
   // Touch: палец тянет ВНИЗ (контент скроллится вверх) → отлип.
   const handleTouchStart = useCallback((e: React.TouchEvent<HTMLDivElement>) => {
+    userGestureAtRef.current = performance.now()
     touchYRef.current = e.touches[0]?.clientY ?? null
   }, [])
   const handleTouchMove = useCallback((e: React.TouchEvent<HTMLDivElement>) => {
+    userGestureAtRef.current = performance.now()
     const startY = touchYRef.current
     if (startY === null) return
     const y = e.touches[0]?.clientY

@@ -499,8 +499,54 @@ export function useToolProgress() {
       }
     })
 
+    // agent:code_trace — живой трейс вложенных тулов execute_code.
+    // Запись приходит дважды (status 'running' → финал) с одинаковым id,
+    // поэтому апсертим по id: в карточке видно, ЧТО вызвано и что
+    // выполняется прямо сейчас, а не только итог после конца скрипта.
+    const offCodeTrace = window.syntee.on('agent:code_trace', (data: {
+      msgId?: string; chatId?: string
+      entry?: {
+        id?: string; name: string; args: unknown; result: string
+        status: 'success' | 'failure' | 'running'; diff?: string
+      }
+    }) => {
+      const entry = data?.entry
+      if (!data?.chatId || !entry) return
+      const chatId = data.chatId
+      const buf = getBuf(chatId)
+      if (!buf.streamMsgId) return
+      if (data.msgId && data.msgId !== buf.streamMsgId) return
+      const upsert = (trace: NonNullable<ToolStep['codeMode']>['trace']): NonNullable<ToolStep['codeMode']>['trace'] => {
+        const idx = entry.id ? trace.findIndex(e => e.id === entry.id) : -1
+        if (idx === -1) return [...trace, entry]
+        const next = trace.slice()
+        next[idx] = { ...trace[idx], ...entry }
+        return next
+      }
+      let changed = false
+      const iters = buf.iters.slice()
+      // Новейший вызов execute_code — в последней итерации/шаге.
+      for (let i = iters.length - 1; i >= 0 && !changed; i--) {
+        const steps = iters[i].steps
+        for (let j = steps.length - 1; j >= 0; j--) {
+          const s = steps[j]
+          if (s.type !== 'tool_call' || s.toolName !== 'execute_code') continue
+          const argsCode = (s.toolArgs as { code?: unknown } | undefined)?.code
+          const code = s.codeMode?.code ?? (typeof argsCode === 'string' ? argsCode : '')
+          const nextSteps = steps.slice()
+          nextSteps[j] = { ...s, codeMode: { code, trace: upsert(s.codeMode?.trace ?? []) } }
+          iters[i] = { ...iters[i], steps: nextSteps }
+          changed = true
+          break
+        }
+      }
+      if (!changed) return
+      buf.iters = iters
+      liveSet(chatId, { iters: [...iters] })
+    })
+
     return () => {
-      offToolProgress(); offSpawn(); offStep()
+      offToolProgress(); offSpawn(); offStep(); offCodeTrace()
     }
   }, [])
 }

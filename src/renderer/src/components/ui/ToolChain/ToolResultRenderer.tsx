@@ -1,14 +1,10 @@
-import { useState, memo } from 'react'
-// PrismLight вместо полного Prism (~270 грамматик): языки регистрируются
-// в MessageBubble.tsx (общий singleton). Здесь дорегистрируем те, что
-// нужны только тул-выводам (getLanguage ниже может их вернуть).
-import { PrismLight as SyntaxHighlighter } from 'react-syntax-highlighter'
-import { oneDark, oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism'
-import toml from 'react-syntax-highlighter/dist/esm/languages/prism/toml'
-import scss from 'react-syntax-highlighter/dist/esm/languages/prism/scss'
-import powershell from 'react-syntax-highlighter/dist/esm/languages/prism/powershell'
-import graphql from 'react-syntax-highlighter/dist/esm/languages/prism/graphql'
-import docker from 'react-syntax-highlighter/dist/esm/languages/prism/docker'
+import { useState, useMemo, memo } from 'react'
+// Подсветка одна на всё приложение — refractor → HTML-строка
+// (utils/codeHighlightHTML), как в код-блоках сообщений. react-syntax-highlighter
+// снесён из карточек тулов: его построчный сплиттер (showLineNumbers/wrapLines)
+// ломал вывод read_file — терялись куски строк, а служебный конверт
+// («[File: … | Lines …]», префиксы «N|», строка «…[shown …]») рисовался как код.
+import { highlightCodeToHtml } from '../../../utils/codeHighlightHTML'
 import type { ToolStep } from './ToolChain'
 import type { ToolOutputMode } from '../../../../../shared/types'
 import { copyToClipboard } from '../../../utils/clipboard'
@@ -17,13 +13,6 @@ import { useIsLightTheme } from '../../../utils/themeBase'
 import FileChip from './FileChip'
 import { useNavStore } from '../../../store/nav.store'
 import './ToolResultRenderer.css'
-
-// registerLanguage идемпотентен для нашего случая (перезапись тем же набором).
-SyntaxHighlighter.registerLanguage('toml', toml)
-SyntaxHighlighter.registerLanguage('scss', scss)
-SyntaxHighlighter.registerLanguage('powershell', powershell)
-SyntaxHighlighter.registerLanguage('graphql', graphql)
-SyntaxHighlighter.registerLanguage('docker', docker)
 
 // ── Утилиты ────────────────────────────────────────────────────────────────
 
@@ -94,19 +83,24 @@ interface CodeSurfaceProps {
   filePath?: string
   /** Доп. подпись рядом с плашкой файла (например «+3 файла»). */
   title?: string
+  /** Бейдж диапазона в шапке: «568–607 / 631» (выдача read_file). */
+  rangeLabel?: string
   initialLines: number
   maxHeight?: number
   /** Доп. элемент в шапке справа (бейджи +N/−M и т.п.). */
   meta?: React.ReactNode
-  /** plain — без Prism (вывод/совпадения поиска), подсветка строк через lineClass. */
+  /** plain — без подсветки (вывод/совпадения поиска), lineClass на строках. */
   mode?: 'highlight' | 'plain'
   lineClass?: (line: string) => string
+  /** Номер первой строки (read_file: реальные номера файла, не 1..N). */
+  lineNumberStart?: number
   /** Что копировать; по умолчанию — весь код. */
   copyValue?: string
 }
 
 export const CodeSurface = memo(function CodeSurface({
-  code, lang, filePath, title, initialLines, maxHeight = 400, meta, mode = 'highlight', lineClass, copyValue,
+  code, lang, filePath, title, rangeLabel, initialLines, maxHeight = 400, meta, mode = 'highlight', lineClass,
+  lineNumberStart = 1, copyValue,
 }: CodeSurfaceProps) {
   const [extra, setExtra] = useState(0)
   // Палитра подсветки должна совпадать с темой: на светлой oneDark нечитаем.
@@ -115,42 +109,32 @@ export const CodeSurface = memo(function CodeSurface({
   const allLines = code.replace(/\n+$/, '').split('\n')
   const shown = allLines.slice(0, visible)
   const truncated = allLines.length > visible
+  // Одна HTML-строка вместо React-дерева из тысяч <span>; кэш внутри утилиты
+  // по (палитра+язык+стартовый номер+код) — повторные рендеры бесплатны.
+  const html = useMemo(
+    () => (mode === 'highlight' ? highlightCodeToHtml(shown.join('\n'), lang, isLight, lineNumberStart) : ''),
+    [mode, shown, lang, isLight, lineNumberStart],
+  )
   return (
     <div className={`trr-code${mode === 'plain' ? ' trr-code--plain' : ''}`}>
-      {(title || meta || filePath) && (
+      {(title || meta || filePath || rangeLabel) && (
         <div className="trr-code-head">
           {filePath
             ? <FileChip path={filePath} showDir={false} />
             : title && <span className="trr-code-title" title={title}>{title}</span>}
           {filePath && title && <span className="trr-code-title" title={title}>{title}</span>}
+          {rangeLabel && <span className="trr-code-range">{rangeLabel}</span>}
           {meta}
           <span className="trr-code-head-spacer" />
           <CopyBtn value={copyValue ?? code} title="Копировать содержимое" />
         </div>
       )}
       {mode === 'highlight' ? (
-        <SyntaxHighlighter
-          language={lang}
-          style={isLight ? oneLight : oneDark}
-          // Тема красит background на <code>, а он inline: фон рисуется
-          // ОТДЕЛЬНЫМ прямоугольником на каждой строке (та самая «обводка»
-          // строк в чтении файла). Гасим фон/тень у <code> — фон даёт наш
-          // .trr-code из переменных темы.
-          codeTagProps={{ style: { background: 'transparent', textShadow: 'none' } }}
-          customStyle={{
-            margin: 0,
-            padding: '10px 12px',
-            background: 'transparent',
-            textShadow: 'none',
-            fontSize: 12,
-            maxHeight,
-            overflow: 'auto',
-          }}
-          lineNumberStyle={{ opacity: 0.32, minWidth: '2.1em', userSelect: 'none' }}
-          showLineNumbers={allLines.length > 3}
-        >
-          {shown.join('\n')}
-        </SyntaxHighlighter>
+        <pre
+          className="trr-code-pre"
+          style={{ margin: 0, padding: '10px 12px', maxHeight, overflow: 'auto', display: 'flex' }}
+          dangerouslySetInnerHTML={{ __html: html }}
+        />
       ) : (
         <div className="trr-code-lines" style={{ maxHeight }}>
           {shown.map((line, i) => (
@@ -169,31 +153,154 @@ export const CodeSurface = memo(function CodeSurface({
   )
 }, (prev, next) =>
   prev.code === next.code && prev.lang === next.lang && prev.title === next.title &&
-  prev.filePath === next.filePath &&
+  prev.filePath === next.filePath && prev.rangeLabel === next.rangeLabel &&
   prev.initialLines === next.initialLines && prev.mode === next.mode &&
+  prev.lineNumberStart === next.lineNumberStart &&
   prev.copyValue === next.copyValue)
 
 // ── Суб-рендеры ────────────────────────────────────────────────────────────
 
-const CodeResult = memo(function CodeResult({ content, lang, filePath, title, initialLines }: {
+// ── read_file: разбор служебного конверта ──────────────────────────────────
+// Тул отдаёт модели текст с обёрткой (см. src/core/tools/fileRead.ts):
+//   [File: C:\...\contextManager.ts | Lines 568-607 of 631]
+//   ...[shown 40 of 631 lines | 24 more lines | use offset=608 to continue]
+//   568|const x = 1
+// ...
+// 631|}
+// Карточка рисовала это как КОД: путь дублировал плашку файла, номера строк
+// шли двойным рядом (префиксы «N|» + своя нумерация подсветки), строка
+// «…[shown …]» попадала в тело блока. Теперь конверт разбирается: шапка →
+// плашка файла + бейдж диапазона, тело → код без «N|» с РЕАЛЬНЫМИ номерами
+// строк файла, примечание обрезки → подвал блока.
+interface ReadBlock {
+  path: string
+  /** Номер первой строки тела в файле (1-based). */
+  from: number
+  /** Всего строк в файле (если конверт это сообщает). */
+  total?: number
+  /** Хвостовая строка «…[shown N of Z lines | … use offset=K …]». */
+  note?: string
+  body: string
+}
+
+const FILE_HEAD_RE = /^\[File:\s*(.+?)\s*\|\s*(.*?)\s*\]$/
+const FILE_SECTION_RE = /^===\s*(.+?)\s*\|\s*(\d+)\s+lines?\s*===$/
+const SHOWN_NOTE_RE = /^\.\.\.\[(?:shown|full mode)[^\]]*\]$/
+const NUMBERED_LINE_RE = /^(\d+)\|([\s\S]*)$/
+
+// Вывод read_file сохраняется в БД как есть: строки файла с CRLF дают
+// «95|код\r» — regex `(.*)$` не доходит до конца строки (точка не матчит \r),
+// поэтому префикс «N|» не снимался и попадал в тело кода ВТОРЫМ рядом
+// номеров (плюс висящий \r → пустая строка внизу карточки).
+function stripCr(line: string): string {
+  return line.endsWith('\r') ? line.slice(0, -1) : line
+}
+
+export function parseReadBlocks(content: string): ReadBlock[] {
+  const blocks: ReadBlock[] = []
+  let current: ReadBlock | null = null
+  // Распознан ли ХОТЬ ОДИН заголовок конверта. Если нет — это не вывод
+  // read_file (например, сжатый джанитором результат «[Контекст
+  // оптимизирован…]»), и рисовать его код-карточкой нельзя: получалась
+  // плашка файла с фальшивым диапазоном «1–1» и пустота под ней.
+  let sawHeader = false
+  const push = (): void => {
+    if (current) {
+      // Хвостовые пустые строки конверта не должны превращаться в «пустоту»
+      // под кодом: у файла нет «лишних» строк, это артефакт \n в конце.
+      current.body = current.body.replace(/(?:\r?\n)+$/, '')
+      blocks.push(current)
+      current = null
+    }
+  }
+  for (const rawLine of content.split('\n')) {
+    const raw = stripCr(rawLine)
+    let header: { path: string; from: number; total?: number } | null = null
+    const section = FILE_SECTION_RE.exec(raw)
+    const head = FILE_HEAD_RE.exec(raw)
+    if (section) {
+      header = { path: section[1], from: 1, total: Number(section[2]) }
+    } else if (head) {
+      const meta = head[2]
+      const range = /Lines?\s+(\d+)(?:\s*-\s*\d+)?\s+of\s+(\d+)/.exec(meta)
+      if (range) header = { path: head[1], from: Number(range[1]), total: Number(range[2]) }
+      else {
+        const plain = /^(\d+)\s+lines?\b/.exec(meta)
+        if (plain) header = { path: head[1], from: 1, total: Number(plain[1]) }
+        // Неизвестный конверт — не выдаём его за код, оставляем как текст ниже.
+      }
+    }
+    if (header) {
+      push()
+      sawHeader = true
+      current = { path: header.path, from: header.from, total: header.total, body: '' }
+      continue
+    }
+    // Строки ДО первого заголовка (сжатый/чужой результат) — не код.
+    if (!sawHeader) continue
+    if (!current) current = { path: '', from: 1, body: '' }
+    if (!current.body && SHOWN_NOTE_RE.test(raw)) {
+      // «...[shown 400 of 507 …]» → «shown 400 of 507 …»
+      current.note = raw.slice(4).replace(/\]$/, '').trim()
+      continue
+    }
+    const numbered = NUMBERED_LINE_RE.exec(raw)
+    if (numbered) {
+      if (!current.body) current.from = Number(numbered[1])
+      current.body += (current.body ? '\n' : '') + numbered[2]
+    } else {
+      current.body += (current.body ? '\n' : '') + raw
+    }
+  }
+  push()
+  return blocks
+}
+
+const ReadResult = memo(function ReadResult({ content, args, initialLines }: {
   content: string
-  lang: string
-  filePath?: string
-  title?: string
+  args: Record<string, unknown>
   initialLines: number
 }) {
+  const blocks = useMemo(() => parseReadBlocks(content), [content])
+  const argPath = String(args.path ?? args.file_path ?? '')
+  // Конверт не распознан (MCP-подобный ответ, ошибка) — обычный текст.
+  if (!blocks.length) return <ChunkedPre content={content} initialLines={initialLines} />
   return (
-    <CodeSurface
-      code={content}
-      lang={lang}
-      filePath={filePath}
-      title={title}
-      initialLines={initialLines}
-    />
+    <div className="trr-read">
+      {blocks.map((block, i) => {
+        const path = block.path || argPath
+        const lines = block.body ? block.body.split('\n') : []
+        const lineCount = lines.length
+        const lastLine = block.from + Math.max(0, lineCount - 1)
+        const rangeLabel = block.total
+          ? `${block.from}–${lastLine} / ${block.total}`
+          : lineCount > 0 ? `${block.from}–${lastLine}` : ''
+        // Пустой блок (например, только заголовок без строк) не рисуем —
+        // иначе получалась карточка-пустышка с пустотой внизу.
+        if (!lineCount) return null
+        return (
+          <div key={`${path}:${i}`}>
+            <CodeSurface
+              code={block.body}
+              lang={getLanguage(path)}
+              filePath={path || undefined}
+              rangeLabel={rangeLabel || undefined}
+              // Реальные номера строк файла (как в diff-карточке edit_file),
+              // а не 1..N от начала вырезки.
+              lineNumberStart={block.from}
+              initialLines={initialLines}
+              copyValue={block.body}
+            />
+            {block.note && (
+              <div className="trr-read-note" title={block.note}>{block.note}</div>
+            )}
+          </div>
+        )
+      })}
+    </div>
   )
 }, (prev, next) =>
-  prev.content === next.content && prev.lang === next.lang && prev.filePath === next.filePath &&
-  prev.title === next.title && prev.initialLines === next.initialLines)
+  prev.content === next.content && prev.args === next.args && prev.initialLines === next.initialLines)
 
 const TerminalResult = memo(function TerminalResult({ content, initialLines }: { content: string; initialLines: number }) {
   const [extra, setExtra] = useState(0)
@@ -648,19 +755,7 @@ function renderResult(
   }
   // read_file → код с подсветкой (единая «поверхность» кода)
   if (toolName === 'read_file' || toolName === 'read_files') {
-    const list = Array.isArray(args.paths) ? (args.paths as string[]) : []
-    const path = String(args.path ?? args.file_path ?? list[0] ?? '')
-    const lang = getLanguage(path)
-    const extra = list.length > 1 ? `+${list.length - 1} файл(а)` : undefined
-    return (
-      <CodeResult
-        content={content}
-        lang={lang}
-        filePath={path}
-        title={extra}
-        initialLines={initialLines}
-      />
-    )
+    return <ReadResult content={content} args={args} initialLines={initialLines} />
   }
 
   // write_file / edit_file → плашка файловой операции

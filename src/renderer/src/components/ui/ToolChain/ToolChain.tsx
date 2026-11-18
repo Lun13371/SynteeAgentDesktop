@@ -52,7 +52,7 @@ export interface ToolStep {
   }
   codeMode?: {
     code: string
-    trace?: Array<{ name: string; args: unknown; result: string; status: 'success' | 'failure'; diff?: string }>
+    trace?: Array<{ id?: string; name: string; args: unknown; result: string; status: 'success' | 'failure' | 'running'; diff?: string }>
   }
   /** §steer: id реплики (ключ оптимистичной карточки) и признак применения. */
   steerId?: string
@@ -492,10 +492,12 @@ function codeTraceSummary(trace: NonNullable<ToolStep['codeMode']>['trace']): st
 // превью аргумента/файла, ✓/✗), а их вывод рендерится тем же ToolResultRenderer.
 
 interface TraceEntry {
+  id?: string
   name: string
   args: unknown
   result: string
-  status: 'success' | 'failure'
+  /** 'running' — вызов ещё выполняется (живой трейс execute_code). */
+  status: 'success' | 'failure' | 'running'
   /** unified diff правки — в ленте он и есть вывод edit_file/write_file. */
   diff?: string
 }
@@ -527,8 +529,9 @@ const TraceRow = memo(function TraceRow({ entry }: { entry: TraceEntry }) {
   // У этих тулов path — всегда каталог; для search_code решает сам путь
   // (папка без расширения / файл с расширением).
   const pathIsDir = entry.name === 'list_directory' || entry.name === 'find_files'
+  const status = entry.status === 'success' ? '✓' : entry.status === 'running' ? '●' : '✗'
   return (
-    <span className={`tc2-trace-row${entry.status === 'failure' ? ' tc2-trace-row--fail' : ''}`}>
+    <span className={`tc2-trace-row${entry.status === 'failure' ? ' tc2-trace-row--fail' : ''}${entry.status === 'running' ? ' tc2-trace-row--run' : ''}`}>
       <span className="tc2-trace-icon" style={{ color: meta.color }}>
         <AppIcon name={meta.icon as 'zap'} size="xs" />
       </span>
@@ -538,7 +541,7 @@ const TraceRow = memo(function TraceRow({ entry }: { entry: TraceEntry }) {
           ? <FileChip path={path} showDir={false} isDir={pathIsDir || undefined} added={stat ? stat.adds : undefined} deleted={stat ? stat.dels : undefined} />
           : argsText}
       </span>
-      <span className="tc2-trace-status">{entry.status === 'success' ? '✓' : '✗'}</span>
+      <span className={`tc2-trace-status${entry.status === 'running' ? ' tc2-trace-status--run' : ''}`}>{status}</span>
     </span>
   )
 }, (prev, next) => prev.entry === next.entry)
@@ -603,7 +606,10 @@ function CodeModeSummary({ trace, onExpand }: {
   onExpand?: () => void
 }) {
   if (!trace?.length) return null
-  const shown = trace.slice(0, 3)
+  // Пока скрипт выполняется — показываем ПОСЛЕДНИЕ вызовы (видно, что идёт
+  // прямо сейчас); в завершённом виде — первые, как раньше.
+  const running = trace.some(entry => entry.status === 'running')
+  const shown = running ? trace.slice(-3) : trace.slice(0, 3)
   const rest = trace.length - shown.length
   return (
     <div className="tc2-trace-list">
@@ -902,9 +908,14 @@ const IterationBlock = memo(function IterationBlock({
   const filePathArg = filePathsArg[0] ?? ''
   const extraFiles = Math.max(0, filePathsArg.length - 1)
 
+  // Живой трейс execute_code лежит на шаге ВЫЗОВА (результата ещё нет),
+  // финальный — на шаге результата. Берём то, что есть, иначе во время
+  // выполнения скрипта карточка не показывала вложенные тулы вообще.
+  const codeMode = iter.result?.codeMode ?? iter.call.codeMode
+
   const previewText = iter.call.toolName === 'execute_code'
-    ? iter.result?.codeMode
-      ? codeTraceSummary(iter.result.codeMode.trace)
+    ? codeMode
+      ? codeTraceSummary(codeMode.trace)
       : running ? 'Выполняется TypeScript-скрипт' : 'TypeScript-скрипт'
     : iter.call.toolName === 'run_command'
       ? String(iter.call.toolArgs?.command ?? Object.values(iter.call.toolArgs ?? {})[0] ?? '')
@@ -1013,8 +1024,8 @@ const IterationBlock = memo(function IterationBlock({
           <AppIcon name={open ? 'chevronUp' : 'chevronDown'} size="xs" />
         </button>
 
-        {iter.call.toolName === 'execute_code' && iter.result?.codeMode && !open && mode !== 'compact' && (
-          <CodeModeSummary trace={iter.result.codeMode.trace} onExpand={toggleOpen} />
+        {iter.call.toolName === 'execute_code' && codeMode && !open && mode !== 'compact' && (
+          <CodeModeSummary trace={codeMode.trace} onExpand={toggleOpen} />
         )}
 
         <AnimatePresence initial={false}>
@@ -1033,6 +1044,12 @@ const IterationBlock = memo(function IterationBlock({
               onAnimationComplete={() => remeasure?.()}
             >
 
+
+              {/* Пока скрипт выполняется, результата ещё нет — вложенные
+                  вызовы показываем из живого трейса шага-вызова. */}
+              {!iter.result && codeMode && mode !== 'compact' && (
+                <CodeModeDetails details={codeMode} mode={mode} />
+              )}
 
               {iter.result && mode !== 'compact' && (() => {
                 if (iter.result.codeMode) {
@@ -1655,10 +1672,32 @@ const ToolChain = memo(function ToolChain({ steps, sections, mode, isRunning, bu
     const BOTTOM_GAP = 24
     const atBottom = () => el.scrollHeight - el.scrollTop - el.clientHeight <= BOTTOM_GAP
     const stick = () => { el.scrollTop = el.scrollHeight }
+    // Высота контента на прошлом scroll-событии. Нужна, чтобы отличить
+    // РУЧНОЙ доезд до низа от КЛАМПА: когда выполнявшийся тул схлопывается в
+    // итоговую карточку, scrollHeight падает, Chromium прижимает scrollTop к
+    // новому низу → «atBottom» → ложный re-pin → следующее RO-событие
+    // утаскивало читающего выше вниз.
+    let prevSh = el.scrollHeight
+    // Свежий жест пользователя внутри окна (колесо/кнопка мыши/клавиатура).
+    // Только он даёт право «прилипнуть» — не программные сдвиги.
+    let gestureAt = 0
+    const markGesture = () => { gestureAt = performance.now() }
 
     const onScroll = () => {
+      const sh = el.scrollHeight
+      const shrank = sh < prevSh - 1
+      prevSh = sh
       const bottom = atBottom()
-      if (bottom && !pinnedRef.current) pinnedRef.current = true
+      const fresh = performance.now() - gestureAt < 600
+      if (shrank) {
+        // Сжатие контента — не повод менять прилипание и не повод прыгать.
+        setShowJumpDown(v => {
+          const next = liveMode && !bottom
+          return v === next ? v : next
+        })
+        return
+      }
+      if (bottom && !pinnedRef.current && fresh) pinnedRef.current = true
       if (liveMode && pinnedRef.current && !bottom) pinnedRef.current = false
       // Кнопку показываем только в живом окне: в истории пользователь сам
       // управляет скроллом, лишний оверлей там мешает.
@@ -1668,18 +1707,69 @@ const ToolChain = memo(function ToolChain({ steps, sections, mode, isRunning, bu
       })
     }
     el.addEventListener('scroll', onScroll, { passive: true })
+    el.addEventListener('wheel', markGesture, { passive: true })
+    el.addEventListener('pointerdown', markGesture, { passive: true })
+    el.addEventListener('keydown', markGesture)
+
+    // ── Якорь чтения внутри окна ────────────────────────────────────────
+    // Карточка выполняющегося тула высокая, по завершении схлопывается в
+    // строку — контент ВЫШЕ читаемого сжимается, и всё уезжает вверх
+    // (а если упрётся в низ — Chromium клампнёт scrollTop). Держим шаг,
+    // который сейчас у верхнего края окна, на том же месте.
+    let anchor: { el: Element; top: number } | null = null
+    const captureAnchor = (): void => {
+      if (pinnedRef.current) { anchor = null; return }
+      const boxTop = el.getBoundingClientRect().top
+      const items = inner.children
+      for (let i = 0; i < items.length; i++) {
+        const r = items[i].getBoundingClientRect()
+        if (r.bottom > boxTop + 1) {
+          anchor = { el: items[i], top: r.top - boxTop }
+          return
+        }
+      }
+      anchor = null
+    }
+    const restoreAnchor = (): void => {
+      if (!anchor || !anchor.el.isConnected || pinnedRef.current) return
+      const delta = (anchor.el.getBoundingClientRect().top - el.getBoundingClientRect().top) - anchor.top
+      if (Math.abs(delta) < 1) return
+      el.scrollTop += delta
+      prevSh = el.scrollHeight
+    }
+    // Переснимаем якорь на ручной прокрутке и запоминаем перед сжатием.
+    const onGesture = (): void => { markGesture(); captureAnchor() }
+    el.addEventListener('wheel', onGesture, { passive: true })
+    el.addEventListener('pointerup', onGesture, { passive: true })
 
     let raf = 0
+    let lastInnerH = inner.getBoundingClientRect().height
     const ro = new ResizeObserver(() => {
       if (raf) return
       raf = requestAnimationFrame(() => {
         raf = 0
+        const h = inner.getBoundingClientRect().height
+        const shrank = h < lastInnerH - 1
+        lastInnerH = h
+        // Сжатие контента — возвращаем якорь (читаемое остаётся на месте).
+        if (shrank) {
+          restoreAnchor()
+          prevSh = el.scrollHeight
+          return
+        }
+        // Догоняем низ только если человек реально прилип. Признак «прилип»
+        // ставит исключительно жест (onScroll с fresh) или кнопка «вниз».
         if (liveMode && pinnedRef.current && !collapsed) stick()
       })
     })
     ro.observe(inner)
     return () => {
       el.removeEventListener('scroll', onScroll)
+      el.removeEventListener('wheel', markGesture)
+      el.removeEventListener('pointerdown', markGesture)
+      el.removeEventListener('keydown', markGesture)
+      el.removeEventListener('wheel', onGesture)
+      el.removeEventListener('pointerup', onGesture)
       ro.disconnect()
       if (raf) cancelAnimationFrame(raf)
     }
@@ -1694,15 +1784,20 @@ const ToolChain = memo(function ToolChain({ steps, sections, mode, isRunning, bu
     el.scrollTop = el.scrollHeight
   }, [])
 
-  // Открыл окно заново (или начался прогон) — сразу прилипаем к хвосту.
-  // Показ кнопки править не нужно: stick() ниже порождает scroll-событие,
-  // onScroll сам сбросит flag — без setState внутри эффекта.
+  // Открыл окно заново — сразу прилипаем к хвосту. Раньше эффект висел на
+  // [collapsed, isRunning]: isRunning дёргается на каждом туле, и КАЖДОЕ его
+  // изменение сбрасывало pinned=true + scrollTop в низ — читающего внутри
+  // тулчейна телепало вниз посреди работы агента. Теперь только на
+  // РАСКРЫТИИ окна (collapsed false), а не на смене статуса прогона.
+  const wasCollapsedRef = useRef(collapsed)
   useEffect(() => {
-    if (collapsed) return
+    const opened = wasCollapsedRef.current && !collapsed
+    wasCollapsedRef.current = collapsed
+    if (!opened) return
     pinnedRef.current = true
     const el = itersRef.current
     if (el) el.scrollTop = el.scrollHeight
-  }, [collapsed, isRunning])
+  }, [collapsed])
 
   // Map id→index больше не нужен (defaultOpen убран) — isLast считается
   // по позиции в видимой ленте.
