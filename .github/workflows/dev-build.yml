@@ -41,8 +41,18 @@ jobs:
         with:
           workspaces: Sidecar
 
+      # node-pty и better-sqlite3 приходят с NAPI-prebuild'ами под win32-x64,
+      # поэтому electron-rebuild в CI не нужен. Без --ignore-scripts
+      # postinstall тянет `electron-builder install-app-deps`, который на
+      # windows-latest падает при пересборке нативных модулей MSVC.
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
+
+      - name: Fetch Electron binary
+        run: node node_modules/electron/install.js
+
+      - name: Patch native build config
+        run: node scripts/patch-node-pty-spectre.mjs
 
       - name: Build Rust sidecar
         run: npm run build:sidecar

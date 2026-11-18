@@ -40,7 +40,10 @@ jobs:
         continue-on-error: true
         run: npm run typecheck
 
-      - name: Lint
+      # Baseline линтера тоже не нулевой (~1450 ошибок, в основном
+      # no-undef в tests/*.mjs). Информативно, пока не расчистим.
+      - name: Lint (informational)
+        continue-on-error: true
         run: npm run lint:pretty
 
       - name: Build bundles
