@@ -4,6 +4,7 @@
   "description": "Syntee Helper — персональный AI-ассистент",
   "main": "./out/main/index.js",
   "author": "Syntee",
+  "license": "MIT",
   "scripts": {
     "dev": "electron-vite dev",
     "typecheck": "tsc -b",

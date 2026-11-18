@@ -1288,17 +1288,16 @@ const synteeAPI = {
   },
 
   // ── Автообновление клиента ──────────────────────────────────────────────
-  // In-app informational checker. The Go launcher (syntee-launcher) does the
-  // real download+apply; this API only exposes state for the titlebar badge,
-  // the changelog modal, the force modal, and the settings "Changelog" tab.
-  //   - check(): manual re-check (settings button). Returns the new state.
-  //   - getStatus(): snapshot of current state (badge visibility, manifest).
-  //   - getHistory(): list of ever-activated releases for the settings tab.
-  //   - dismiss(version): hide the badge for this version (force ignores it).
-  //   - quitAndInstall(): spawn updater.exe, then app.exit(0). Resolves with
-  //     { ok: false, error } when the updater couldn't be started (app keeps
-  //     running in that case).
-  //   - onStateChanged(cb): subscribe to live updates from the main process.
+  // Обновления приходят из GitHub Releases. Скачивание идёт в фоне сразу
+  // после обнаружения версии; установка — по кнопке или при выходе.
+  //   - check(): ручная проверка (кнопка в настройках). Возвращает состояние.
+  //   - getStatus(): снимок состояния (бейдж, манифест, прогресс загрузки).
+  //   - getHistory(): список версий для вкладки Changelog.
+  //   - dismiss(version): скрыть бейдж до следующего релиза.
+  //   - quitAndInstall(): запустить установщик и закрыть приложение.
+  //     Резолвится с { ok: false, error }, если установщик не запустился
+  //     (приложение в этом случае продолжает работу).
+  //   - onStateChanged(cb): подписка на изменения состояния из main.
   updates: {
     check: () => ipcRenderer.invoke('updates:check') as Promise<import('../../shared/types').UpdateState>,
     getStatus: () => ipcRenderer.invoke('updates:getStatus') as Promise<import('../../shared/types').UpdateState>,

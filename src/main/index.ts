@@ -88,9 +88,7 @@ import { registerNotificationIPC } from './ipc/notification.ipc'
 import { initNotificationManager } from './managers/NotificationManager'
 import { initActivityManager } from './managers/ActivityManager'
 import { initGitSyncManager, registerGitSyncIPC } from './managers/GitSyncManager'
-import { startUpdatePolling, stopUpdatePolling } from './updater/UpdateChecker'
-import { ensureUpdater } from './updater/LauncherBridge'
-import { usesWindowsInstallerUpdates } from './updater/config'
+import { installPendingOnQuit, startUpdatePolling, stopUpdatePolling } from './updater/UpdateChecker'
 import { initModelCatalog, refreshCatalog } from '../core/tokens/modelCatalog'
 import { initSkillManager } from '../core/skills/skillManager'
 import { initCommandManager } from '../core/commands/commandManager'
@@ -291,7 +289,7 @@ app.whenReady().then(async () => {
   configurePerformanceDiagnostics(join(app.getPath('userData'), 'logs'))
   const stopPerformanceSampling = startPerformanceSampling()
   app.once('before-quit', stopPerformanceSampling)
-  electronApp.setAppUserModelId(usesWindowsInstallerUpdates() ? 'com.synteehelper.desktop' : 'com.synteehelper.app')
+  electronApp.setAppUserModelId('com.synteehelper.app')
 
   // ── syntee-plugin:// — файлы UI плагинов (iframe-панели) ──
   protocol.handle('syntee-plugin', handlePluginProtocol)
@@ -569,8 +567,6 @@ app.whenReady().then(async () => {
   }, trayMenuWindow)
   trayManager.init()
 
-  // Ensure updater.exe exists next to the client; download from website if missing.
-  ensureUpdater().catch((e) => console.error('[updater] ensureUpdater failed:', e))
 
   // PTY-менеджер: фиксируем sender для стриминга данных в renderer.
   ptyManager.setSender(mainWindow.getWindow())
@@ -640,6 +636,8 @@ app.on('before-quit', () => {
   localModels.shutdown()
   // Останавливаем опрос обновлений и Git Sync Monitor.
   stopUpdatePolling()
+  // Если обновление уже скачано и проверено — ставим его при выходе.
+  try { installPendingOnQuit() } catch { /* ok — best-effort */ }
   gitSyncManager?.stop()
   stopAudioDevicesIPC()
   stopAudioVisualizerIPC()

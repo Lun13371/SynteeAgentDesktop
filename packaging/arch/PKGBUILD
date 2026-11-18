@@ -4,7 +4,7 @@ pkgrel=1
 pkgdesc='Syntee Helper — desktop AI assistant'
 arch=('x86_64')
 url='https://github.com/Lun13371/SynteeAgentDesktop'
-license=('LicenseRef-Syntee')
+license=('MIT')
 depends=('alsa-lib' 'desktop-file-utils' 'git' 'gtk3' 'libcups' 'libgomp' 'libnotify'
          'libpulse' 'libstdc++' 'libxss' 'libxtst' 'mesa' 'nss' 'openssl-3'
          'xdg-utils')

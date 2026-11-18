@@ -1,10 +1,13 @@
 name: Release
 
 # Релиз собирается в CI и публикуется в GitHub Releases этого репозитория.
-# Обновления standalone-инсталлятора читаются из этих релизов
-# (src/main/updater/windowsInstallerFeed.ts), пакетный канал лаунчера
-# (syntee.fun/api/public/updates) остаётся ручным — zip оттуда заливается
-# в панель вручную.
+# Само приложение обновляется из этих же релизов
+# (src/main/updater/releaseFeed.ts → InstallerUpdater.ts):
+#   Windows — NSIS-установщик, ставится молча
+#   Linux   — переносимый архив .tar.zst
+#
+# Подпись кода (SignPath) включается автоматически, когда в репозитории
+# заведены секреты SIGNPATH_* — см. docs/code-signing.md.
 
 on:
   push:
@@ -57,7 +60,7 @@ jobs:
           echo "Релиз $tag (версия $ver)"
 
   windows:
-    name: Windows (installer + zip)
+    name: Windows (NSIS installer)
     needs: prepare
     runs-on: windows-latest
     timeout-minutes: 90
@@ -82,6 +85,8 @@ jobs:
         with:
           workspaces: Sidecar
 
+      # node-pty и better-sqlite3 приходят с NAPI-prebuild'ами под win32-x64,
+      # поэтому electron-rebuild в CI не нужен.
       - name: Install dependencies
         run: npm ci --ignore-scripts
 
@@ -97,19 +102,57 @@ jobs:
       - name: Build application
         run: npm run build
 
-      - name: Package zip (launcher channel)
-        run: npx electron-builder --win --config.npmRebuild=false
-
-      - name: Package NSIS installer (GitHub update feed)
+      # Имя файла фиксировано в electron-builder.windows.yml:
+      # Syntee-Helper-Setup-<version>-x64.exe — его ищет releaseFeed.ts.
+      - name: Package NSIS installer
         run: npx electron-builder --win --x64 --config electron-builder.windows.yml
 
-      - name: Upload artifacts
+      # Подпись включается сама, как только заведены секреты SIGNPATH_*.
+      # Пока их нет — шаг пропускается, установщик уходит неподписанным.
+      - name: Check signing secrets
+        id: signing
+        shell: pwsh
+        run: |
+          if ($env:SIGNPATH_API_TOKEN) {
+            "enabled=true" >> $env:GITHUB_OUTPUT
+          } else {
+            "enabled=false" >> $env:GITHUB_OUTPUT
+            Write-Host "Секреты SignPath не заданы — подпись пропущена (см. docs/code-signing.md)"
+          }
+        env:
+          SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+
+      # Неподписанный .exe загружается отдельным артефактом: SignPath забирает
+      # его по artifact-id и возвращает подписанный файл.
+      - name: Upload unsigned installer
+        if: steps.signing.outputs.enabled == 'true'
+        id: upload-unsigned
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-unsigned
+          path: dist/windows/*.exe
+          retention-days: 1
+
+      - name: Sign installer
+        if: steps.signing.outputs.enabled == 'true'
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ secrets.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ secrets.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ secrets.SIGNPATH_ARTIFACT_CONFIG_SLUG }}
+          github-artifact-id: ${{ steps.upload-unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: dist/signed
+
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: windows
           path: |
-            dist/*.zip
             dist/windows/*.exe
+            dist/signed/*.exe
           retention-days: 7
           if-no-files-found: error
 
@@ -193,6 +236,5 @@ jobs:
           prerelease: false
           files: |
             release/*.exe
-            release/*.zip
             release/*.tar.zst
             release/SHA256SUMS

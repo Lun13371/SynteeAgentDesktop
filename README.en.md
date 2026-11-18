@@ -43,14 +43,14 @@ A personal AI assistant for Windows and Linux: chat with any LLM, an agent with 
 | Platform | File |
 |---|---|
 | Windows | `Syntee-Helper-Setup-<version>-x64.exe` — installer, self-updating |
-| Windows | `Syntee.Helper-<version>-x64.zip` — portable build for the launcher |
 | Linux | `syntee-helper-<version>-x86_64.tar.zst` — portable archive |
 
 Prebuilt binaries live in [Releases](../../releases) and are listed in `SHA256SUMS`.
 
 For Arch Linux there is a `packaging/arch/PKGBUILD` — build the package with `makepkg -si` in that directory.
 
-The installer updates directly from this repository's GitHub Releases. The portable build updates through the launcher.
+The Windows build updates itself: it downloads the installer in the background, closes the app and installs the new version.
+The Linux build updates itself when installed from the archive; a pacman package updates through `pacman -Syu`.
 
 ---
 
@@ -90,8 +90,8 @@ npm run build      # bundle into out/
 Package:
 
 ```bash
-npm run build:win            # Windows zip
-npm run build:win:installer  # Windows NSIS installer
+npm run build:win            # Windows NSIS installer
+npm run build:win:installer  # same, with environment checks
 npm run build:linux          # Linux
 ```
 
@@ -124,7 +124,7 @@ packaging/     Arch Linux packaging (PKGBUILD)
 
 **Data flow.** The renderer talks to the main process only through the preload bridge. The agent lives in `core/agent` and calls tools through a single registry; LLM requests run in a separate worker so the UI never blocks. Heavy semantic work is offloaded to the Rust sidecar over HTTP.
 
-**Updates.** Two independent channels: the launcher (`syntee.fun`) for portable builds and GitHub Releases for the installer (`src/main/updater/windowsInstallerFeed.ts`).
+**Updates.** A single source — GitHub Releases (`src/main/updater/releaseFeed.ts`). The app polls the feed every 30 minutes, downloads the new artifact in the background, verifies its SHA256 and runs the installer on user request (`src/main/updater/InstallerUpdater.ts`).
 
 ---
 
@@ -132,13 +132,15 @@ packaging/     Arch Linux packaging (PKGBUILD)
 
 ```mermaid
 flowchart LR
-  dev[dev<br/>development] -->|PR| release[release<br/>release branch]
-  release -->|tag v*| rel[GitHub Release<br/>exe · zip · tar.zst]
+  dev[dev<br/>development] -->|merge| test[test-release<br/>untagged build]
+  test -->|verified manually| release[release<br/>release branch]
+  release -->|tag v*| rel[GitHub Release<br/>exe · tar.zst]
   rel --> upd[auto-update]
 ```
 
 - `dev` — the main branch. Every push runs type check, lint, tests and a compile for Windows and Linux.
-- `release` — releases only. Merge from `dev`, then tag `v<version>` and CI builds and publishes everything.
+- `test-release` — release candidate. A push here builds artifacts without a tag and without publishing: download them from Actions and verify manually.
+- `release` — releases only. Merge from `test-release`, then tag `v<version>` and CI builds and publishes everything.
 
 The version comes from `package.json` and must match the tag, otherwise the release job fails.
 
@@ -173,4 +175,6 @@ Found a bug or have an idea? Open an [issue](../../issues). Pull requests are we
 
 ## License
 
-The project is open. Distribution terms will be published separately; until then the code is available for reading and local builds.
+[MIT](LICENSE) © 2026 Lun13371
+
+The code may be used, modified and distributed freely, including in commercial projects, provided the license text and copyright notice are preserved.

@@ -1,17 +1,15 @@
 /**
- * IPC handlers for the in-app update checker.
+ * IPC для встроенной системы обновлений.
  *
- * The renderer calls these to:
- *   - check for updates (manual "Check now" button in settings)
- *   - get the current update state (badge visibility, manifest)
- *   - subscribe to state changes (badge appears/disappears in real time)
- *   - fetch the changelog history (for the settings "Changelog" tab)
- *   - dismiss the current update (badge goes away until a new version ships)
- *   - quit-and-install (triggers app.quit() → launcher applies staged update)
+ * Renderer умеет:
+ *   - проверить обновления вручную (кнопка «Проверить» в настройках)
+ *   - получить снимок состояния (бейдж, манифест, прогресс скачивания)
+ *   - подписаться на изменения состояния в реальном времени
+ *   - получить историю версий (вкладка Changelog — из GitHub Releases)
+ *   - скрыть обновление до следующего релиза
+ *   - применить обновление (скачать при необходимости → запустить установщик)
  *
- * The actual download + apply happens in syntee-launcher (Go); this module
- * only coordinates UI state. See src/main/updater/UpdateChecker.ts for the
- * polling logic and src/shared/types for UpdateManifest/UpdateState shapes.
+ * Логика опроса и загрузки — в src/main/updater/UpdateChecker.ts.
  */
 import { app, ipcMain, type BrowserWindow } from 'electron'
 import type { ChangelogEntry, QuitAndInstallResult, UpdateState } from '../../shared/types'
@@ -22,8 +20,7 @@ import {
   quitAndInstall,
   subscribeUpdates,
 } from '../updater/UpdateChecker'
-import { changelogUrl, usesWindowsInstallerUpdates } from '../updater/config'
-import { fetchWindowsInstallerReleases } from '../updater/windowsInstallerFeed'
+import { fetchReleaseFeed } from '../updater/releaseFeed'
 
 export function registerUpdatesIPC(getMainWindow: () => BrowserWindow | null): void {
   // Manual check — returns the new state so the renderer can react inline.
@@ -31,48 +28,43 @@ export function registerUpdatesIPC(getMainWindow: () => BrowserWindow | null): v
     return checkForUpdates()
   })
 
-  // Snapshot of current state (badge, manifest, dismissed versions).
+  // Snapshot of current state (badge, manifest, download progress).
   ipcMain.handle('updates:getStatus', (): UpdateState => {
     return getUpdateState()
   })
 
-  // Changelog history for the settings tab. Fetched here (not in renderer)
-  // so the request goes through the main process and stays CSP-clean.
+  // История версий для вкладки Changelog. Источник — тело релизов GitHub,
+  // поэтому отдельный HTTP-запрос из renderer не нужен.
   ipcMain.handle(
     'updates:getHistory',
     async (_e, params?: { channel?: string; limit?: number }): Promise<ChangelogEntry[]> => {
-      const channel = params?.channel ?? 'stable'
       const limit = Math.max(0, Math.min(params?.limit ?? 50, 100))
-      if (usesWindowsInstallerUpdates()) {
-        const current = app.getVersion()
-        return (await fetchWindowsInstallerReleases()).slice(0, limit).map(release => ({
-          version: release.version, changelog: release.changelog, released_at: release.released_at,
-          force: false, is_current: release.version === current,
-        }))
+      const current = app.getVersion()
+      const seen = new Set<string>()
+      const entries: ChangelogEntry[] = []
+      for (const release of await fetchReleaseFeed()) {
+        if (seen.has(release.version)) continue
+        seen.add(release.version)
+        entries.push({
+          version: release.version,
+          changelog: release.changelog,
+          released_at: release.released_at,
+          force: false,
+          is_current: release.version === current,
+        })
       }
-      const url = changelogUrl(channel, limit)
-      const controller = new AbortController()
-      const timer = setTimeout(() => controller.abort(), 10000)
-      try {
-        const res = await fetch(url, { signal: controller.signal })
-        if (!res.ok) throw new Error(`HTTP ${res.status}`)
-        return (await res.json()) as ChangelogEntry[]
-      } finally {
-        clearTimeout(timer)
-      }
+      return entries.slice(0, limit)
     },
   )
 
-  // Dismiss the current update so the badge disappears. Force updates ignore
-  // this (handled in the renderer — the ForceUpdateModal can't be closed).
+  // Скрыть обновление до следующего релиза.
   ipcMain.handle('updates:dismiss', async (_e, version: string): Promise<UpdateState> => {
     dismissUpdate(version)
     return getUpdateState()
   })
 
-  // Launch the updater and exit the client so the update can be applied.
-  // Returns { ok: false, error } when the updater couldn't be started — in
-  // that case the app keeps running and the UI shows the error.
+  // Применить обновление. Возвращает { ok: false, error }, если установщик
+  // запустить не удалось — приложение в этом случае продолжает работу.
   ipcMain.handle('updates:quitAndInstall', async (): Promise<QuitAndInstallResult> => {
     return quitAndInstall()
   })

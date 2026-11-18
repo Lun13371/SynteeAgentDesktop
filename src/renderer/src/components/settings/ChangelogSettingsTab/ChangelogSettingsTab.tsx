@@ -24,7 +24,7 @@ export default function ChangelogSettingsTab() {
   const check = useUpdateStore((s) => s.check)
   const checking = useUpdateStore((s) => s.status === 'checking')
   const updateError = useUpdateStore((s) => s.error)
-  const installer = useUpdateStore((s) => s.status === 'available' && s.available?.delivery === 'installer' ? s.available : null)
+  const updatable = useUpdateStore((s) => s.status === 'available' && s.available ? s.available : null)
   const upToDate = useUpdateStore((s) => s.status === 'no-update' && s.available === null)
   const openUpdate = useUpdateStore((s) => s.quitAndInstall)
   const [downloadError, setDownloadError] = useState<string | null>(null)
@@ -61,14 +61,14 @@ export default function ChangelogSettingsTab() {
 
       <div className="changelog-settings-toolbar">
         {upToDate && <span role="status">Установлена актуальная версия</span>}
-        {installer && (
+        {updatable && (
           <button className="changelog-settings-check-btn" onClick={async () => {
             setDownloadError(null)
             const result = await openUpdate()
-            if (!result.ok) setDownloadError(result.error ?? 'Не удалось открыть загрузку')
+            if (!result.ok) setDownloadError(result.error ?? 'Не удалось запустить обновление')
           }}>
             <Download size={14} />
-            Скачать v{installer.version}
+            Обновить до v{updatable.version}
           </button>
         )}
         <motion.button

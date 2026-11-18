@@ -231,7 +231,7 @@ export function registerFsIPC(): void {
   // ── fs:writeFile — запись файла (атомарная: tmp + rename) ──────────
   // Используется FileEditorPane (Monaco) для сохранения правок.
   // Атомарная запись через tmp+rename предотвращает повреждение файла
-  // при краше/закрытии во время записи (паттерн из LauncherBridge).
+  // при краше/закрытии во время записи (tmp + rename).
   // После записи эмитит 'file:changed' событие в renderer — для live-
   // обновления открытых файловых табов.
   ipcMain.handle('fs:writeFile', async (_e, params: {
