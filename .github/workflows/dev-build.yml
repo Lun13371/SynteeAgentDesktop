@@ -1,7 +1,8 @@
 name: Dev build
 
-# Сборка на каждый пуш в dev: проверяем, что приложение собирается под обе
-# платформы. Артефакты живут только в Actions (14 дней), релизов не создают.
+# Проверка сборки на каждый пуш в dev: приложение должно компилироваться под
+# обе платформы. Упаковки здесь нет намеренно — артефакты и установщики
+# собираются только в release.yml по тегу.
 
 on:
   push:
@@ -17,9 +18,9 @@ permissions:
 
 jobs:
   windows:
-    name: Windows (zip)
+    name: Windows (compile)
     runs-on: windows-latest
-    timeout-minutes: 75
+    timeout-minutes: 60
     env:
       SYNTEE_API_URL: https://syntee.fun
       SYNTEE_WEB_URL: https://syntee.fun
@@ -60,21 +61,18 @@ jobs:
       - name: Build application
         run: npm run build
 
-      - name: Package (zip for launcher channel)
-        run: npx electron-builder --win --config.npmRebuild=false
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-zip
-          path: dist/*.zip
-          retention-days: 14
-          if-no-files-found: error
+      - name: Verify bundle output
+        shell: pwsh
+        run: |
+          foreach ($f in 'out/main/index.js', 'out/preload/index.js', 'out/renderer/index.html') {
+            if (-not (Test-Path $f)) { throw "Отсутствует артефакт сборки: $f" }
+          }
+          "Windows bundle OK"
 
   linux:
-    name: Linux (tar.zst)
+    name: Linux (compile)
     runs-on: ubuntu-24.04
-    timeout-minutes: 75
+    timeout-minutes: 60
     env:
       SYNTEE_API_URL: https://syntee.fun
       SYNTEE_WEB_URL: https://syntee.fun
@@ -99,24 +97,21 @@ jobs:
       - name: System dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake pkg-config zstd
+          sudo apt-get install -y cmake pkg-config
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Build Linux bundle
-        run: npm run build:linux
+      - name: Build Rust sidecar
+        run: bash Sidecar/scripts/build-linux.sh
 
-      - name: Pack portable archive
+      - name: Build application
+        run: npm run build
+
+      - name: Verify bundle output
         run: |
-          VERSION=$(node -p "require('./package.json').version")
-          tar --zstd -cf "syntee-helper-${VERSION}-x86_64.tar.zst" -C dist/linux-unpacked .
-          ls -lh "syntee-helper-${VERSION}-x86_64.tar.zst"
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: linux-tar-zst
-          path: syntee-helper-*-x86_64.tar.zst
-          retention-days: 14
-          if-no-files-found: error
+          for f in out/main/index.js out/preload/index.js out/renderer/index.html; do
+            test -f "$f" || { echo "::error::Отсутствует артефакт сборки: $f"; exit 1; }
+          done
+          test -x resources/sidecar/syntee-sidecar || { echo "::error::Sidecar не собран"; exit 1; }
+          echo "Linux bundle OK"
