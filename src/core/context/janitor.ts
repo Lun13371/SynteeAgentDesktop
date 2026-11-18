@@ -1,5 +1,5 @@
 import type { ChatMessage } from './contextManager'
-import { estimateTokens } from '../tokens/usageTracker'
+import { estimateTokens, estimateTokensCalibrated } from '../tokens/usageTracker'
 import { JANITOR_MARKER, type JanitorAction, type JanitorActionKind, type JanitorReport, type AssistantsSettings } from '../../shared/assistants'
 
 // ── Классификация тулов ──────────────────────────────────────────────────────
@@ -315,7 +315,10 @@ export class Janitor {
         finalText += ` [recall:${archiveId}]`
         archiveEntry = { id: archiveId, originalMessages: [{ ...messages[idx] }], summary: finalText, ts: existing?.ts ?? Date.now() }
       }
-      const saved = estimateTokens(content) - estimateTokens(finalText)
+      // В той же шкале, что и снапшоты контекста (с калибровкой по реальным
+      // prompt_tokens): иначе «−2459 tok» в карточке janitor'а и «≈1300»
+      // в кольце — два разных числа об одном и том же сжатии.
+      const saved = estimateTokensCalibrated(content) - estimateTokensCalibrated(finalText)
       if (saved < STALE_MIN_SAVED) return
       if (archiveEntry) this.pendingArchive.set(archiveEntry.id, archiveEntry)
       replacements.set(idx, finalText)

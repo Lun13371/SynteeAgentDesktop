@@ -1,7 +1,7 @@
 import { statSync } from 'fs'
 import type { Message, ToolStep } from '../../shared/types'
 import { JANITOR_MARKER } from '../../shared/assistants'
-import { estimateTokens } from '../tokens/usageTracker'
+import { estimateTokensCalibrated } from '../tokens/usageTracker'
 import {
   parseReadSections, rangesCover, normalizePath, stableStringify,
   PINNED_TOOLS, FILE_MUTATORS, UNKNOWN_MUTATORS, READ_TOOLS,
@@ -39,6 +39,12 @@ export interface CompressOptions {
   minSavingsTokens: number
   /** Сколько последних ходов (assistant-сообщений с тулами) не трогать. */
   tailKeep: number
+  /**
+   * Пара provider:model для калибровки. «Сэкономлено токенов» считается в той
+   * же шкале, что и кольцо контекста (usageTracker) — иначе рядом стоят два
+   * разных числа про одно и то же сжатие.
+   */
+  calibrationKey?: string
 }
 
 export interface CompressionPlan {
@@ -185,7 +191,8 @@ export function compressStoredMessages(messages: Message[], opts: CompressOption
   const put = (p: StepPair, text: string, kind: 'dedup' | 'reread' | 'stale'): void => {
     if (replace.has(p.result) || !editable(p)) return
     const finalText = `${JANITOR_MARKER} ${text}`
-    const saved = estimateTokens(p.result.content ?? '') - estimateTokens(finalText)
+    const saved = estimateTokensCalibrated(p.result.content ?? '', opts.calibrationKey)
+      - estimateTokensCalibrated(finalText, opts.calibrationKey)
     if (saved < STALE_MIN_SAVED) return
     replace.set(p.result, finalText)
     kindOf.set(p.result, kind)
@@ -280,7 +287,8 @@ export function compressStoredMessages(messages: Message[], opts: CompressOption
     const msgReplacements = steps.filter(s => replace.has(s))
     if (msgReplacements.length === 0) continue
     const savedTokens = msgReplacements.reduce(
-      (sum, s) => sum + Math.max(0, estimateTokens(s.content ?? '') - estimateTokens(replace.get(s)!)),
+      (sum, s) => sum + Math.max(0, estimateTokensCalibrated(s.content ?? '', opts.calibrationKey)
+        - estimateTokensCalibrated(replace.get(s)!, opts.calibrationKey)),
       0,
     )
     if (savedTokens < opts.minSavingsTokens) continue

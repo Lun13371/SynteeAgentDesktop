@@ -11,6 +11,7 @@ import { getFileCacheSnapshot, mergeFileCache } from '../../core/context/fileRea
 import { getAccessToken } from '../services/tokenStore'
 import { getGatewayAuthToken, forceRefreshGatewayToken } from '../services/gatewayClient'
 import { getGatewayModelsCache } from '../../core/tokens/gatewayModelsCache'
+import { exportCalibration } from '../../core/tokens/usageTracker'
 import { acceptAIUsage } from '../services/usageLedger'
 import type { AIRequestUsage } from '../../core/ai/requestUsage'
 import {
@@ -671,6 +672,9 @@ class AgentManager {
             // (gateway:fetchModels только в main), а getModelContextWindow
             // для 'syntee-gateway' берёт contextWindow из этого кэша.
             gatewayModels: getGatewayModelsCache(),
+            // Калибровка оценки контекста (usageTracker): воркер не имеет
+            // доступа к стору, коэффициенты передаём снапшотом.
+            contextCalibration: exportCalibration(),
             catalogCachePath: join(app.getPath('userData'), 'modelsCatalog.json'),
             gatewayToken,
             fileCacheSnapshot: getFileCacheSnapshot(record.chatId),

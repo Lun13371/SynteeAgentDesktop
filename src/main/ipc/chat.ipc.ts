@@ -51,7 +51,10 @@ import {
   applyRollingWindowAsync, getContextSettings, estimateMessagesTokensAsync,
   estimateTokens, getModelContextWindow,
 } from '../../core/context/contextManager'
-import { buildSnapshotFromEstimate, buildSnapshotFromReal, getModelPriceInfo } from '../../core/tokens/usageTracker'
+import {
+  buildSnapshotFromEstimate, buildSnapshotFromReal, calibrationKey, getModelPriceInfo,
+  importCalibration, setCalibrationListener,
+} from '../../core/tokens/usageTracker'
 import { getChatCost, deleteChatCosts, installUsageAccounting } from '../services/usageLedger'
 import {} from '../../core/tokens/gatewayModelsCache'
 import { clearFileCache } from '../../core/context/fileReadCache'
@@ -66,7 +69,9 @@ import type { Message, AgentSettings, ChatMode, QueueItemMeta, Attachment, Steer
 import { toSteerAttachmentMeta } from '../../shared/steer'
 import { DEFAULT_AGENT_SETTINGS } from '../../shared/types'
 import { parseCompactArgs } from '../../shared/slashCommands'
-import { buildContextHistory } from './chatContextHelpers'
+import { buildContextHistory, countToolCalls } from './chatContextHelpers'
+import { applyJanitorSummaries, loadAssistantState } from '../../core/context/assistantState'
+import { buildContextUsagePayload } from '../../shared/contextUsage'
 import { slimMessagesForUI } from './slimMessages'
 import { getMessagesCached, getMessagesAfterLatestCompactCached, recoverStreamingBuffersForChat } from './historyCache'
 import {
@@ -113,6 +118,26 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     for (const window of BrowserWindow.getAllWindows()) {
       if (!window.isDestroyed()) window.webContents.send('context:cost', snapshot)
     }
+  })
+  // Калибровка оценки контекста: коэффициенты provider:model живут в сторе,
+  // чтобы не учиться заново после каждого перезапуска. Воркеры получают их
+  // через workerData (electron-store в worker_threads недоступен).
+  importCalibration(store.get('contextCalibration') as Record<string, number> | undefined)
+  // Запись в стор — не на каждый замер: EWMA обновляется по нескольку раз за
+  // ход, а диск дёргать на каждое изменение незачем.
+  let calibrationSaveTimer: ReturnType<typeof setTimeout> | null = null
+  let calibrationPending: Record<string, number> | null = null
+  setCalibrationListener((entries) => {
+    calibrationPending = entries
+    if (calibrationSaveTimer) return
+    calibrationSaveTimer = setTimeout(() => {
+      calibrationSaveTimer = null
+      const next = calibrationPending
+      calibrationPending = null
+      if (!next) return
+      try { store.set('contextCalibration', next) } catch { /* не критично */ }
+    }, 5_000)
+    calibrationSaveTimer.unref?.()
   })
   recoverInterruptedTaskSummaries()
   setGlobalMemorySettingsStore(store)
@@ -337,8 +362,8 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
 
       // Per-chat модель: подменяем role:'main' на модель чата, чтобы окно
       // контекста считалось от неё (как в runChatSend).
+      const chatModel = getChatModel(chatId)
       try {
-        const chatModel = getChatModel(chatId)
         if (chatModel) {
           const assignments = (storeData.modelAssignments as Array<{ role: string; modelId: string; providerId: string }> | undefined) ?? []
           const idx = assignments.findIndex(a => a.role === 'main')
@@ -353,6 +378,12 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       if (!ctxSettings.tokenCounterEnabled) return
 
       const contextWindow = getModelContextWindow(storeData)
+      // Калибровка оценки привязана к паре provider:model; ключ передаём явно,
+      // чтобы расчёт для этого чата не взял коэффициент другой модели.
+      const calibration = calibrationKey(
+        chatModel?.modelProvider ?? (storeData.modelAssignments as Array<{ role: string; providerId?: string }> | undefined)?.find(a => a.role === 'main')?.providerId,
+        chatModel?.modelId ?? (storeData.modelAssignments as Array<{ role: string; modelId?: string }> | undefined)?.find(a => a.role === 'main')?.modelId,
+      )
       const sysPrompt = await getSystemPrompt(store, chatId)
 
       // Загружаем историю (как в chat:send) — для incognito-чатов она пуста.
@@ -360,6 +391,15 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       // summarized не грузятся в модель — их заменяет summary в system prompt).
       const liveMessages = filterContextHistory(chatId, getMessagesAfterLatestCompactCached(chatId))
       const rawHistory = buildContextHistory(liveMessages)
+      // Джанитор сжимает tool-результаты только в памяти воркера; в БД они
+      // лежат целиком. Без восстановления свёрток этот расчёт показывал
+      // несжатое значение (400k+) до прихода реального usage — «то 400к, то
+      // норм». Применяем ровно те резюме, что видел агент.
+      const assistantState = loadAssistantState(app.getPath('userData'), chatId)
+      const collapsed = applyJanitorSummaries(rawHistory, assistantState?.janitorArchive)
+      if (collapsed > 0) {
+        log('[context:calculate] chatId=%s janitor summaries applied to %d tool results', chatId, collapsed)
+      }
 
       // Priority 1: последний реальный usage от провайдера (переживает перезапуск).
       // tiktoken-оценка без этого занижает — не знает про tool schemas overhead,
@@ -395,6 +435,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
           systemPrompt: sysPrompt,
           currentMsgTokens: 0,
           includeToolSchemas: true,
+          calibrationKey: calibration,
         })
         snapshot = buildSnapshotFromReal(
           {
@@ -414,6 +455,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
           systemPrompt: sysPrompt,
           currentMsgTokens: 0, // при смене чата ввод пуст
           includeToolSchemas: true,
+          calibrationKey: calibration,
         })
         log('[context:calculate] chatId=%s dbMsgs=%d rawHistoryMsgs=%d historyTokens=%d systemTokens=%d estimated=%d sysPromptLen=%d (no lastUsage — tiktoken estimate)',
           chatId, history.length, rawHistory.length, snapshot.breakdown.history, snapshot.breakdown.system, snapshot.estimated, sysPrompt?.length ?? 0)
@@ -421,30 +463,23 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
 
       // Метаданные для legacy-полей ContextRing (historyMessages / toolCallsCount)
       const historyMessagesCount = history.length
-      const toolCallsCount = history.reduce((sum, msg) => {
-        const steps = msg.toolSteps as Array<{ type: string }> | undefined
-        return sum + (steps?.filter(s => s.type === 'tool_call').length ?? 0)
-      }, 0)
+      const toolCallsCount = countToolCalls(history)
 
       win.webContents.send(IPC_EVENTS.CONTEXT_USAGE, {
-        pct: snapshot.pct,
-        estimated: snapshot.estimated,
-        limit: snapshot.limit,
-        status: snapshot.status,
-        source,
-        compressed: false,
-        breakdown: snapshot.breakdown,
+        ...buildContextUsagePayload({
+          chatId,
+          snapshot,
+          source,
+          compressed: false,
         pricing: (() => {
-          const model = getChatModel(chatId)
           const assignments = (storeData.modelAssignments as Array<{ role: string; modelId: string; providerId: string }> | undefined) ?? []
           const main = assignments.find(a => a.role === 'main')
-          const modelId = model?.modelId ?? main?.modelId ?? ''
-          const providerId = model?.modelProvider ?? main?.providerId ?? ''
-          return getModelPriceInfo(providerId, modelId)
+          return getModelPriceInfo(chatModel?.modelProvider ?? main?.providerId ?? '', chatModel?.modelId ?? main?.modelId ?? '')
         })(),
+          historyMessages: historyMessagesCount,
+          toolCallsCount,
+        }),
         ...getChatCost(chatId),
-        historyMessages: historyMessagesCount,
-        toolCallsCount,
       })
     } catch (e) {
       log('[context:calculate] error chatId=%s: %s', chatId, (e as Error).message)
@@ -894,6 +929,11 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
 
       const realContextWindow = getModelContextWindow(storeData)
       const rollingSettings = { ...ctxSettings, contextLimitTokens: realContextWindow }
+      // Ключ калибровки оценки для пост-сжатого снапшота (см. context:calculate).
+      const calibration = calibrationKey(
+        (storeData.modelAssignments as Array<{ role: string; providerId?: string }> | undefined)?.find(a => a.role === 'main')?.providerId,
+        (storeData.modelAssignments as Array<{ role: string; modelId?: string }> | undefined)?.find(a => a.role === 'main')?.modelId,
+      )
 
       // AbortController для отмены /compact пользователем (Stop-кнопка).
       // chat:compact:cancel зовёт controller.abort() → streamChat разрывает
@@ -1073,7 +1113,8 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
 
       // Сброс last_usage — иначе context:calculate пересоберёт real-снапшот
       // из устаревшего promptTokens (до-сжатия), и индикатор контекста
-      // покажет старое значение. Эмитим пост-сжатый estimate как 'real'.
+      // покажет старое значение. Эмитим пост-сжатый estimate честно как
+      // 'estimate' (в UI «≈»): provider usage после сжатия ещё не существует.
       clearChatLastUsage(chatId)
       if (ctxSettings.tokenCounterEnabled) {
         try {
@@ -1083,26 +1124,23 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
             systemPrompt: sysPrompt,
             currentMsgTokens: 0,
             includeToolSchemas: true,
+            calibrationKey: calibration,
           })
           const win = mainWindow.getWindow()
           win?.webContents.send(IPC_EVENTS.CONTEXT_USAGE, {
-            pct: snapshot.pct,
-            estimated: snapshot.estimated,
-            limit: snapshot.limit,
-            status: snapshot.status,
-            source: 'real',
-            compressed: true,
-            breakdown: snapshot.breakdown,
+            ...buildContextUsagePayload({
+              chatId,
+              snapshot,
+              source: 'estimate',
+              compressed: true,
+              // Кол-во сообщений должно соответствовать breakdown.history —
+              // он посчитан по result.messages (tail). Раньше здесь стоял
+              // liveMessages.length (до-сжатия) и ринг показывал «5k tok (40 сообщ.)»,
+              // хотя 5k — это токены tail'а.
+              historyMessages: result.messages.length,
+              toolCallsCount: countToolCalls(history),
+            }),
             ...getChatCost(chatId),
-            // Кол-во сообщений должно соответствовать breakdown.history —
-            // он посчитан по result.messages (tail). Раньше здесь стоял
-            // liveMessages.length (до-сжатия) и ринг показывал «5k tok (40 сообщ.)»,
-            // хотя 5k — это токены tail'а.
-            historyMessages: result.messages.length,
-            toolCallsCount: history.reduce((sum, msg) => {
-              const steps = msg.toolSteps as Array<{ type: string }> | undefined
-              return sum + (steps?.filter(s => s.type === 'tool_call').length ?? 0)
-            }, 0),
           })
         } catch (e) {
           log('[chat:compact] post-compact CONTEXT_USAGE emit failed: %s', (e as Error).message)

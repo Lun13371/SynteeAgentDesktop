@@ -15,9 +15,11 @@ function load(file, dependencies) {
   return module.exports
 }
 const assistants = load('src/shared/assistants.ts', {})
+const contextUsage = load('src/shared/contextUsage.ts', {})
 const usage = load('src/core/tokens/usageTracker.ts', {
   './modelCatalog': {}, './gatewayModelsCache': {}, '../../shared/data/builtinModels': {},
   '../../shared/imageFormat': { IMAGE_TOKEN_COST: 1000 }, './ModelPricing': {},
+  '../../shared/contextUsage': contextUsage,
 })
 const { consumeHintBudget } = load('src/core/context/hintBudget.ts', { '../tokens/usageTracker': usage, '../../shared/assistants': assistants })
 

@@ -199,9 +199,13 @@ export class Agent {
   private janitorRoundCounter = 0
   private constitution = new Constitution()
   private forceJanitorMode: 'light' | 'deep' | null = null
+  // Калибровка оценки контекста — ОДНА на проект: usageTracker
+  // (recordEstimateCalibration/estimateCalibrationFactor, EWMA по паре
+  // provider:model). Здесь раньше жила вторая, независимая: одиночный замер
+  // promptTokens/estimate с clamp 0.5…4. Она умножала уже откалиброванную
+  // оценку (двойное масштабирование) и могла разом дать ×4 → economist видел
+  // «дошли до порога» и запускал глубокое сжатие на ровном месте.
   private ecoStage = 0
-  private tokenCalibration = 1
-  private pendingEstimatedTokens = 0
   private navigatorRoundCounter = 0
   /** Probe-флаги navigator'а: свежая ошибка/зацикливание — повод свериться
    *  с целью и ограничениями раньше обычного интервала (см. блок Navigator). */
@@ -955,9 +959,10 @@ export class Agent {
       // Economist + умный триггер Janitor: не спамим компакцией на ранних
       // ходах. Сжимаем только когда ран созрел (>25 шагов), есть реальные
       // повторы тулов, или контекст подбирается к лимиту.
+      // Оценка уже откалибрована в usageTracker (единый EWMA-коэффициент на
+      // пару provider:model) — второй множитель здесь давал двойное сжатие.
       const requestContext = computeRequestContextSnapshot(messages, realContextWindow, activeSchemas)
-      this.pendingEstimatedTokens = requestContext.estimated
-      const calibratedTokens = requestContext.estimated * this.tokenCalibration
+      const calibratedTokens = requestContext.estimated
       // Economist: порог относительно окна контекста модели.
       // 1M → 30%, 500k → 60%, 256k → 70%, <256k → 80%.
       const ecoFrac = realContextWindow >= 1_000_000 ? 0.3 : realContextWindow >= 500_000 ? 0.6 : realContextWindow >= 256_000 ? 0.7 : 0.8
@@ -1006,7 +1011,6 @@ export class Agent {
         // J2: не применяем микро-компакции — они инвалидируют кэш чаще, чем экономят.
         if (report.actions.length > 0 && report.totalTokensSaved >= this.assistantsSettings.janitorMinSavingsTokens) {
           this.applyJanitorReport(messages, report, callbacks, activeSchemas, realContextWindow)
-          this.pendingEstimatedTokens = computeRequestContextSnapshot(messages, realContextWindow, activeSchemas).estimated
         } else {
           this.onAssistantEvent?.({ kind: 'janitor_skip' })
         }
@@ -1074,9 +1078,6 @@ export class Agent {
         resetInactivityTimer()
         // Match provider tokenization against the complete request, including tools.
         const trackUsage = (promptTokens: number, completionTokens: number, cacheRead?: number, cacheWrite?: number) => {
-          if (this.pendingEstimatedTokens > 0 && promptTokens > 0) {
-            this.tokenCalibration = Math.min(4, Math.max(0.5, promptTokens / this.pendingEstimatedTokens))
-          }
           if (goalRuntime) goalRuntime.addTokens(promptTokens + completionTokens)
           callbacks.onUsage?.(promptTokens, completionTokens, cacheRead, cacheWrite)
         }

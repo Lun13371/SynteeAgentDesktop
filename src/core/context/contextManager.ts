@@ -11,17 +11,8 @@ export {
   truncateToTokensAsync, TOOL_SCHEMAS_OVERHEAD,
   getHardLimitTokens, getHardLimitTargetTokens, ROLLING_TRIGGER_PCT,
 } from '../tokens/usageTracker'
-import { estimateTokens, estimateMessagesTokens, estimateMessagesTokensAsync, truncateToTokensAsync, TOOL_SCHEMAS_OVERHEAD } from '../tokens/usageTracker'
+import { estimateMessagesTokensAsync, truncateToTokensAsync } from '../tokens/usageTracker'
 import { getCatalogModel } from '../tokens/modelCatalog'
-
-// ─── OVERHEAD: реальные постоянные расходы контекста ─────────────────────────
-
-// служебные структуры OpenAI API ≈ 100 токенов
-const API_OVERHEAD = 100            // служебные токены протокола
-
-export function calcSystemPromptTokens(systemPrompt: string): number {
-  return estimateTokens(systemPrompt) + 4  // +4 служебных
-}
 
 // ─── ПОЛУЧЕНИЕ contextWindow ОТ АКТИВНОЙ МОДЕЛИ ──────────────────────────────
 // Единый источник истины — делегируем в ModelContextLimits
@@ -568,39 +559,12 @@ export async function applyRollingWindowAsync(
   }
 }
 
-// ─── 3. TOKEN COUNTER — ПОЛНЫЙ РЕАЛЬНЫЙ ПОДСЧЁТ ──────────────────────────────
-
-export interface TokenUsage {
-  estimated: number           // реальная оценка через tiktoken
-  historyTokens: number       // токены истории
-  systemPromptTokens: number  // токены system prompt
-  toolSchemasTokens: number   // токены tool schemas (константа)
-  currentMsgTokens: number    // токены текущего сообщения
-  limit: number               // лимит контекста модели
-  pct: number                 // 0-100
-  status: 'ok' | 'warn' | 'critical'
-}
-
-export function calcTokenUsage(
-  messages: ChatMessage[],
-  limitTokens: number,
-  opts: {
-    systemPrompt?: string
-    currentMsgTokens?: number
-    includeToolSchemas?: boolean
-  } = {}
-): TokenUsage {
-  const historyTokens = estimateMessagesTokens(messages)
-  const systemPromptTokens = opts.systemPrompt ? calcSystemPromptTokens(opts.systemPrompt) : 600
-  const toolSchemasTokens = opts.includeToolSchemas === true ? TOOL_SCHEMAS_OVERHEAD : 0
-  const currentMsgTokens = opts.currentMsgTokens ?? 0
-
-  const estimated = historyTokens + systemPromptTokens + toolSchemasTokens + currentMsgTokens + API_OVERHEAD
-  const pct = Math.min(100, Math.round(estimated / limitTokens * 100))
-  const status = pct >= 85 ? 'critical' : pct >= 60 ? 'warn' : 'ok'
-
-  return { estimated, historyTokens, systemPromptTokens, toolSchemasTokens, currentMsgTokens, limit: limitTokens, pct, status }
-}
+// ─── 3. TOKEN COUNTER ────────────────────────────────────────────────────────
+// Единственная реализация подсчёта живёт в usageTracker (`computeContextSnapshot`
+// / `buildSnapshotFromEstimate`). Локальный дубль `calcTokenUsage` +
+// `calcSystemPromptTokens` удалён: он считал по своей формуле (system=600 по
+// умолчанию, свой overhead, свои пороги 85/60) и давал числа, расходящиеся с
+// остальными эмиттерами.
 
 // ─── 4. STRUCTURED AGENT STATE ───────────────────────────────────────────────
 

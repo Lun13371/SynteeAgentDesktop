@@ -10,7 +10,13 @@ import { classifyTool } from '../../core/agent/commandSafety'
 import { writeFile, editFile } from '../../core/tools/index'
 import { buildPlanningInjection, buildAskInjection } from '../../core/prompts/buildSystemPrompt'
 import { getModelContextWindow } from '../../core/context/contextManager'
-import { buildSnapshotFromReal, estimateCost, getModelPriceInfo } from '../../core/tokens/usageTracker'
+import {
+  buildSnapshotFromReal, estimateCost, getModelPriceInfo, importCalibration, setCalibrationModel,
+} from '../../core/tokens/usageTracker'
+import {
+  buildContextUsagePayload, type ContextUsageBreakdown, type ContextUsagePayload,
+  type ContextUsageSnapshot, type ContextUsageSource,
+} from '../../shared/contextUsage'
 import { setAIUsageSink, setDefaultAIUsageContext } from '../../core/ai/requestUsage'
 import { initModelCatalog } from '../../core/tokens/modelCatalog'
 import { setGatewayModelsCache } from '../../core/tokens/gatewayModelsCache'
@@ -249,6 +255,8 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
   }
 
   setDefaultAIUsageContext({ chatId, source: subagentRole ? 'subagent' : 'main' })
+  // Калибровка оценки — по фактической модели запроса (после резолва).
+  setCalibrationModel(resolvedProviderId ?? '', resolvedModelId ?? '')
   let fullText = ''
   let thinkingText = ''
   let thinkingStartMs = 0
@@ -299,9 +307,47 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
   const isSubAgentWorker = !!(workerData as Record<string, unknown>).isSubAgent
   const contextWindow = getModelContextWindow(storeData, isSubAgentWorker ? 'subagent' : 'main')
 
+  // Калибровка оценки контекста: коэффициенты приходят из main (worker не
+  // видит electron-store). Ключ модели выставляется ниже — по modelId из
+  // стартового сообщения, когда он уже резолвлен.
+  importCalibration((workerData as Record<string, unknown>).contextCalibration as Record<string, number> | undefined)
+
   // Последний breakdown для мерджа с реальным usage (buildSnapshotFromReal
   // масштабирует его пропорционально promptTokens вместо verbatim-наследования).
-  let lastBreakdown: Record<string, number> | undefined
+  let lastBreakdown: ContextUsageBreakdown | undefined
+
+  /**
+   * Единственный путь эмита context_usage из воркера.
+   *
+   * Раньше pct/status/формат payload собирались в пяти местах вручную
+   * (`Math.round(x / limit * 100)`, пороги 85/60) и без chatId — main не мог
+   * отбросить событие чужого чата, а renderer-фильтр не срабатывал никогда.
+   * Теперь арифметика живёт в shared/contextUsage, chatId уходит всегда.
+   * `extra` — поля поверх контракта (например raw* токены turn'а для main).
+   */
+  const emitContextUsage = (
+    snapshot: ContextUsageSnapshot,
+    source: ContextUsageSource,
+    extra: Partial<ContextUsagePayload> & Record<string, unknown> = {},
+  ): void => {
+    send({
+      type: 'context_usage',
+      ...buildContextUsagePayload({
+        chatId,
+        snapshot,
+        source,
+        scope: extra.scope,
+        compressed: extra.compressed,
+        historyMessages: extra.historyMessages,
+        toolCallsCount: extra.toolCallsCount,
+        pricing: extra.pricing,
+        estimatedCostCents: extra.estimatedCostCents,
+        providerId: extra.providerId,
+        modelId: extra.modelId,
+      }),
+      ...extra,
+    })
+  }
 
   const flushIter = () => {
     if (currentIterSteps.length > 0) {
@@ -509,16 +555,12 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
         {
           signal: runAbort.signal,
           onContextCounted: (info) => {
-            const pct = Math.min(100, Math.round(info.promptTokens / contextWindow * 100))
-            const status = pct >= 85 ? 'critical' : pct >= 60 ? 'warn' : 'ok'
-            lastBreakdown = info.breakdown as Record<string, number>
-            send({
-              type: 'context_usage',
-              pct, estimated: info.promptTokens, limit: contextWindow, status,
-              source: 'estimate',
-              scope: 'request',
-              breakdown: info.breakdown,
-            })
+            lastBreakdown = info.breakdown
+            emitContextUsage(
+              { estimated: info.promptTokens, limit: contextWindow, breakdown: info.breakdown },
+              'estimate',
+              { scope: 'request' },
+            )
           },
           onStep: (step) => {
             // §rollback-live — снапшоты файлов стримим отдельным сообщением
@@ -710,16 +752,12 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
             void teardownSidecar()
           },
           onContextUpdate: (info) => {
-            const pct = Math.min(100, Math.round(info.promptTokens / contextWindow * 100))
-            const status = pct >= 85 ? 'critical' : pct >= 60 ? 'warn' : 'ok'
-            lastBreakdown = info.breakdown as Record<string, number>
-            send({
-              type: 'context_usage',
-              pct, estimated: info.promptTokens, limit: contextWindow, status,
-              source: 'estimate',
-              scope: 'request',
-              breakdown: info.breakdown,
-            })
+            lastBreakdown = info.breakdown
+            emitContextUsage(
+              { estimated: info.promptTokens, limit: contextWindow, breakdown: info.breakdown },
+              'estimate',
+              { scope: 'request' },
+            )
           },
           onUsage: (promptTokens: number, completionTokens: number, cacheReadTokens?: number, cacheWriteTokens?: number) => {
             // Реальные токены от провайдера — приоритет над оценкой
@@ -727,17 +765,10 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
             const snapshot = buildSnapshotFromReal(
               { promptTokens, completionTokens, cacheReadTokens, cacheWriteTokens },
               contextWindow,
-              lastBreakdown as { history: number; system: number; tools: number; current: number; toolResults?: number; cacheReadTokens?: number; cacheWriteTokens?: number },
+              lastBreakdown,
             )
             // Накапливаем стоимость сессии (cache-токены тарифицируются отдельно)
-            send({
-              type: 'context_usage',
-              pct: snapshot.pct,
-              estimated: snapshot.estimated,
-              limit: snapshot.limit,
-              status: snapshot.status,
-              source: 'real',
-              breakdown: snapshot.breakdown,
+            emitContextUsage(snapshot, 'real', {
               pricing: getModelPriceInfo(resolvedProviderId ?? '', resolvedModelId ?? ''),
               estimatedCostCents: estimateCost(promptTokens, completionTokens, resolvedProviderId ?? '', resolvedModelId ?? ''),
               providerId: resolvedProviderId,
@@ -1122,16 +1153,12 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
         contextMessages,
         {
           onContextCounted: (info) => {
-            const pct = Math.min(100, Math.round(info.promptTokens / contextWindow * 100))
-            const status = pct >= 85 ? 'critical' : pct >= 60 ? 'warn' : 'ok'
-            lastBreakdown = info.breakdown as Record<string, number>
-            send({
-              type: 'context_usage',
-              pct, estimated: info.promptTokens, limit: contextWindow, status,
-              source: 'estimate',
-              scope: 'request',
-              breakdown: info.breakdown,
-            })
+            lastBreakdown = info.breakdown
+            emitContextUsage(
+              { estimated: info.promptTokens, limit: contextWindow, breakdown: info.breakdown },
+              'estimate',
+              { scope: 'request' },
+            )
           },
           onToken: (token) => {
             fullText += token
@@ -1152,17 +1179,10 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
             // (non-tool стриминг не всегда несёт cache-токены — каст к wider-типу)
             const u = usage as { promptTokens: number; completionTokens: number; cacheReadTokens?: number; cacheWriteTokens?: number }
             accumulateUsage(u.promptTokens, u.completionTokens, u.cacheReadTokens, u.cacheWriteTokens)
-            const cw = getModelContextWindow(storeData)
-            const snapshot = buildSnapshotFromReal(usage, cw, lastBreakdown as { history: number; system: number; tools: number; current: number })
-            // Накапливаем стоимость сессии
-            send({
-              type: 'context_usage',
-              pct: snapshot.pct,
-              estimated: snapshot.estimated,
-              limit: snapshot.limit,
-              status: snapshot.status,
-              source: 'real',
-              breakdown: snapshot.breakdown,
+            // contextWindow уже посчитан на входе в run() — не пересчитываем
+            // лимит модели в каждом колбэке (был дубль getModelContextWindow).
+            const snapshot = buildSnapshotFromReal(usage, contextWindow, lastBreakdown)
+            emitContextUsage(snapshot, 'real', {
               pricing: getModelPriceInfo(resolvedProviderId ?? '', resolvedModelId ?? ''),
               estimatedCostCents: estimateCost(u.promptTokens, u.completionTokens, resolvedProviderId ?? '', resolvedModelId ?? ''),
               providerId: resolvedProviderId,

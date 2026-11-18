@@ -42,17 +42,21 @@ import { attachAssistants, onAgentEvent, onAssistantEvent, onRunDone, onJanitorA
 import { attachBrowserWorkerBroker, disposeBrowserWorkerBroker } from '../../core/agent/browserWorkerBroker'
 import { attachMcpWorkerBroker } from '../../core/mcp/mcpWorkerBroker'
 import { compressStoredMessages } from '../../core/context/historyCompressor'
+import { applyJanitorSummaries, loadAssistantState } from '../../core/context/assistantState'
 import {
   applyRollingWindowAsync, getContextSettings, estimateTokens, estimateMessagesTokensAsync,
   getModelContextWindow,
 } from '../../core/context/contextManager'
-import { computeRequestContextSnapshot } from '../../core/tokens/usageTracker'
+import {
+  calibrationKey, computeRequestContextSnapshot, exportCalibration, recordEstimateCalibration, setCalibrationModel,
+} from '../../core/tokens/usageTracker'
 import { withAIUsageContext, type AIRequestUsage } from '../../core/ai/requestUsage'
 import { acceptAIUsage, getChatCost } from '../services/usageLedger'
 import { getGatewayModelsCache } from '../../core/tokens/gatewayModelsCache'
 import { getFileCacheSnapshot, mergeFileCache } from '../../core/context/fileReadCache'
 import { invalidateHistoryCache, getMessagesAfterLatestCompactCached } from './historyCache'
-import { buildContextHistory, formatReplyQuote } from './chatContextHelpers'
+import { buildContextHistory, countToolCalls, formatReplyQuote } from './chatContextHelpers'
+import { buildContextUsagePayload, type ContextUsageBreakdown, type ContextUsagePayload } from '../../shared/contextUsage'
 import { slimMessageForUI } from './slimMessages'
 import { log } from '../../core/logger'
 import { perfMark, perfEvent, perfPhaseAsync } from '../../core/performanceDiagnostics'
@@ -991,6 +995,9 @@ async function runChatSendScoped(
         gatewayModels: getGatewayModelsCache(),
         modelId: mainAssignment?.modelId,
         providerId: mainAssignment?.providerId,
+        // Калибровка оценки контекста (см. usageTracker.recordEstimateCalibration):
+        // воркер не имеет доступа к electron-store, поэтому получает снапшот.
+        contextCalibration: exportCalibration(),
         // Свежий токен с авто-refresh: воркер не может рефрешить сам
         // (electron-store/tokenStore в worker_threads недоступны).
         gatewayToken: await getGatewayAuthToken().catch(() => getAccessToken()),
@@ -1159,6 +1166,10 @@ async function runChatSendScoped(
     log('[chat:send] worker created chatId=%s msgId=%s history=%d msgs → %d contextMsgs, content=%d chars',
       params.chatId, assistantMsgId, history.length, processedHistory.length, effectiveContent.length)
     console.log('[chat.ipc] worker start: chatId=%s history=%d→%d content=%d', params.chatId, history.length, processedHistory.length, effectiveContent.length)
+
+    // Оценка контекста последнего запроса этого рана — нужна для калибровки:
+    // когда придёт реальный usage, сравним его с этой оценкой (usageTracker).
+    let lastEstimate: { estimated: number } | null = null
 
     worker.on('message', (msg: Record<string, unknown>) => {
       switch (msg.type) {
@@ -2267,51 +2278,80 @@ async function runChatSendScoped(
           acceptAIUsage({ ...(msg.event as AIRequestUsage), chatId: params.chatId })
           break
 
-        case 'context_usage':
+        case 'context_usage': {
+          // Payload воркера приходит как Record<string, unknown> — приводим к
+          // контракту один раз, чтобы не раскидывать as-касты по всему блоку.
+          const workerUsage = msg as unknown as ContextUsagePayload & {
+            rawPromptTokens?: number
+            rawCompletionTokens?: number
+            rawCacheReadTokens?: number
+            rawCacheWriteTokens?: number
+          }
+          const usageSnapshot = {
+            estimated: Number(workerUsage.estimated) || 0,
+            limit: Number(workerUsage.limit) || 0,
+            breakdown: (workerUsage.breakdown ?? { history: 0, system: 0, tools: 0, current: 0 }) as ContextUsageBreakdown,
+            compressed: contextCompressed,
+          }
           // Сохраняем последний real usage в БД — переживает перезапуск.
           // context:calculate читает его, чтобы показывать точный контекст
           // после перезахода (tiktoken-оценка без этого занижает до 12k).
-          if (msg.source === 'real' && params.chatId) {
+          if (workerUsage.source === 'real' && params.chatId) {
             try {
               setChatLastUsage(params.chatId, {
-                promptTokens: msg.estimated,
-                completionTokens: msg.breakdown?.completionTokens ?? 0,
-                cacheReadTokens: msg.breakdown?.cacheReadTokens,
-                cacheWriteTokens: msg.breakdown?.cacheWriteTokens,
+                promptTokens: usageSnapshot.estimated,
+                completionTokens: usageSnapshot.breakdown.completionTokens ?? 0,
+                cacheReadTokens: usageSnapshot.breakdown.cacheReadTokens,
+                cacheWriteTokens: usageSnapshot.breakdown.cacheWriteTokens,
                 ts: Date.now(),
               })
             } catch { /* ok — не критично */ }
+            // Калибровка: сравниваем реальный prompt_tokens с последней
+            // оценкой ЭТОГО ЖЕ запроса (её запомнил emit ниже). Так оценка
+            // перестаёт систематически завышать (cl100k vs токенизатор модели).
+            if (lastEstimate?.estimated) {
+              // Ключ — из самого замера провайдера, а не из общего состояния:
+              // чаты с разными моделями не должны учить друг друга.
+              recordEstimateCalibration(
+                lastEstimate.estimated,
+                usageSnapshot.estimated,
+                calibrationKey(workerUsage.providerId, workerUsage.modelId),
+              )
+            }
             // Аккумулируем сырые токены turn'а в run-буфер: при Стопе/краше
             // воркера done/error не приходят, но статистика токенов уже
             // известна main'у — sendDone возьмёт её из bufferedUsage.
-            if (typeof msg.rawPromptTokens === 'number' || typeof msg.rawCompletionTokens === 'number') {
-              run.bufferedUsage.promptTokens = Math.max(run.bufferedUsage.promptTokens, (msg.rawPromptTokens as number) || 0)
-              run.bufferedUsage.completionTokens = Math.max(run.bufferedUsage.completionTokens, (msg.rawCompletionTokens as number) || 0)
-              run.bufferedUsage.cacheReadTokens = Math.max(run.bufferedUsage.cacheReadTokens, (msg.rawCacheReadTokens as number) || 0)
-              run.bufferedUsage.cacheWriteTokens = Math.max(run.bufferedUsage.cacheWriteTokens, (msg.rawCacheWriteTokens as number) || 0)
+            if (typeof workerUsage.rawPromptTokens === 'number' || typeof workerUsage.rawCompletionTokens === 'number') {
+              run.bufferedUsage.promptTokens = Math.max(run.bufferedUsage.promptTokens, workerUsage.rawPromptTokens || 0)
+              run.bufferedUsage.completionTokens = Math.max(run.bufferedUsage.completionTokens, workerUsage.rawCompletionTokens || 0)
+              run.bufferedUsage.cacheReadTokens = Math.max(run.bufferedUsage.cacheReadTokens, workerUsage.rawCacheReadTokens || 0)
+              run.bufferedUsage.cacheWriteTokens = Math.max(run.bufferedUsage.cacheWriteTokens, workerUsage.rawCacheWriteTokens || 0)
             }
+          } else if (params.chatId) {
+            // Запоминаем оценку текущего запроса: именно её сравним с реальным
+            // prompt_tokens, когда он придёт (см. recordEstimateCalibration).
+            // Оценка с scope='request' — самая точная пара: она посчитана по
+            // тому же массиву messages + schemas, что ушёл провайдеру.
+            lastEstimate = { estimated: usageSnapshot.estimated }
           }
           win?.webContents.send(IPC_EVENTS.CONTEXT_USAGE, {
-            pct: msg.pct,
-            estimated: msg.estimated,
-            limit: msg.limit,
-            status: msg.status,
-            source: msg.source ?? 'estimate',
-            scope: msg.scope,
-            compressed: contextCompressed,
-            breakdown: msg.breakdown,
-            pricing: msg.pricing ?? null,
-            estimatedCostCents: msg.estimatedCostCents ?? null,
-            providerId: msg.providerId,
-            modelId: msg.modelId,
+            ...buildContextUsagePayload({
+              chatId: params.chatId,
+              snapshot: usageSnapshot,
+              source: workerUsage.source === 'real' ? 'real' : 'estimate',
+              scope: workerUsage.scope === 'request' ? 'request' : undefined,
+              compressed: contextCompressed,
+              historyMessages: history.length,
+              toolCallsCount: countToolCalls(history),
+              pricing: workerUsage.pricing ?? null,
+              estimatedCostCents: workerUsage.estimatedCostCents ?? null,
+              providerId: workerUsage.providerId,
+              modelId: workerUsage.modelId,
+            }),
             ...getChatCost(params.chatId),
-            historyMessages: history.length,
-            toolCallsCount: history.reduce((sum, m) => {
-              const steps = m.toolSteps as Array<{ type: string }> | undefined
-              return sum + (steps?.filter(s => s.type === 'tool_call').length ?? 0)
-            }, 0),
           })
           break
+        }
 
         case 'done':
           // W1 feedback: реально вызванные тулы/скиллы рана (из шагов) —
@@ -2677,18 +2717,35 @@ ${await getSystemPrompt(store, dbChatId, params.incognito, params.oneShotSkill)}
       }
     })
     if (ctxSettings.tokenCounterEnabled) {
-      const snapshot = computeRequestContextSnapshot([
+      // Калибровка привязана к паре provider:model. Ключ передаём явно: в main
+      // параллельно живут разные чаты с разными моделями.
+      const calibration = calibrationKey(mainAssignment?.providerId, mainAssignment?.modelId)
+      setCalibrationModel(mainAssignment?.providerId ?? '', mainAssignment?.modelId ?? '')
+      // Джанитор свёртывает tool-результаты в памяти воркера, в БД они лежат
+      // целиком. Применяем те же резюме к копии истории ДО оценки и ДО отправки
+      // воркеру — иначе стартовая оценка круга считает несжатый контекст и
+      // расходится с реальным usage (и с тем, что агент реально увидит).
+      const collapsed = applyJanitorSummaries(processedHistory, loadAssistantState(app.getPath('userData'), params.chatId)?.janitorArchive)
+      if (collapsed > 0) {
+        log('[chat:send] chatId=%s janitor summaries applied to %d tool results', params.chatId, collapsed)
+      }
+      const requestSnapshot = computeRequestContextSnapshot([
         { role: 'system', content: systemPrompt ?? '' },
         ...processedHistory,
         { role: 'user', content: run.imageParts?.length
           ? [...run.imageParts, { type: 'text', text: effectiveContent }] : effectiveContent },
-      ], getModelContextWindow(storeData), sideToolSchemas)
+      ], getModelContextWindow(storeData), sideToolSchemas, calibration)
       win?.webContents.send(IPC_EVENTS.CONTEXT_USAGE, {
-        ...snapshot,
-        scope: 'request',
-        compressed: contextCompressed,
+        ...buildContextUsagePayload({
+          chatId: params.chatId,
+          snapshot: requestSnapshot,
+          source: 'estimate',
+          scope: 'request',
+          compressed: contextCompressed,
+          historyMessages: processedHistory.length,
+          toolCallsCount: countToolCalls(history),
+        }),
         ...getChatCost(params.chatId),
-        historyMessages: processedHistory.length,
       })
     }
     worker.postMessage({
@@ -2726,7 +2783,13 @@ ${await getSystemPrompt(store, dbChatId, params.incognito, params.oneShotSkill)}
       const s = getAssistantsSettings()
       if (!s.enabled || !s.janitorEnabled) return
       const rows = getMessagesAfterLatestCompact(chatId)
-      const plans = compressStoredMessages(rows, { minSavingsTokens: s.janitorMinSavingsTokens, tailKeep: Math.max(1, s.janitorTailSteps ?? 10) })
+      // Модель чата — для калибровки «сэкономлено токенов» (та же шкала, что у кольца).
+      const modelForCalibration = getChatModel(chatId)
+      const plans = compressStoredMessages(rows, {
+        minSavingsTokens: s.janitorMinSavingsTokens,
+        tailKeep: Math.max(1, s.janitorTailSteps ?? 10),
+        calibrationKey: calibrationKey(modelForCalibration?.modelProvider, modelForCalibration?.modelId),
+      })
       let totalSaved = 0
       for (const [id, plan] of plans) {
         updateMessageToolSteps(id, plan.toolSteps, plan.iterations)

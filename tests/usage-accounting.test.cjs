@@ -19,12 +19,14 @@ function load(file, dependencies = {}) {
   return loaded.exports
 }
 const gateway = [{ id: 'exact-model', inputPrice: 0.001, outputPrice: 0.002 }]
+const contextUsage = load('src/shared/contextUsage.ts')
 const usage = load('src/core/tokens/usageTracker.ts', {
   './modelCatalog': { getCatalogModel: () => null },
   './gatewayModelsCache': { GATEWAY_PROVIDER_ID: 'syntee-gateway', getGatewayModelsCache: () => gateway },
   '../../shared/data/builtinModels': { BUILTIN_MODELS: [] },
   '../../shared/imageFormat': { IMAGE_TOKEN_COST: 1000 },
   './ModelPricing': { getModelPrice: () => ({ inputPerM: 999, outputPerM: 999 }) },
+  '../../shared/contextUsage': contextUsage,
 })
 const observer = load('src/core/ai/requestUsage.ts', { '../tokens/usageTracker': usage })
 const schema = load('src/core/db/migrations/aiUsage.ts')

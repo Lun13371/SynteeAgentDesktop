@@ -145,6 +145,7 @@ const goalEvaluatorMock = {
 const assistants = load('src/shared/assistants.ts')
 const tokenHelpers = {
   estimateTokens: text => Math.ceil(text.length / 4),
+  estimateTokensCalibrated: text => Math.ceil(text.length / 4),
   computeRequestContextSnapshot: () => ({ estimated: 0, breakdown: {} }),
 }
 const { Agent } = load('src/core/agent/Agent.ts', {

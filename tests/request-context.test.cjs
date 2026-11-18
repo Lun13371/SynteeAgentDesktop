@@ -20,12 +20,16 @@ function load(file, dependencies, globals = {}) {
   })
   return loaded.exports
 }
+// Единый контракт счётчика контекста (пороги/процент/overhead) — реальный
+// модуль, а не копия констант: иначе тесты закрепят устаревшие значения.
+const contextUsage = load('src/shared/contextUsage.ts', {})
 const usage = load('src/core/tokens/usageTracker.ts', {
   './modelCatalog': {},
   './gatewayModelsCache': {},
   '../../shared/data/builtinModels': {},
   '../../shared/imageFormat': { IMAGE_TOKEN_COST: 1000 },
   './ModelPricing': {},
+  '../../shared/contextUsage': contextUsage,
 })
 
 test('billing panel shows incomplete totals even when every accepted request lacks usage', () => {
@@ -101,7 +105,7 @@ test('reasoning participates in sync and remote counts and invalidates cached me
   finally { usage.setRemoteTokenCounter(null) }
 })
 
-test('new request estimates supersede stale provider usage after compaction', () => {
+test('the latest measurement wins and a foreign chat never leaks in', () => {
   const events = new Map()
   const cleanup = []
   let value
@@ -113,6 +117,7 @@ test('new request estimates supersede stale provider usage after compaction', ()
   const { useContextCounter } = load('src/renderer/src/hooks/useContextCounter.ts', {
     react,
     '@shared/constants': { IPC_EVENTS: { CONTEXT_USAGE: 'usage', CHAT_COMPACTED: 'compact' } },
+    '@shared/contextUsage': contextUsage,
   }, {
     window: { syntee: {
       on: (event, handler) => { events.set(event, handler); return () => events.delete(event) },
@@ -122,24 +127,28 @@ test('new request estimates supersede stale provider usage after compaction', ()
   try {
     useContextCounter({ chatId: 'a', currentInput: '', modelId: 'm', isRunning: true })
     const emit = events.get('usage')
-    emit({ chatId: 'a', source: 'real', estimated: 800_000, limit: 1_000_000 })
+    emit({ chatId: 'a', source: 'real', estimated: 800_000, limit: 1_000_000, breakdown: { history: 800_000, system: 0, tools: 0, current: 0 } })
     events.get('context:cost')({ chatId: 'a', sessionCostCents: 400, sessionRequests: 12, lastRequestCostCents: 30, sessionIncludesAuxiliary: true, sessionUnpricedRequests: 1 })
     assert.equal(value.total, 800_000, 'auxiliary billing must not alter main model context')
     assert.equal(value.sessionCostCents, 400)
     assert.equal(value.sessionUnpricedRequests, 1)
     events.get('context:cost')({ chatId: 'b', sessionCostCents: 999, sessionRequests: 20 })
     assert.equal(value.sessionCostCents, 400, 'another chat must not change this total')
-    emit({ chatId: 'a', source: 'estimate', estimated: 100_000, limit: 1_000_000 })
-    assert.equal(value.total, 800_000)
-    emit({ chatId: 'a', source: 'estimate', scope: 'request', estimated: 100_000, limit: 1_000_000 })
-    assert.equal(value.total, 100_000)
+    // Каждый раунд реально меняет prompt (tool-результаты, новый ответ), поэтому
+    // последний замер побеждает — и estimate тоже. Точность оценки обеспечивает
+    // калибровка по реальным prompt_tokens, а не «замороженный» первый real.
+    emit({ chatId: 'a', source: 'estimate', estimated: 100_000, limit: 1_000_000, breakdown: { history: 100_000, system: 0, tools: 0, current: 0 } })
+    assert.equal(value.total, 100_000, 'a newer estimate describes the next request and wins')
+    emit({ chatId: 'a', source: 'estimate', scope: 'request', estimated: 120_000, limit: 1_000_000, breakdown: { history: 120_000, system: 0, tools: 0, current: 0 } })
+    assert.equal(value.total, 120_000)
     assert.equal(value.source, 'estimate')
     assert.equal(value.sessionCostCents, 400, 'new context estimates must retain the persistent total')
     assert.equal(value.lastRequestCostCents, 30)
-    emit({ chatId: 'a', source: 'real', estimated: 110_000, limit: 1_000_000, sessionCostCents: null, sessionRequests: 0 })
+    emit({ chatId: 'a', source: 'real', estimated: 110_000, limit: 1_000_000, sessionCostCents: null, sessionRequests: 0, breakdown: { history: 110_000, system: 0, tools: 0, current: 0 } })
     assert.equal(value.sessionRequests, 12, 'legacy worker-local cost must not reset the ledger')
-    emit({ chatId: 'b', source: 'real', estimated: 900_000, limit: 1_000_000 })
     assert.equal(value.total, 110_000)
+    emit({ chatId: 'b', source: 'real', estimated: 900_000, limit: 1_000_000 })
+    assert.equal(value.total, 110_000, 'a foreign chat must never overwrite this ring')
   } finally {
     for (const dispose of cleanup) dispose()
   }

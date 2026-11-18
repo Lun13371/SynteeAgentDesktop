@@ -34,7 +34,11 @@ function loadModule(rel) {
     if (spec === 'path' || spec === 'node:path') return path
     const resolved = path.join(path.dirname(norm), spec).replace(/\\/g, '/')
     // type-only импорты стираются; шимим только живые зависимости
-    if (resolved.endsWith('tokens/usageTracker')) return { estimateTokens: t => Math.ceil((t ?? '').length / 4) }
+    if (resolved.endsWith('tokens/usageTracker')) return {
+      estimateTokens: t => Math.ceil((t ?? '').length / 4),
+      // Калибровки в тестах нет — шкала совпадает с сырой оценкой.
+      estimateTokensCalibrated: t => Math.ceil((t ?? '').length / 4),
+    }
     if (resolved.endsWith('context/contextManager')) return {}
     return loadModule(resolved.endsWith('.ts') ? resolved : resolved + '.ts')
   }

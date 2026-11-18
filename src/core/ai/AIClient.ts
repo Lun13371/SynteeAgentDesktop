@@ -482,6 +482,8 @@ export class AIClient {
     let attempt = 0
     let retried401 = false
     let fullText = ''
+    // Usage текущего запроса — ровно один onUsage на вызов модели (см. ниже).
+    let requestUsage: { promptTokens: number; completionTokens: number; totalTokens: number } | null = null
     const deadlineMs = Date.now() + OVERALL_TIMEOUT_MS
 
     while (attempt <= this.maxRetries) {
@@ -502,19 +504,27 @@ export class AIClient {
         let thinkingDoneSent = false
         let inThinkTag = false
         let thinkBuffer = ''
+        // Провайдеры (gateway'и, DeepSeek через прокси) кладут `usage` в КАЖДЫЙ
+        // чанк, а не только в финальный. Раньше onUsage вызывался на каждом
+        // таком чанке, а воркер суммировал вызовы (accPromptTokens) → один и тот
+        // же prompt считался 2-3 раза: статистика хода показывала 400-450k при
+        // реальных 225k и «нормализовалась» на ходах с одним пакетом usage.
+        // Теперь берём ПОСЛЕДНИЙ пакет и отдаём его один раз, после стрима.
+        requestUsage = null
+
 
         for await (const chunk of stream) {
           if (signal?.aborted) break
 
-          // Реальные токены из провайдера — последний чанк содержит usage
+          // Реальные токены из провайдера — фиксируем последний пакет usage
           if (chunk.usage) {
             const u = chunk.usage as { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number }
             if (u.prompt_tokens != null) {
-              callbacks.onUsage?.({
+              requestUsage = {
                 promptTokens: u.prompt_tokens,
                 completionTokens: u.completion_tokens ?? 0,
                 totalTokens: u.total_tokens ?? (u.prompt_tokens + (u.completion_tokens ?? 0)),
-              })
+              }
             }
           }
 
@@ -610,14 +620,27 @@ export class AIClient {
           })
           fullText = res.choices[0]?.message?.content || ''
           if (fullText) callbacks.onToken(fullText)
+          const u = res.usage as { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | undefined
+          if (u?.prompt_tokens != null) {
+            requestUsage = {
+              promptTokens: u.prompt_tokens,
+              completionTokens: u.completion_tokens ?? 0,
+              totalTokens: u.total_tokens ?? (u.prompt_tokens + (u.completion_tokens ?? 0)),
+            }
+          }
         }
 
+        // Ровно один usage на один вызов модели.
+        if (requestUsage) callbacks.onUsage?.(requestUsage)
         callbacks.onDone(fullText)
         return
 
       } catch (err: unknown) {
         const error = err as { status?: number; message?: string; name?: string }
         if (error?.name === 'AbortError' || signal?.aborted) {
+          // Стоп посреди стрима: провайдер уже списал prompt — отдаём то, что
+          // успели получить, чтобы статистика хода и ledger не теряли вызов.
+          if (requestUsage) callbacks.onUsage?.(requestUsage)
           callbacks.onDone(fullText ?? '')
           return
         }
@@ -1182,9 +1205,14 @@ export class AIClient {
 
     let attempt = 0
     let retried401 = false
+    // Usage текущего вызова модели. Объявлен вне попытки, чтобы отдать его и
+    // при Abort/ошибке после получения пакета; сбрасывается на каждой попытке,
+    // иначе ретрай сложил бы usage двух запросов в один.
+    let usageOfRequest: { promptTokens: number; completionTokens: number; cacheReadTokens?: number } | null = null
     const maxAttempts = 5
     const deadlineMs = Date.now() + OVERALL_TIMEOUT_MS
     while (attempt < maxAttempts) {
+      usageOfRequest = null
       if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
       try {
         console.log('[AIClient] chatWithTools: model=%s attempt=%d/%d messages=%d tools=%d', model, attempt + 1, maxAttempts, messages.length, tools.length)
@@ -1219,9 +1247,19 @@ export class AIClient {
               prompt_tokens_details?: { cached_tokens?: number }
             }
             if (usage.prompt_tokens != null) {
-              // OpenAI/прокси может вернуть cached_tokens — передаём как cacheReadTokens.
-              // cacheWriteTokens для OpenAI не применим (автокэширование без маркеров).
-              onUsage?.(usage.prompt_tokens, usage.completion_tokens ?? 0, usage.prompt_tokens_details?.cached_tokens)
+              // [OI]/прокси может вернуть cached_tokens — передаём как cacheReadTokens.
+              // cacheWriteTokens для [OI] не применим (автокэширование без маркеров).
+              // Провайдер (gateway, DeepSeek через прокси) может прислать usage
+              // в НЕСКОЛЬКИХ чанках. Раньше onUsage звался на каждый пакет, а
+              // воркер складывал вызовы (accPromptTokens) → один prompt считался
+              // 2-3 раза: «Вход за ход» показывал 400k при реальных 225k, и
+              // цифра гуляла от хода к ходу. Запоминаем последний пакет и отдаём
+              // его один раз, после цикла.
+              usageOfRequest = {
+                promptTokens: usage.prompt_tokens,
+                completionTokens: usage.completion_tokens ?? 0,
+                cacheReadTokens: usage.prompt_tokens_details?.cached_tokens,
+              }
             }
           }
           const delta = chunk.choices[0]?.delta
@@ -1281,6 +1319,12 @@ export class AIClient {
           onThinkingDone?.(Date.now() - thinkingStartMs)
         }
 
+        // Ровно один usage на один вызов модели (провайдер мог дублировать
+        // пакет usage в нескольких чанках — см. комментарий в цикле).
+        if (usageOfRequest) {
+          onUsage?.(usageOfRequest.promptTokens, usageOfRequest.completionTokens, usageOfRequest.cacheReadTokens)
+        }
+
         // Собираем tool_calls в финальный формат
         const tool_calls = Object.values(toolCallMap).length > 0
           ? Object.values(toolCallMap).map(tc => ({
@@ -1305,7 +1349,14 @@ export class AIClient {
         log('[AIClient] chatWithTools CATCH: status=%s statusCode=%s name=%s msg=%s (attempt=%d/%d)',
           error?.status ?? '—', error?.statusCode ?? '—', error?.name ?? '—',
           (error?.message ?? String(err)).slice(0, 200), attempt + 1, maxAttempts)
-        if (error?.name === 'AbortError' || signal?.aborted) throw err
+        if (error?.name === 'AbortError' || signal?.aborted) {
+          // Стоп посреди стрима: провайдер уже списал prompt — отдаём usage,
+          // чтобы статистика хода и ledger не теряли оплаченный вызов.
+          if (usageOfRequest) {
+            onUsage?.(usageOfRequest.promptTokens, usageOfRequest.completionTokens, usageOfRequest.cacheReadTokens)
+          }
+          throw err
+        }
         const errMsg = error?.message ?? String(err)
         const errLower = errMsg.toLowerCase()
         // ── Авто-фоллбэк на Responses API (только opencode-провайдеры) ──────

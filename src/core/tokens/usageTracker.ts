@@ -14,6 +14,7 @@ import { getGatewayModelsCache, GATEWAY_PROVIDER_ID } from './gatewayModelsCache
 import { BUILTIN_MODELS } from '../../shared/data/builtinModels'
 import { IMAGE_TOKEN_COST } from '../../shared/imageFormat'
 import { getModelPrice as getModelPriceStatic, type ModelPrice } from './ModelPricing'
+import { API_OVERHEAD_TOKENS, contextPct, contextStatus } from '../../shared/contextUsage'
 import type { ModelMeta } from '../../shared/types'
 
 // ─── Кэшированный энкодер ──────────────────────────────────────────────────────
@@ -129,8 +130,32 @@ function estimateMessageTokens(m: MessageLike): number {
   }
   if (m.tool_call_id) n += estimateTokens(m.tool_call_id)
   if (m.name) n += estimateTokens(m.name)
-  if (m.reasoning_content) n += estimateTokens(m.reasoning_content)
-  for (const block of m.thinking_blocks ?? []) n += estimateTokens(block.thinking) + estimateTokens(block.signature)
+  n += thinkingTokens(m)
+  return n
+}
+
+/**
+ * Reasoning одного сообщения — как список строк.
+ *
+ * Одно и то же размышление живёт в двух полях: `thinking_blocks` (нативный
+ * Anthropic, с signature) и `reasoning_content` ([OI]-совместимый echo для
+ * GLM/DeepSeek/Qwen). chatContextHelpers кладёт ОБА поля в одно сообщение,
+ * поэтому старая реализация считала текст дважды — оценка контекста врала
+ * вверх ровно на объём размышлений (на длинных ходах он доминирует).
+ * Считаем один раз: блоки, если они есть, иначе reasoning_content.
+ *
+ * Единый источник и для синхронного, и для Rust-пути (parity обязательна:
+ * иначе оценка зависит от того, доступен ли sidecar).
+ */
+function reasoningParts(m: MessageLike): string[] {
+  const blocks = m.thinking_blocks ?? []
+  if (blocks.length) return blocks.flatMap(block => [block.thinking, block.signature])
+  return m.reasoning_content ? [m.reasoning_content] : []
+}
+
+function thinkingTokens(m: MessageLike): number {
+  let n = 0
+  for (const part of reasoningParts(m)) n += estimateTokens(part)
   return n
 }
 
@@ -247,8 +272,7 @@ function messageTokenParts(m: MessageLike): string[] {
   }
   if (m.tool_call_id) parts.push(m.tool_call_id)
   if (m.name) parts.push(m.name)
-  if (m.reasoning_content) parts.push(m.reasoning_content)
-  for (const block of m.thinking_blocks ?? []) parts.push(block.thinking, block.signature)
+  parts.push(...reasoningParts(m))
   return parts
 }
 
@@ -380,15 +404,108 @@ export interface UsageSnapshot {
 // Agent.ts импортируют TOOL_SCHEMAS_OVERHEAD отсюда (раньше значение было
 // продублировано в нескольких местах с риском рассинхрона).
 export const TOOL_SCHEMAS_OVERHEAD = 4200
-const API_OVERHEAD = 100
+const API_OVERHEAD = API_OVERHEAD_TOKENS
+
+// ─── Калибровка оценки по реальным токенам ───────────────────────────────────
+//
+// tiktoken (cl100k_base) — не токенизатор модели. Для русского текста и кода
+// он даёт систематически больше токенов, чем реальные токенизаторы современных
+// моделей: на живых логах оценка истории 478k против реальных 252k (×1.9).
+// Пороги компакции и «аварийный клапан» считают по оценке, поэтому завышение
+// вредно: клапан срабатывает раньше, а кольцо показывает цифру, которой нет.
+//
+// Лечим без смены токенизатора: после каждого real-ответа провайдера знаем
+// точное значение и сравниваем с оценкой того же запроса → ведём EWMA-коэффициент
+// на пару provider:model. Коэффициент применяется к следующим оценкам.
+// Калибровка живёт в памяти процесса; main персистит её (electron-store) и
+// передаёт воркерам через workerData при старте.
+
+const CALIBRATION_MIN = 0.35
+const CALIBRATION_MAX = 1.5
+const CALIBRATION_ALPHA = 0.3
+const _calibration = new Map<string, number>()
+let _calibrationKey = ''
+let _calibrationListener: ((entries: Record<string, number>) => void) | null = null
+
+/** main: вызывается при изменении — чтобы сохранить коэффициенты в стор. */
+export function setCalibrationListener(listener: ((entries: Record<string, number>) => void) | null): void {
+  _calibrationListener = listener
+}
+
+/** Ключ калибровки пары provider:model — единая формула для всех вызывающих. */
+export function calibrationKey(providerId: string | undefined, modelId: string | undefined): string {
+  return providerId || modelId ? `${providerId ?? ''}:${modelId ?? ''}` : ''
+}
+
+/**
+ * Модель по умолчанию для текущего потока (воркер обслуживает один ран).
+ *
+ * В main-процессе параллельно живут разные чаты с разными моделями, поэтому
+ * там ключ передаётся явно в опциях снапшота и в recordEstimateCalibration —
+ * иначе расчёт для чата B мог бы применить коэффициент чата A.
+ */
+export function setCalibrationModel(providerId: string, modelId: string): void {
+  _calibrationKey = calibrationKey(providerId, modelId)
+}
+
+export function exportCalibration(): Record<string, number> {
+  return Object.fromEntries(_calibration)
+}
+
+/** main (из стора) и worker (из workerData) загружают общие коэффициенты. */
+export function importCalibration(entries: Record<string, number> | undefined | null): void {
+  if (!entries) return
+  for (const [key, value] of Object.entries(entries)) {
+    if (typeof value === 'number' && Number.isFinite(value) && value > 0) _calibration.set(key, value)
+  }
+}
+
+/**
+ * Учимся на паре «оценка того же запроса → реальный prompt_tokens».
+ * Игнорируем выбросы: real должен быть в пределах 0.3x…3x от оценки, иначе
+ * это не систематическая ошибка токенизатора, а другой запрос.
+ *
+ * `key` — явная пара provider:model (main-процесс); без него берётся
+ * активная модель потока (воркер).
+ */
+export function recordEstimateCalibration(
+  estimated: number,
+  realTokens: number,
+  key: string = _calibrationKey,
+): void {
+  if (!key || !(estimated > 0) || !(realTokens > 0)) return
+  const ratio = realTokens / estimated
+  if (ratio < 0.3 || ratio > 3) return
+  const previous = _calibration.get(key) ?? 1
+  const next = Math.min(CALIBRATION_MAX, Math.max(CALIBRATION_MIN, previous * (1 - CALIBRATION_ALPHA) + ratio * CALIBRATION_ALPHA))
+  if (Math.abs(next - previous) < 0.005) return
+  _calibration.set(key, next)
+  try { _calibrationListener?.(exportCalibration()) } catch { /* калибровка не должна ломать подсчёт */ }
+}
+
+/** Текущий коэффициент (1 — калибровки ещё нет). */
+export function estimateCalibrationFactor(key: string = _calibrationKey): number {
+  return (key && _calibration.get(key)) || 1
+}
+
+/**
+ * Оценка текста в той же шкале, что и снапшоты контекста (с калибровкой).
+ *
+ * Нужна всем, кто показывает «сэкономлено токенов» (janitor, economist):
+ * иначе цифра считается сырым cl100k (×1.9 к реальности), а рядом в кольце
+ * контекста стоит калиброванное значение — два разных числа про одно и то же.
+ */
+export function estimateTokensCalibrated(text: string, key: string = _calibrationKey): number {
+  return Math.round(estimateTokens(text) * estimateCalibrationFactor(key))
+}
 
 export function buildSnapshotFromReal(
   real: RealUsage,
   limit: number,
   prevBreakdown?: UsageSnapshot['breakdown'],
 ): UsageSnapshot {
-  const pct = Math.min(100, Math.round(real.promptTokens / limit * 100))
-  const status = pct >= 85 ? 'critical' : pct >= 60 ? 'warn' : 'ok'
+  const pct = contextPct(real.promptTokens, limit)
+  const status = contextStatus(pct)
 
   // Раньше breakdown наследовался verbatim из последнего estimate-эмиттера —
   // это показывало ЧУЖОЙ breakdown под видом 'real' (т.к. источники считали
@@ -466,21 +583,28 @@ export function computeContextSnapshot(
     /** Exact schemas sent to the model (including enabled external tools). */
     toolSchemas?: unknown[]
     toolResultTokens?: number
+    /** Явная пара provider:model (main-процесс); иначе активная модель потока. */
+    calibrationKey?: string
   } = {},
 ): UsageSnapshot {
-  const historyTokens = estimateMessagesTokensFull(messages)
-  const systemPromptTokens = opts.systemPrompt ? estimateTokens(opts.systemPrompt) + 4 : 0
+  // Калибровка: tiktoken ≠ токенизатор модели. Коэффициент выучен на реальных
+  // prompt_tokens (recordEstimateCalibration) и применяется ко всем частям,
+  // чтобы сумма breakdown оставалась равной estimated.
+  const factor = estimateCalibrationFactor(opts.calibrationKey)
+  const scale = (value: number): number => Math.round(value * factor)
+  const historyTokens = scale(estimateMessagesTokensFull(messages))
+  const systemPromptTokens = opts.systemPrompt ? scale(estimateTokens(opts.systemPrompt) + 4) : 0
   const toolSchemasTokens = opts.includeToolSchemas === true
     ? opts.toolSchemas !== undefined
-      ? (opts.toolSchemas.length ? estimateTokens(JSON.stringify(opts.toolSchemas)) : 0)
-      : TOOL_SCHEMAS_OVERHEAD
+      ? scale(opts.toolSchemas.length ? estimateTokens(JSON.stringify(opts.toolSchemas)) : 0)
+      : scale(TOOL_SCHEMAS_OVERHEAD)
     : 0
-  const currentMsgTokens = opts.currentMsgTokens ?? 0
-  const toolResultTokens = opts.toolResultTokens ?? 0
+  const currentMsgTokens = scale(opts.currentMsgTokens ?? 0)
+  const toolResultTokens = scale(opts.toolResultTokens ?? 0)
 
   const estimated = historyTokens + systemPromptTokens + toolSchemasTokens + currentMsgTokens + toolResultTokens + API_OVERHEAD
-  const pct = Math.min(100, Math.round(estimated / limit * 100))
-  const status = pct >= 85 ? 'critical' : pct >= 60 ? 'warn' : 'ok'
+  const pct = contextPct(estimated, limit)
+  const status = contextStatus(pct)
 
   return {
     estimated,
@@ -499,12 +623,18 @@ export function computeContextSnapshot(
 }
 
 /** Account for the exact messages and schemas of one provider request. */
-export function computeRequestContextSnapshot(messages: MessageLike[], limit: number, toolSchemas: unknown[]): UsageSnapshot {
+export function computeRequestContextSnapshot(
+  messages: MessageLike[],
+  limit: number,
+  toolSchemas: unknown[],
+  calibration?: string,
+): UsageSnapshot {
   const system = messages[0]?.role === 'system' ? messages[0] : undefined
   return computeContextSnapshot(system ? messages.slice(1) : messages, limit, {
     systemPrompt: typeof system?.content === 'string' ? system.content : undefined,
     includeToolSchemas: true,
     toolSchemas,
+    calibrationKey: calibration,
   })
 }
 
@@ -516,6 +646,7 @@ export function buildSnapshotFromEstimate(
     currentMsgTokens?: number
     toolResultTokens?: number
     includeToolSchemas?: boolean
+    calibrationKey?: string
   } = {},
 ): UsageSnapshot {
   // Тонкая обёртка: history=messages (без system), system/tools/current — опциями.
@@ -524,6 +655,7 @@ export function buildSnapshotFromEstimate(
     currentMsgTokens: opts.currentMsgTokens,
     includeToolSchemas: opts.includeToolSchemas,
     toolResultTokens: opts.toolResultTokens,
+    calibrationKey: opts.calibrationKey,
   })
 }
 

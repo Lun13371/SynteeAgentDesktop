@@ -170,7 +170,8 @@ export default function ContextRing({ info, compactSessionStats, chatId, goal }:
                 />
               </div>
               <div className="ctx-bar-label">
-                {formatNum(info.total)} / {formatNum(info.limit)} токенов ({percent.toFixed(1)}%)
+                {info.source === 'real' ? '✓' : '≈'} {formatNum(info.total)} / {formatNum(info.limit)} токенов ({percent.toFixed(1)}%)
+                {info.source === 'estimate' && <span title="Оценка по токенизатору модели; ✓ — точное значение от провайдера"> оценка</span>}
               </div>
 
               <div className="ctx-rows">

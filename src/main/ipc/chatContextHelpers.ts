@@ -4,6 +4,19 @@ import { stripAttachTokens } from '../../shared/attachmentMarkdown'
 import { STEER_MARKER } from '../../shared/steer'
 
 /**
+ * Сколько tool-call'ов было в чате — для метаданных кольца контекста.
+ *
+ * Раньше этот reduce был скопирован в трёх эмиттерах CONTEXT_USAGE
+ * (chat:send, context:calculate, post-compact). Один список — одно место.
+ */
+export function countToolCalls(messages: Message[]): number {
+  return messages.reduce((sum, message) => {
+    const steps = message.toolSteps as Array<{ type: string }> | undefined
+    return sum + (steps?.filter(step => step.type === 'tool_call').length ?? 0)
+  }, 0)
+}
+
+/**
  * Форматирует реплай-цитаты для AI-контекста: на какое сообщение отвечает
  * пользователь. Полный текст исходника (до 2000 симв.) с построчным «>»-
  * цитированием; serve-токены вложений [[attach:id]] вычищаются.

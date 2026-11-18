@@ -21,7 +21,13 @@ function anyStub() {
   })
 }
 const assistants = load('src/shared/assistants.ts')
-const tokens = { estimateTokens: text => Math.ceil(text.length / 4), computeRequestContextSnapshot: () => ({ estimated: 10, maxTokens: 128000, breakdown: {} }) }
+// estimateTokensCalibrated — та же шкала, что у кольца контекста (в тестах
+// калибровки нет, поэтому совпадает с estimateTokens).
+const tokens = {
+  estimateTokens: text => Math.ceil(text.length / 4),
+  estimateTokensCalibrated: text => Math.ceil(text.length / 4),
+  computeRequestContextSnapshot: () => ({ estimated: 10, maxTokens: 128000, breakdown: {} }),
+}
 const janitorModule = load('src/core/context/janitor.ts', { '../tokens/usageTracker': tokens, '../../shared/assistants': assistants })
 const state = load('src/core/context/assistantState.ts')
 const constitution = load('src/core/context/constitution.ts', { '../../shared/assistants': assistants })

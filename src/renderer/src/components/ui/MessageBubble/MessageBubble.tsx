@@ -1379,9 +1379,12 @@ const MessageContent = memo(function MessageContent({
                       </div>
                     )}
                     {message.promptTokens != null && (
-                      <div className="message-stats-row" title={`Точно: ${formatTokensFull(message.promptTokens)} токенов`}>
+                      <div
+                        className="message-stats-row"
+                        title={`Сумма prompt_tokens по всем LLM-вызовам хода (tool-раунды), а не размер контекста. Точно: ${formatTokensFull(message.promptTokens)} токенов`}
+                      >
                         <span className="message-stats-arrow message-stats-arrow--up">↑</span>
-                        <span className="message-stats-label">Вход</span>
+                        <span className="message-stats-label">Вход за ход</span>
                         <span className="message-stats-value">{formatTokens(message.promptTokens)}</span>
                       </div>
                     )}
@@ -1393,9 +1396,9 @@ const MessageContent = memo(function MessageContent({
                       </div>
                     )}
                     {totalTokens > 0 && (
-                      <div className="message-stats-row" title={`Точно: ${formatTokensFull(totalTokens)} токенов`}>
+                      <div className="message-stats-row" title={`Вход за ход + выход. Размер текущего контекста смотри в кольце контекста. Точно: ${formatTokensFull(totalTokens)} токенов`}>
                         <AppIcon name="layers" size="xs" tone="muted" />
-                        <span className="message-stats-label">Всего</span>
+                        <span className="message-stats-label">Всего за ход</span>
                         <span className="message-stats-value">{formatTokens(totalTokens)}</span>
                       </div>
                     )}
