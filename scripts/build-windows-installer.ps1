@@ -1,10 +1,9 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 
 Push-Location (Split-Path -Parent $PSScriptRoot)
 try {
     if (-not $env:SYNTEE_API_URL) { $env:SYNTEE_API_URL = 'https://syntee.fun' }
     if (-not $env:SYNTEE_WEB_URL) { $env:SYNTEE_WEB_URL = 'https://syntee.fun' }
-    if (-not $env:SYNTEE_PROTECT) { $env:SYNTEE_PROTECT = '1' }
     if (-not (Test-Path .\node_modules\electron\dist\electron.exe)) {
         node .\node_modules\electron\install.js
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

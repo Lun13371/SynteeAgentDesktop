@@ -1,9 +1,9 @@
 import OpenAI from 'openai'
 import Anthropic from '@anthropic-ai/sdk'
 import type Store from 'electron-store'
-// СТАТИЧЕСКИЙ импорт: нативный import() не работает внутри V8-байткода
-// (bytenode-лоадер компилирует через vm.Script без importModuleDynamically —
-// "A dynamic import callback was not specified"). require — безопасен.
+// СТАТИЧЕСКИЙ импорт: динамический import() в worker-потоке main-процесса
+// требует importModuleDynamically в vm-контексте и падает с
+// "A dynamic import callback was not specified". require — безопасен.
 import { isMainThread, workerData } from 'worker_threads'
 import { buildReasoningParams, responsesReasoningParam } from '../../shared/reasoningModels'
 import { getGatewayModelsCache } from '../tokens/gatewayModelsCache'

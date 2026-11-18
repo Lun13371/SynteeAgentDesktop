@@ -84,8 +84,7 @@ REM NOTE: garble obfuscation is NOT used for the launcher on purpose:
 REM Windows Defender (and other AV) flags garble-built binaries as malware
 REM (verified 2026-08: even a plain "garble build" gets blocked).
 REM The launcher is what users download from the website - an AV block
-REM there is fatal. Client protection (the main IP): V8 bytecode
-REM + renderer obfuscation (done inside npm run build:win).
+REM there is fatal. Client sources ship as plain readable JS (open source).
 
 go build -ldflags="-s -w -H windowsgui -X github.com/Lun13371/syntee-launcher/internal/config.DefaultUpdateServer=https://syntee.fun/api/public/updates" -o syntee-launcher.exe .
 if errorlevel 1 (
@@ -143,10 +142,7 @@ if exist "%LOCALAPPDATA%\electron-builder\Cache" rmdir /s /q "%LOCALAPPDATA%\ele
 if exist "%APPDATA%\electron-builder\Cache" rmdir /s /q "%APPDATA%\electron-builder\Cache"
 echo  [OK] Clean
 
-echo  Building client (V8 bytecode + renderer obfuscation)...
-REM Enable source protection for this build (electron.vite.config reads it).
-REM Debug runs (run.bat / run-debug.bat / run-prod.bat) build WITHOUT it.
-set SYNTEE_PROTECT=1
+echo  Building client...
 REM Bake gateway URL into the client bundle (electron.vite.config inlines these
 REM via define at build time — without them the packaged exe falls back to
 REM localhost:8000 and can never reach the gateway).
@@ -163,14 +159,6 @@ if errorlevel 1 (
 
 echo.
 echo  [OK] Client built
-
-echo.
-echo  Verifying source protection (V8 bytecode)...
-if exist "out\main\index.jsc" (
-    echo  [OK] V8 bytecode applied: out\main\*.jsc
-) else (
-    echo  [WARNING] out\main\index.jsc not found - client sources may be UNPROTECTED!
-)
 
 echo.
 echo  ------------------------------------------------------------

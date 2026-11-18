@@ -1,5 +1,5 @@
 pkgname=syntee-helper
-pkgver=1.1.6
+pkgver=1.1.5
 pkgrel=1
 pkgdesc='Syntee Helper — desktop AI assistant'
 arch=('x86_64')
@@ -23,7 +23,6 @@ build() {
   cd "$startdir/../.."
   export SYNTEE_API_URL="${SYNTEE_API_URL:-https://syntee.fun}"
   export SYNTEE_WEB_URL="${SYNTEE_WEB_URL:-https://syntee.fun}"
-  export SYNTEE_PROTECT="${SYNTEE_PROTECT:-1}"
   npm run build:linux
 }
 

@@ -64,7 +64,6 @@ jobs:
     env:
       SYNTEE_API_URL: https://syntee.fun
       SYNTEE_WEB_URL: https://syntee.fun
-      SYNTEE_PROTECT: '1'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
