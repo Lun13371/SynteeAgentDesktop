@@ -17,6 +17,7 @@
     "build:linux": "bash Sidecar/scripts/build-linux.sh && npm run build && electron-builder --linux dir --x64",
     "lint": "eslint . --format json",
     "lint:pretty": "eslint .",
+    "test": "node --test \"tests/*.test.cjs\" \"tests/*.test.mjs\"",
     "postinstall": "node scripts/patch-node-pty-spectre.mjs && electron-builder install-app-deps"
   },
   "dependencies": {
