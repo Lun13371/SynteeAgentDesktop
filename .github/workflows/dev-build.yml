@@ -1,0 +1,112 @@
+name: Dev build
+
+# Сборка на каждый пуш в dev: проверяем, что приложение собирается под обе
+# платформы. Артефакты живут только в Actions (14 дней), релизов не создают.
+
+on:
+  push:
+    branches: [dev]
+  workflow_dispatch:
+
+concurrency:
+  group: dev-build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Windows (zip)
+    runs-on: windows-latest
+    timeout-minutes: 75
+    env:
+      SYNTEE_API_URL: https://syntee.fun
+      SYNTEE_WEB_URL: https://syntee.fun
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: Sidecar
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Rust sidecar
+        run: npm run build:sidecar
+
+      - name: Build application
+        run: npm run build
+
+      - name: Package (zip for launcher channel)
+        run: npx electron-builder --win --config.npmRebuild=false
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-zip
+          path: dist/*.zip
+          retention-days: 14
+          if-no-files-found: error
+
+  linux:
+    name: Linux (tar.zst)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    env:
+      SYNTEE_API_URL: https://syntee.fun
+      SYNTEE_WEB_URL: https://syntee.fun
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: Sidecar
+
+      - name: System dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake pkg-config zstd
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Linux bundle
+        run: npm run build:linux
+
+      - name: Pack portable archive
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          tar --zstd -cf "syntee-helper-${VERSION}-x86_64.tar.zst" -C dist/linux-unpacked .
+          ls -lh "syntee-helper-${VERSION}-x86_64.tar.zst"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-tar-zst
+          path: syntee-helper-*-x86_64.tar.zst
+          retention-days: 14
+          if-no-files-found: error

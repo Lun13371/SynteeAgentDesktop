@@ -76,3 +76,4 @@ __pycache__/
 /plugins/
 
 .qa-profile/
+resources/tree-sitter/

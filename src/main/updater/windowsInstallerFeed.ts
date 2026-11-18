@@ -1,11 +1,36 @@
 import type { UpdateManifest } from '../../shared/types'
 
-const repository = 'zaxdevv/SynteeAgentDesktop'
+/**
+ * Обновления для standalone-инсталлятора (NSIS) читаются напрямую из GitHub
+ * Releases этого репозитория. Пакетный канал лаунчера (`syntee-launcher` →
+ * `syntee.fun/api/public/updates`) работает отдельно и этот файл не трогает.
+ */
+const repository = 'Lun13371/SynteeAgentDesktop'
+
+/**
+ * Текущая схема: один тег на релиз — `v<version>`, в нём лежат артефакты для
+ * всех платформ. Старые релизы ставились под тегами `windows-v<version>`;
+ * они всё ещё принимаются, чтобы уже установленные сборки не остались без
+ * обновлений.
+ */
+const tagPrefixes = ['windows-v', 'v'] as const
+
+type TagPrefix = (typeof tagPrefixes)[number]
+
 const versionPattern = /^(?:0|[1-9]\d{0,4})\.(?:0|[1-9]\d{0,4})\.(?:0|[1-9]\d{0,4})$/
 
-export function windowsInstallerUrl(version: string): string | null {
+export function windowsInstallerUrl(version: string, tagPrefix: TagPrefix = 'v'): string | null {
   if (!versionPattern.test(version)) return null
-  return `https://github.com/${repository}/releases/download/windows-v${version}/Syntee-Helper-Setup-${version}-x64.exe`
+  return `https://github.com/${repository}/releases/download/${tagPrefix}${version}/Syntee-Helper-Setup-${version}-x64.exe`
+}
+
+function splitTag(tag: string): { prefix: TagPrefix; version: string } | null {
+  for (const prefix of tagPrefixes) {
+    if (!tag.startsWith(prefix)) continue
+    const version = tag.slice(prefix.length)
+    if (versionPattern.test(version)) return { prefix, version }
+  }
+  return null
 }
 
 function compareVersions(a: string, b: string): number {
@@ -26,9 +51,11 @@ export function parseWindowsInstallerReleases(payload: unknown): UpdateManifest[
   if (!Array.isArray(payload)) throw new Error('Некорректный список релизов GitHub')
   const updates: UpdateManifest[] = []
   for (const release of payload as Release[]) {
-    if (!release || release.draft !== false || typeof release.tag_name !== 'string' || !release.tag_name.startsWith('windows-v')) continue
-    const version = release.tag_name.slice('windows-v'.length)
-    const url = windowsInstallerUrl(version)
+    if (!release || release.draft !== false || typeof release.tag_name !== 'string') continue
+    const tagged = splitTag(release.tag_name)
+    if (!tagged) continue
+    const { prefix, version } = tagged
+    const url = windowsInstallerUrl(version, prefix)
     if (!url || typeof release.published_at !== 'string' || !Array.isArray(release.assets)) continue
     const asset = release.assets.find(item => item?.browser_download_url === url && item.state === 'uploaded')
     if (!asset || typeof asset.size !== 'number' || !Number.isSafeInteger(asset.size) || asset.size <= 0
