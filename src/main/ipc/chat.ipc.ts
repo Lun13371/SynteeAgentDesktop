@@ -55,6 +55,7 @@ import {
   buildSnapshotFromEstimate, buildSnapshotFromReal, calibrationKey, getModelPriceInfo,
   importCalibration, setCalibrationListener,
 } from '../../core/tokens/usageTracker'
+import { buildContextToolSchemas } from './contextToolSchemas'
 import { getChatCost, deleteChatCosts, installUsageAccounting } from '../services/usageLedger'
 import {} from '../../core/tokens/gatewayModelsCache'
 import { clearFileCache } from '../../core/context/fileReadCache'
@@ -426,6 +427,9 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
         log('[context:calculate] chatId=%s last_usage STALE (compaction at %d > usage.ts %d) — cleared, using tiktoken estimate',
           chatId, lastCompactionAt, lastUsage!.ts)
       }
+      // Реальные схемы чата, а не константа TOOL_SCHEMAS_OVERHEAD: chat:send
+      // считает по фактическим схемам, и оценка здесь должна совпадать с ним.
+      const toolSchemas = buildContextToolSchemas(store, chatId)
       let snapshot: ReturnType<typeof buildSnapshotFromEstimate>
       let source: 'real' | 'estimate' = 'estimate'
       if (lastUsage && !usageStale) {
@@ -435,6 +439,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
           systemPrompt: sysPrompt,
           currentMsgTokens: 0,
           includeToolSchemas: true,
+          toolSchemas,
           calibrationKey: calibration,
         })
         snapshot = buildSnapshotFromReal(
@@ -455,6 +460,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
           systemPrompt: sysPrompt,
           currentMsgTokens: 0, // при смене чата ввод пуст
           includeToolSchemas: true,
+          toolSchemas,
           calibrationKey: calibration,
         })
         log('[context:calculate] chatId=%s dbMsgs=%d rawHistoryMsgs=%d historyTokens=%d systemTokens=%d estimated=%d sysPromptLen=%d (no lastUsage — tiktoken estimate)',
@@ -1124,6 +1130,7 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
             systemPrompt: sysPrompt,
             currentMsgTokens: 0,
             includeToolSchemas: true,
+            toolSchemas: buildContextToolSchemas(store, chatId),
             calibrationKey: calibration,
           })
           const win = mainWindow.getWindow()

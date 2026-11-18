@@ -61,18 +61,24 @@ test('every emitted payload carries chatId and recomputes pct instead of trustin
   assert.equal(payload.scope, 'request')
 })
 
-test('reasoning is counted once, not twice (thinking_blocks + reasoning_content are the same text)', () => {
+test('reasoning_content in history is not billed by the provider, thinking_blocks are', () => {
   const thinking = 'думаю '.repeat(200)
-  const oncePerField = usage.estimateMessagesTokensFull([{
+  const plain = usage.estimateMessagesTokensFull([{ role: 'assistant', content: 'ok' }])
+  // reasoning_content отправляется (LiteLLM-прокси иначе отдаёт 400), но
+  // провайдер его в prompt_tokens НЕ считает — замерено на живых чатах:
+  // оценка была 368k против real 207k, и вся разница — 191k reasoning.
+  const withEcho = usage.estimateMessagesTokensFull([{ role: 'assistant', content: 'ok', reasoning_content: thinking }])
+  assert.equal(withEcho, plain, 'reasoning_content must not inflate the estimate')
+  // Нативные Anthropic thinking blocks — часть входа, их считаем.
+  const withBlocks = usage.estimateMessagesTokensFull([{
     role: 'assistant', content: 'ok', thinking_blocks: [{ thinking, signature: 'sig' }],
   }])
-  const bothFields = usage.estimateMessagesTokensFull([{
-    role: 'assistant', content: 'ok', thinking, thinking_blocks: [{ thinking, signature: 'sig' }],
+  assert.ok(withBlocks > plain, 'thinking_blocks are part of the billed prompt')
+  // Оба поля одновременно — reasoning_content не добавляет ничего сверху.
+  const both = usage.estimateMessagesTokensFull([{
+    role: 'assistant', content: 'ok', reasoning_content: thinking, thinking_blocks: [{ thinking, signature: 'sig' }],
   }])
-  assert.equal(bothFields, oncePerField, 'reasoning_content must not be added on top of thinking_blocks')
-  const noReasoning = usage.estimateMessagesTokensFull([{ role: 'assistant', content: 'ok' }])
-  const legacyOnly = usage.estimateMessagesTokensFull([{ role: 'assistant', content: 'ok', reasoning_content: thinking }])
-  assert.ok(legacyOnly > noReasoning, 'a legacy message without blocks still pays for its reasoning')
+  assert.equal(both, withBlocks, 'no double counting when both fields are present')
 })
 
 test('calibration learns from provider truth and the next estimate uses it', () => {
@@ -101,10 +107,18 @@ test('calibration state is exportable and restorable (main → store → worker)
   for (let i = 0; i < 12; i++) usage.recordEstimateCalibration(1000, 600)
   const exported = usage.exportCalibration()
   assert.ok(Object.keys(exported).length > 0)
-  assert.ok(exported['prov:model-w'] < 1)
-  usage.importCalibration({ 'prov:fresh': 0.7 })
+  // Ключ включает эпоху семантики оценки — старые коэффициенты несовместимы
+  // с новой формулой и не должны применяться.
+  const key = usage.calibrationKey('prov', 'model-w')
+  assert.ok(key.endsWith('prov:model-w'))
+  assert.ok(exported[key] < 1)
+  usage.importCalibration({ [usage.calibrationKey('prov', 'fresh')]: 0.7 })
   usage.setCalibrationModel('prov', 'fresh')
   assert.equal(usage.estimateCalibrationFactor(), 0.7)
+  // Старый (до-эпоховый) ключ игнорируется: иначе занизил бы контекст.
+  usage.importCalibration({ 'prov:model-w': 0.2 })
+  usage.setCalibrationModel('prov', 'model-w')
+  assert.ok(usage.estimateCalibrationFactor() > 0.5)
 })
 
 // ── Джанитор ────────────────────────────────────────────────────────────────

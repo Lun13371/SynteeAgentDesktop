@@ -135,14 +135,26 @@ function estimateMessageTokens(m: MessageLike): number {
 }
 
 /**
- * Reasoning одного сообщения — как список строк.
+ * Reasoning одного сообщения — как список строк, которые РЕАЛЬНО попадают
+ * в счёт провайдера.
  *
- * Одно и то же размышление живёт в двух полях: `thinking_blocks` (нативный
- * Anthropic, с signature) и `reasoning_content` ([OI]-совместимый echo для
- * GLM/DeepSeek/Qwen). chatContextHelpers кладёт ОБА поля в одно сообщение,
- * поэтому старая реализация считала текст дважды — оценка контекста врала
- * вверх ровно на объём размышлений (на длинных ходах он доминирует).
- * Считаем один раз: блоки, если они есть, иначе reasoning_content.
+ * Замерено на живых чатах (диагностика по syntee.db + prompt_tokens от API):
+ *   chat 6c9b7189: content 132 453 + tool_calls 42 353 + overhead 2 096
+ *                  + system/tools ≈ 206k  →  real 207 491
+ *                  а reasoning_content в истории весит ещё 191 375 токенов;
+ *   chat a91ae98a: content 113 130 + tool_calls 77 696 + overhead 2 760
+ *                  + system/tools ≈ 218k  →  real 219 382
+ *                  reasoning_content в истории — 172 322 токена.
+ *
+ * То есть `reasoning_content` в исторических assistant-сообщениях провайдер
+ * НЕ считает (DeepSeek/gateway поле принимают, но в prompt_tokens не включают).
+ * Мы же его отправляем (LiteLLM-прокси для GLM иначе отдаёт 400), и старая
+ * оценка складывала его в контекст — отсюда «накручено на 100k+».
+ *
+ * `thinking_blocks` (нативный Anthropic extended thinking) — наоборот, часть
+ * входа и считается. Поэтому: считаем блоки, reasoning_content — никогда.
+ * Остаточный перекос для моделей, которые reasoning_content всё же учитывают,
+ * выравнивает калибровка (recordEstimateCalibration).
  *
  * Единый источник и для синхронного, и для Rust-пути (parity обязательна:
  * иначе оценка зависит от того, доступен ли sidecar).
@@ -150,7 +162,7 @@ function estimateMessageTokens(m: MessageLike): number {
 function reasoningParts(m: MessageLike): string[] {
   const blocks = m.thinking_blocks ?? []
   if (blocks.length) return blocks.flatMap(block => [block.thinking, block.signature])
-  return m.reasoning_content ? [m.reasoning_content] : []
+  return []
 }
 
 function thinkingTokens(m: MessageLike): number {
@@ -423,6 +435,14 @@ const API_OVERHEAD = API_OVERHEAD_TOKENS
 const CALIBRATION_MIN = 0.35
 const CALIBRATION_MAX = 1.5
 const CALIBRATION_ALPHA = 0.3
+/**
+ * Версия семантики оценки. Меняется при ЛЮБОМ изменении того, что входит в
+ * estimateMessagesTokens (сейчас — исключение reasoning_content из счёта).
+ * Коэффициенты, выученные на старой семантике, несовместимы: они компенсировали
+ * прошлый перекос и теперь занизили бы контекст. Входит в ключ, поэтому старые
+ * записи просто перестают читаться и не требуют миграции стора.
+ */
+const CALIBRATION_EPOCH = 'v2'
 const _calibration = new Map<string, number>()
 let _calibrationKey = ''
 let _calibrationListener: ((entries: Record<string, number>) => void) | null = null
@@ -434,7 +454,7 @@ export function setCalibrationListener(listener: ((entries: Record<string, numbe
 
 /** Ключ калибровки пары provider:model — единая формула для всех вызывающих. */
 export function calibrationKey(providerId: string | undefined, modelId: string | undefined): string {
-  return providerId || modelId ? `${providerId ?? ''}:${modelId ?? ''}` : ''
+  return providerId || modelId ? `${CALIBRATION_EPOCH}:${providerId ?? ''}:${modelId ?? ''}` : ''
 }
 
 /**
@@ -476,9 +496,13 @@ export function recordEstimateCalibration(
   if (!key || !(estimated > 0) || !(realTokens > 0)) return
   const ratio = realTokens / estimated
   if (ratio < 0.3 || ratio > 3) return
-  const previous = _calibration.get(key) ?? 1
-  const next = Math.min(CALIBRATION_MAX, Math.max(CALIBRATION_MIN, previous * (1 - CALIBRATION_ALPHA) + ratio * CALIBRATION_ALPHA))
-  if (Math.abs(next - previous) < 0.005) return
+  const previous = _calibration.get(key)
+  // Первое наблюдение берём целиком (alpha=1): ждать 5-6 раундов EWMA опасно —
+  // всё это время кольцо и пороги компакции работают на неверной шкале.
+  const alpha = previous === undefined ? 1 : CALIBRATION_ALPHA
+  const base = previous ?? 1
+  const next = Math.min(CALIBRATION_MAX, Math.max(CALIBRATION_MIN, base * (1 - alpha) + ratio * alpha))
+  if (previous !== undefined && Math.abs(next - previous) < 0.005) return
   _calibration.set(key, next)
   try { _calibrationListener?.(exportCalibration()) } catch { /* калибровка не должна ломать подсчёт */ }
 }
@@ -646,6 +670,8 @@ export function buildSnapshotFromEstimate(
     currentMsgTokens?: number
     toolResultTokens?: number
     includeToolSchemas?: boolean
+    /** Реальные схемы запроса; без них используется грубая константа. */
+    toolSchemas?: unknown[]
     calibrationKey?: string
   } = {},
 ): UsageSnapshot {
@@ -654,6 +680,7 @@ export function buildSnapshotFromEstimate(
     systemPrompt: opts.systemPrompt,
     currentMsgTokens: opts.currentMsgTokens,
     includeToolSchemas: opts.includeToolSchemas,
+    toolSchemas: opts.toolSchemas,
     toolResultTokens: opts.toolResultTokens,
     calibrationKey: opts.calibrationKey,
   })

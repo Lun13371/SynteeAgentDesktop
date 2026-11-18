@@ -94,14 +94,20 @@ test('request counts include all 488 tool schemas and the inline input', () => {
   assert.equal(snapshot.estimated, snapshot.breakdown.tools + snapshot.breakdown.system + snapshot.breakdown.history + 100)
 })
 
-test('reasoning participates in sync and remote counts and invalidates cached messages', async () => {
+test('reasoning_content is echoed but not billed, thinking_blocks are billed, both stay in parity', async () => {
   const message = { role: 'assistant', content: 'done' }
   const before = usage.estimateMessagesTokensFull([message])
+  // reasoning_content отправляется обратно провайдеру (LiteLLM-прокси для GLM
+  // иначе отдаёт 400), но в prompt_tokens он НЕ входит — проверено на живых
+  // чатах: 368k оценки против 207k real, вся разница — reasoning в истории.
   message.reasoning_content = 'reasoning '.repeat(100)
-  const after = usage.estimateMessagesTokensFull([message])
-  assert.equal(after - before, usage.estimateTokens(message.reasoning_content))
+  assert.equal(usage.estimateMessagesTokensFull([message]), before)
+  // Нативные Anthropic thinking blocks — часть оплачиваемого входа.
+  message.thinking_blocks = [{ thinking: 'reasoning '.repeat(100), signature: 'sig' }]
+  const withBlocks = usage.estimateMessagesTokensFull([message])
+  assert.ok(withBlocks > before)
   usage.setRemoteTokenCounter({ countBatch: async texts => texts.map(usage.estimateTokens) })
-  try { assert.equal(await usage.estimateMessagesTokensAsync([message]), after) }
+  try { assert.equal(await usage.estimateMessagesTokensAsync([message]), withBlocks) }
   finally { usage.setRemoteTokenCounter(null) }
 })
 
