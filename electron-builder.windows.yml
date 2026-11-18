@@ -10,9 +10,6 @@ directories:
 
 win:
   target: nsis
-  extraResources:
-    - from: packaging/windows/installer-channel
-      to: windows-installer-channel
 
 nsis:
   oneClick: true

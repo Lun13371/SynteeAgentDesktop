@@ -230,11 +230,14 @@ export async function quitAndInstall(): Promise<QuitAndInstallResult> {
  * завершился, поэтому там обновление ставится явной командой.
  *
  * Процесс не завершаем — выход и так идёт, а NSIS дождётся освобождения файлов.
+ * Если версию пропустили кнопкой «Пропустить», при выходе её не ставим.
  */
 export function installPendingOnQuit(): boolean {
   const manifest = state.available
   if (process.platform !== 'win32') return false
   if (!manifest || !readyPath || readyVersion !== manifest.version) return false
+  if (state.status !== 'available') return false
+  if (state.dismissed.includes(manifest.version)) return false
   if (!canSelfUpdate()) return false
   try {
     spawnInstaller(readyPath)
