@@ -11,7 +11,8 @@ A personal AI assistant for Windows and Linux: chat with any LLM, an agent with 
 ## Features
 
 ### Chat and models
-- Multiple providers in one window: [OI], Anthropic, Gemini, OpenRouter, DeepSeek, local models via Ollama / LM Studio.
+- Multiple providers in one window: [OI], Anthropic, Google, xAI, DeepSeek, Mistral, Groq, Cerebras, Cohere, Together, Fireworks, OpenRouter and local models via Ollama.
+- Any compatible endpoint can be added as a custom provider.
 - Chat branching and three modes: **Plan** (plan first, then edits), **Ask** (read-only) and **Auto**.
 - Attachments: images, documents, audio. Built-in media analysis tools.
 - Per-request cost and token accounting, plus a task summary panel.
