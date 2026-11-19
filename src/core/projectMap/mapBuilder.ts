@@ -18,26 +18,49 @@ import * as os from 'os'
 import { log } from '../logger'
 import { getAllProjects, getProjectById, getProjectByWorkdir } from '../db'
 import { sidecarSymbols, type SidecarSymbolsResult } from '../sidecar/sidecarClient'
-import { startIndexing, waitForIndexReady, getAllFiles, subscribeFileChanges } from '../mentions/fileIndexer'
+import { startIndexing, waitForIndexReady, getAllFiles, subscribeFileChanges, isPathIgnored } from '../mentions/fileIndexer'
 import type { CodeMapFile, CodeMapNode, CodeMapProgress, CodeMapEdge, ProjectMapSpeedSettings, ProjectMapAutoInfo } from '../../shared/projectMap'
 import { DEFAULT_PROJECT_MAP_SPEED } from '../../shared/projectMap'
 import * as store from './mapStore'
 import {
-  ProjectIndex, definitionsToNodes, containsEdges, resolveFileImports,
-  resolveFileCalls, ensurePackages, loadTsconfigAliases,
+  ProjectIndex, definitionsToNodes, markExported, containsEdges, resolveFileImports,
+  resolveFileCalls, ensurePackages, loadTsconfigAliases, markdownNodes, docReferenceEdges,
 } from './mapResolver'
 import {
   syncFileDocs, removeFileDocs, clearProjectDocs, semanticWorker,
 } from './mapSemantic'
+import { invalidateAnalytics } from './mapAnalytics'
 
+/**
+ * Языки с реальной поддержкой в sidecar (tree-sitter). Держать в синхроне с
+ * `Sidecar/src/symbols/language.rs`: иначе парсер умеет, а карта такие файлы
+ * молча не индексирует.
+ */
 const CODE_EXTS = new Set([
   '.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.py', '.rs', '.go',
   '.c', '.h', '.cpp', '.hpp', '.cc', '.cxx', '.java', '.cs', '.rb', '.php', '.sh', '.bash',
+  '.swift', '.kt', '.kts', '.scala', '.lua', '.dart', '.ex', '.exs',
 ])
+
+/** Markdown/ADR — отдельный тип узлов (секции), индексируется своим проходом. */
+const DOC_EXTS = new Set(['.md', '.mdx'])
 
 /** Пауза между файлами для неактивных проектов задаётся backgroundDelay(). */
 const CHANGE_DEBOUNCE_MS = 400
 const MAX_FILES = 20000
+
+/**
+ * Версия правил построения карты. Меняется, когда меняется СМЫСЛ сохранённых
+ * данных (парсинг, exported, состав узлов, отбор документов). Несовпадение
+ * версии → одноразовая полная пересборка: иначе старая БД живёт со старыми
+ * правилами (например, exported=0 у всех символов или 333 сгенерированных
+ * *.d.ts в графе), и никакой код это не замечает.
+ *  3 — exported по исходнику, git-фильтр файлов, markdown-секции, tier-0.
+ *  4 — exported для языков с публичностью по умолчанию (Kotlin/Swift/Scala/
+ *      Dart/Ruby/Elixir/Lua/PHP). Документы НЕ пересоздаются с нуля: textHash
+ *      не меняется → векторы сохраняются (hash-гейт), пересчитывается только tier.
+ */
+const MAP_SCHEMA_VERSION = '4'
 
 interface RawFile {
   meta: CodeMapFile
@@ -54,6 +77,10 @@ function sha256(text: string): string {
 
 function isCodeFile(relPath: string): boolean {
   return CODE_EXTS.has(path.extname(relPath).toLowerCase())
+}
+
+function isDocFile(relPath: string): boolean {
+  return DOC_EXTS.has(path.extname(relPath).toLowerCase())
 }
 
 /** Минифицированный/гигантский файл: очень длинные строки или большой размер. */
@@ -283,6 +310,66 @@ class ProjectMapManager {
       .map(f => ({ relPath: f.relPath, absPath: f.path, size: f.size, mtime: f.mtime }))
   }
 
+  /** Markdown/ADR-файлы проекта (README, docs/, ADR) — узлы-секции карты. */
+  private scanDocFiles(workdir: string): { relPath: string; absPath: string; size: number; mtime: number }[] {
+    return getAllFiles(workdir)
+      .filter(f => isDocFile(f.relPath))
+      .slice(0, MAX_FILES)
+      .map(f => ({ relPath: f.relPath, absPath: f.path, size: f.size, mtime: f.mtime }))
+  }
+
+  /**
+   * Разбор markdown: узлы file + секции по заголовкам. Содержимое секции
+   * попадает в `doc`, поэтому документ семантики — реальный текст, а не путь.
+   */
+  private async parseDocFile(
+    projectId: string, relPath: string, absPath: string, size: number, mtime: number,
+  ): Promise<RawFile | null> {
+    let content: string
+    try {
+      content = await readFile(absPath, 'utf-8')
+    } catch {
+      return null
+    }
+    if (content.length > 1_000_000) return null
+    const nodes = markdownNodes(projectId, relPath, content)
+    const meta: CodeMapFile = {
+      projectId,
+      path: relPath,
+      language: 'markdown',
+      hash: sha256(content),
+      mtime,
+      size,
+      parser: 'markdown-headings',
+      truncated: false,
+      indexedAt: Date.now(),
+    }
+    return {
+      meta,
+      symbols: {
+        definitions: [],
+        imports: [],
+        references: [],
+        importDetails: [],
+        callSites: [],
+        language: 'markdown',
+        parser: 'markdown-headings',
+        supported: true,
+        truncated: false,
+      },
+      nodes,
+    }
+  }
+
+  /** Запись markdown-файла: contains от файла к секциям + references на символы. */
+  private resolveAndWriteDoc(index: ProjectIndex, raw: RawFile): void {
+    const { meta, nodes } = raw
+    const contains = containsEdges(index.projectId, meta.path, nodes)
+    const refs = docReferenceEdges(index, meta.path, nodes)
+    store.replaceFile(index.projectId, meta, nodes, [...contains, ...refs])
+    syncFileDocs(index.projectId, meta.path, nodes)
+  }
+
   private loadAliases(workdir: string): Map<string, string> {
     return loadTsconfigAliases(workdir, (p) => {
       try { return existsSync(p) ? readFileSync(p, 'utf-8') : null } catch { return null }
@@ -344,6 +431,8 @@ class ProjectMapManager {
     const symbols = await sidecarSymbols(absPath, content, { skipReferences: false })
     if (!symbols.supported) return null
     const nodes = definitionsToNodes(projectId, relPath, symbols.definitions)
+    // `exported` считается по исходнику: sidecar отдаёт signature без модификатора.
+    markExported(nodes, content, symbols.language)
     const fileNode: CodeMapNode = {
       id: store.fileNodeId(relPath),
       projectId,
@@ -403,12 +492,25 @@ class ProjectMapManager {
     const workdir = project.workdir
     const projectName = project.name
     if (!existsSync(workdir)) {
-      store.setStatus(projectId, { state: 'error', error: 'workdir not found' })
+      // Проект переехал/удалён — это не «ошибка карты», а отсутствующая папка.
+      store.setStatus(projectId, { state: 'error', error: 'Папка проекта не найдена: ' + workdir })
       return
     }
 
     store.setStatus(projectId, { state: 'building', startedAt: Date.now(), error: null })
     this.emit({ projectId, phase: 'scanning', percent: 0, indexedFiles: 0, totalFiles: 0, projectName, pendingProjects: this.queue.length })
+
+    // Смена правил построения карты → одноразовая полная пересборка.
+    const storedVersion = store.getMeta(projectId, 'schemaVersion')
+    if (storedVersion !== MAP_SCHEMA_VERSION) {
+      force = true
+      // Чистим документы ТОЛЬКО когда данных ещё нет по этой схеме (первый
+      // прогон). При апгрейде 3→4 векторы переживают пересборку: textHash тот
+      // же, hash-гейт сохраняет embedding, меняется лишь tier.
+      if (!storedVersion) clearProjectDocs(projectId)
+      store.setMeta(projectId, 'schemaVersion', MAP_SCHEMA_VERSION)
+      log('[mapBuilder] %s: schema %s → %s, full rebuild', projectName, storedVersion ?? 'none', MAP_SCHEMA_VERSION)
+    }
 
     await startIndexing(workdir)
     // Если mention-индекс уже стартовал раньше и ещё досканивается — его кэш
@@ -419,7 +521,8 @@ class ProjectMapManager {
     if (!ready) log(`[mapBuilder] %s: mention-index not ready in 30s — строю по частичному списку`, projectName)
     this.ensureWatcher(projectId, workdir)
     const files = this.scanCodeFiles(workdir)
-    const total = files.length
+    const docFiles = this.scanDocFiles(workdir)
+    const total = files.length + docFiles.length
     store.setStatus(projectId, { totalFiles: total })
 
     const index = force ? new ProjectIndex(projectId, workdir) : await this.getIndex(projectId, workdir)
@@ -482,8 +585,41 @@ class ProjectMapManager {
       await yieldNow()
     }
 
+    // ── Документы (markdown/ADR) ──
+    // ПОСЛЕ кода: references секций ищутся по полному индексу символов проекта.
+    for (const f of docFiles) {
+      if (this.stopRequested || this.cancelBuild.has(projectId)) return
+      await this.waitWhileBusy()
+      if (this.stopRequested || this.cancelBuild.has(projectId)) return
+      const prev = existing.get(f.relPath)
+      if (!force && prev && prev.hash) {
+        if (prev.mtime === f.mtime && prev.size === f.size) { done++; continue }
+        let c: string | null = null
+        try { c = await readFile(f.absPath, 'utf-8') } catch { c = null }
+        if (c !== null && sha256(c) === prev.hash) {
+          store.updateFileStat(projectId, f.relPath, f.mtime, f.size)
+          done++
+          continue
+        }
+      }
+      const raw = await this.parseDocFile(projectId, f.relPath, f.absPath, f.size, f.mtime)
+      done++
+      if (raw) {
+        index.removeFile(f.relPath)
+        index.addFileNodes(f.relPath, raw.nodes)
+        this.resolveAndWriteDoc(index, raw)
+      } else {
+        store.removeFile(projectId, f.relPath)
+        removeFileDocs(projectId, f.relPath)
+        index.removeFile(f.relPath)
+      }
+      this.emit({ projectId, phase: 'parsing', percent: Math.round((done / Math.max(1, total)) * 92), indexedFiles: done, totalFiles: total, projectName, pendingProjects: this.queue.length })
+      if (!isActive) await sleep(this.backgroundDelay())
+      else await yieldNow()
+    }
+
     // Удалить файлы, которых больше нет на диске.
-    const onDisk = new Set(files.map(f => f.relPath))
+    const onDisk = new Set([...files.map(f => f.relPath), ...docFiles.map(f => f.relPath)])
     let removed = 0
     for (const f of store.listFiles(projectId)) {
       if (!onDisk.has(f.path)) {
@@ -519,14 +655,20 @@ class ProjectMapManager {
     if (removed > 0) store.pruneDanglingEdges(projectId)
     store.refreshCounts(projectId)
     const status = store.getStatus(projectId)
-    store.setStatus(projectId, { state: 'ready', indexedFiles: status.indexedFiles })
-    this.emit({ projectId, phase: 'ready', percent: 100, indexedFiles: status.indexedFiles, totalFiles: total, message: `${status.totalNodes} узлов, ${status.totalEdges} связей`, projectName, pendingProjects: this.queue.length })
+    // Готовая карта: «Файлы» — это фактическое содержимое графа, а не число
+    // найденных на диске файлов (часть пропускается как minified/огромные).
+    store.setStatus(projectId, { state: 'ready', indexedFiles: status.indexedFiles, totalFiles: status.indexedFiles })
+    invalidateAnalytics(projectId)
+    this.emit({ projectId, phase: 'ready', percent: 100, indexedFiles: status.indexedFiles, totalFiles: status.indexedFiles, message: `${status.totalNodes} узлов, ${status.totalEdges} связей`, projectName, pendingProjects: this.queue.length })
   }
 
   // ─── Инкрементальные обновления ────────────────────────────────────────────
 
   private onFileChanges(workdir: string, relPaths: string[]): void {
-    const code = relPaths.filter(isCodeFile)
+    // Двойная защита: fileIndexer уже не эмитит игнорируемые пути, но watcher
+    // может прислать что угодно (node_modules после npm i, сгенерированные
+    // *.d.ts). Такие файлы в карту не пускаем вообще.
+    const code = relPaths.filter(p => (isCodeFile(p) || isDocFile(p)) && !isPathIgnored(workdir, p))
     if (code.length === 0) return
     let set = this.pendingChanges.get(workdir)
     if (!set) {
@@ -577,11 +719,15 @@ class ProjectMapManager {
         try { st = await readFile(absPath, 'utf-8') } catch { continue }
         let mtime = Date.now(), size = st.length
         try { const s = statSync(absPath); mtime = s.mtimeMs; size = s.size } catch { /* ignore */ }
-        const raw = await this.parseFileSafe(projectId, relPath, absPath, size, mtime)
+        const isDoc = isDocFile(relPath)
+        const raw = isDoc
+          ? await this.parseDocFile(projectId, relPath, absPath, size, mtime)
+          : await this.parseFileSafe(projectId, relPath, absPath, size, mtime)
         if (!raw) continue
         index.removeFile(relPath)
         index.addFileNodes(relPath, raw.nodes)
-        this.resolveAndWrite(index, raw)
+        if (isDoc) this.resolveAndWriteDoc(index, raw)
+        else this.resolveAndWrite(index, raw)
         resolvedPaths.add(relPath)
         await yieldNow()
       }
@@ -614,6 +760,7 @@ class ProjectMapManager {
 
       if (removed > 0) store.pruneDanglingEdges(projectId)
       store.refreshCounts(projectId)
+      invalidateAnalytics(projectId)
       const status = store.getStatus(projectId)
       this.emit({ projectId, phase: 'ready', percent: 100, indexedFiles: status.indexedFiles, totalFiles: status.totalFiles, message: 'Карта обновлена', projectName: project.name, pendingProjects: this.queue.length, incremental: true, changedFiles: changed.length })
     } catch (e) {

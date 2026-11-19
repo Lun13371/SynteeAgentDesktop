@@ -219,10 +219,19 @@ export interface AgentCallbacks {
    */
   onProjectMap?: (args: {
     action: 'search' | 'semantic' | 'callers' | 'callees' | 'file' | 'overview'
+      | 'god' | 'communities' | 'path' | 'explain' | 'affected'
     query?: string
+    /** Второй узел для action=path. */
+    to?: string
     path?: string
     nodeId?: string
     limit?: number
+    /** Макс. глубина для path/affected. */
+    depth?: number
+    /** Ограничение типов рёбер для path/affected. */
+    relations?: Array<'calls' | 'references' | 'imports'>
+    /** Бюджет ответа в токенах. */
+    budget?: number
     /** Проект чата — тул работает только в контексте проекта. */
     projectId?: string
   }) => Promise<{ success: boolean; output: string; error?: string }>

@@ -94,20 +94,49 @@ const SCRIPT_LANG_RE = /\.(py|pyi|go|rs|java|cs|rb|php)$/i
  */
 const NO_DOC_KINDS = new Set(['variable', 'field'])
 
-/** Документы файла из его узлов (узлы уже содержат file-узел с kind='file'). */
+/**
+ * Минимальная длина docstring, при которой символ без `export` всё равно
+ * получает вектор. Короче — это пересказ имени, E5 не даёт прироста над
+ * lexical-каналом, а прогрев/БД растут.
+ */
+const MIN_DOC_CHARS = 30
+
+/**
+ * Документы файла из его узлов (узлы уже содержат file-узел с kind='file').
+ *
+ * Тир определяет, попадает ли документ в E5-индекс:
+ *  - 0 — только lexical (текст лежит в code_map_docs, вектор не считается);
+ *  - 1 — публичный API: файл с экспортами, exported-символы;
+ *  - 2 — внутренние символы с реальным docstring.
+ * Раньше по tier-2 шли ВСЕ внутренние функции (80% документов) — их текст
+ * почти дословно повторяет имя, вектор бесполезен. Плюс пустые file-доки
+ * («File src/x.ts» без единого экспорта) давали шум при 70% длины.
+ */
 export function buildDocsForFile(nodes: CodeMapNode[]): CodeMapDocInfo[] {
   const fileNode = nodes.find(n => n.kind === 'file')
   const symbols = nodes.filter(n => n.kind !== 'file' && n.kind !== 'package' && !NO_DOC_KINDS.has(n.kind))
   const docs: CodeMapDocInfo[] = []
   if (fileNode) {
     const text = buildFileDocText(fileNode, symbols)
-    docs.push({ nodeId: fileNode.id, filePath: fileNode.filePath, kind: 'file', tier: 1, text, textHash: sha256(text) })
+    const hasExports = symbols.some(s => s.exported)
+    docs.push({
+      nodeId: fileNode.id, filePath: fileNode.filePath, kind: 'file',
+      tier: hasExports ? 1 : 0, text, textHash: sha256(text),
+    })
   }
   const scriptLang = fileNode ? SCRIPT_LANG_RE.test(fileNode.filePath) : false
+  const byName = new Map(symbols.map(s => [s.name, s]))
   for (const s of symbols) {
     const text = buildSymbolDocText(s)
-    const tier1 = s.exported || (scriptLang && !s.parentName)
-    docs.push({ nodeId: s.id, filePath: s.filePath, kind: s.kind, tier: tier1 ? 1 : 2, text, textHash: sha256(text) })
+    const docLen = (s.doc ?? '').trim().length
+    // Метод/конструктор внутри экспортируемого класса — публичный API класса.
+    const parent = s.parentName ? byName.get(s.parentName) : undefined
+    const inExportedContainer = !!parent?.exported && (s.kind === 'method' || s.kind === 'constructor')
+    let tier: 0 | 1 | 2
+    if (s.exported || (scriptLang && !s.parentName) || inExportedContainer) tier = 1
+    else if ((scriptLang && !!s.parentName) || docLen >= MIN_DOC_CHARS) tier = 2
+    else tier = 0
+    docs.push({ nodeId: s.id, filePath: s.filePath, kind: s.kind, tier, text, textHash: sha256(text) })
   }
   return docs
 }
@@ -338,6 +367,8 @@ function queryIdentifierWords(query: string): string[] {
  */
 export async function searchSemantic(projectId: string, query: string, limit = 10): Promise<CodeMapSemanticResult> {
   const started = Date.now()
+  // Запрос = сигнал «семантика этого проекта нужна» → worker прогреет его в фоне.
+  semanticWorker.request(projectId)
   const { total, indexed } = store.countDocs(projectId)
   if (total === 0) return { mode: 'none', totalDocs: 0, indexedDocs: 0, hits: [] }
   const k = Math.max(limit * 4, 40)
@@ -449,10 +480,26 @@ class SemanticWorker {
   private lastProgressEmit = new Map<string, number>()
   /** Проекты, для которых мы уже эмитили warming — по ним шлём финал ready. */
   private touched = new Set<string>()
+  /**
+   * Проекты, по которым семантика реально нужна (был semantic-запрос или
+   * открыта карта). Прогрев остальных проектов не запускается: раньше worker
+   * через 5 с после старта грел ВСЕ проекты (15.6k документов), хотя агент за
+   * всю историю не сделал ни одного semantic-запроса.
+   */
+  private requested = new Set<string>()
 
   setForegroundPredicate(fn: () => boolean): void { this.foregroundBusy = fn }
   setMapBuildingPredicate(fn: () => boolean): void { this.mapBuilding = fn }
   setProgressCallback(cb: (p: CodeMapProgress) => void): void { this.progressCb = cb }
+
+  /** Запросить прогрев семантики проекта (первый semantic-запрос/открытие карты). */
+  request(projectId: string): void {
+    if (this.requested.has(projectId)) return
+    this.requested.add(projectId)
+    this.nudge()
+  }
+
+  hasRequested(projectId: string): boolean { return this.requested.has(projectId) }
   setActiveProject(projectId: string | null): void {
     this.activeProjectId = projectId
     this.nudge()
@@ -584,13 +631,30 @@ class SemanticWorker {
         return
       }
 
-        // Полный приоритет активному проекту: пока у него есть неиндексированные
-        // документы — другие проекты не трогаем вовсе (пользователь просил:
-        // «на открытый чат проекта — весь приоритет, остальные потом в фоне»).
-        // Когда активный вычищен — round-robin по остальным.
-        const ordered = this.activeProjectId && projects.includes(this.activeProjectId)
-          ? [this.activeProjectId]
-          : projects
+      // Приоритет: активный проект (открытый чат) → явно запрошенные
+      // (semantic-запрос/открытая карта) → ФОНОВЫЙ ОДИН проект.
+      //
+      // Без фолбэка worker засыпал навсегда, когда активного проекта нет
+      // (пользователь просто открыл настройки): в таблице все проекты висели
+      // как «0/N · прогрев», а инференс не запускался вообще. Теперь, если
+      // ни активного, ни запросов нет, греется ровно ОДИН проект (самый
+      // «верхний» в списке pending) — по одному, последовательно, не все сразу.
+      let ordered: string[]
+      if (this.activeProjectId && projects.includes(this.activeProjectId)) {
+        ordered = [this.activeProjectId]
+      } else {
+        const requested = projects.filter(pid => this.requested.has(pid))
+        ordered = requested.length > 0 ? requested : projects.slice(0, 1)
+      }
+      if (ordered.length === 0) {
+        // Есть неиндексированные документы, но их проекты не запрошены —
+        // спим до следующего nudge (request() его вызовет).
+        if (this.touched.size > 0) {
+          for (const pid of this.touched) this.emitSemanticProgress(pid, true)
+          this.touched.clear()
+        }
+        return
+      }
       let worked = false
 
       for (const pid of ordered) {

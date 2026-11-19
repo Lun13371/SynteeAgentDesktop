@@ -21,6 +21,7 @@ import { watch, type FSWatcher } from 'fs'
 import { basename, relative, sep } from 'path'
 import { readdir, stat } from 'fs/promises'
 import { existsSync, readFileSync } from 'fs'
+import { execFile } from 'child_process'
 import type { MentionItem } from '../../shared/types'
 import { filterMentions, mimeFromExt, mentionTypeFromFilename } from '../../shared/mentions'
 
@@ -39,6 +40,9 @@ interface IndexEntry {
   watcher: FSWatcher
   files: FileEntry[]
   ready: boolean
+  /** Список файлов, которые видит git (уже с применённым .gitignore). null — не git-проект. */
+  gitFiles: Set<string> | null
+  gitignore: GitignorePatterns
 }
 
 const _indexes = new Map<string, IndexEntry>()
@@ -113,7 +117,40 @@ interface GitignorePatterns {
   /** Паттерны файлов с путём: `docs/generated.md` → матчим по суффиксу пути. */
   filePaths: Set<string>
   exts: Set<string>
+  /**
+   * Glob-паттерны (`**`, `*`, `?`) и отрицания (`!`). Проверяются по relPath
+   * в порядке объявления: последнее совпадение побеждает (семантика git).
+   */
+  globs: Array<{ re: RegExp; negate: boolean }>
 }
+
+/**
+ * .gitignore-паттерн → RegExp по posix-relPath.
+ * `src/**\/*.d.ts` → `^src/(?:.*\/)?[^/]*\.d\.ts$`, `**\/x` → `(?:^|.*\/)x`.
+ * Паттерн без слэша матчится на любом уровне (`*.tmp`), со слэшем — от корня.
+ */
+export function gitignoreGlobToRegex(pat: string): RegExp {
+  const anchored = pat.includes('/')
+  let re = ''
+  for (let i = 0; i < pat.length; i++) {
+    const ch = pat[i]
+    if (ch === '*') {
+      if (pat[i + 1] === '*') {
+        if (pat[i + 2] === '/') { re += '(?:.*/)?'; i += 2 } else { re += '.*'; i += 1 }
+      } else {
+        re += '[^/]*'
+      }
+    } else if (ch === '?') {
+      re += '[^/]'
+    } else if ('\\^$+.()|{}[]'.includes(ch)) {
+      re += '\\' + ch
+    } else {
+      re += ch
+    }
+  }
+  return new RegExp((anchored ? '^' : '(?:^|.*/)') + re + '$')
+}
+
 
 /**
  * Развернуть символьные классы `[abc]` в варианты строки. Unity-шные
@@ -144,7 +181,7 @@ export function expandCharClasses(pat: string): string[] {
 
 /** Экспортирован для тестов: работа с реальным .gitignore проекта. */
 export function parseGitignore(workdir: string): GitignorePatterns {
-  const result: GitignorePatterns = { dirs: new Set(), dirPaths: new Set(), files: new Set(), filePaths: new Set(), exts: new Set() }
+  const result: GitignorePatterns = { dirs: new Set(), dirPaths: new Set(), files: new Set(), filePaths: new Set(), exts: new Set(), globs: [] }
   const giPath = workdir + sep + '.gitignore'
   if (!existsSync(giPath)) return result
   try {
@@ -152,19 +189,26 @@ export function parseGitignore(workdir: string): GitignorePatterns {
     for (const rawLine of content.split(/\r?\n/)) {
       const line = rawLine.trim()
       if (!line || line.startsWith('#')) continue
+      const negate = line.startsWith('!')
       // Убираем ведущий / (anchor to root) для упрощения
-      const pat = line.replace(/^\//, '')
+      const pat = (negate ? line.slice(1) : line).replace(/^\//, '')
+      if (!pat) continue
       for (const variant of expandCharClasses(pat)) {
+        // Простое расширение (*.log, *.pdb) — быстрый путь без regex.
+        if (/^\*\.[^*?/]+$/.test(variant)) {
+          result.exts.add(variant.slice(1))
+          continue
+        }
+        // Glob-паттерны и отрицания — в отдельный список с regex (порядок важен).
+        if (negate || /[*?]/.test(variant)) {
+          if (!variant.endsWith('/')) result.globs.push({ re: gitignoreGlobToRegex(variant), negate })
+          continue
+        }
         // Директория (заканчивается на /)
         if (variant.endsWith('/')) {
           const name = variant.slice(0, -1)
           if (name.includes('/')) result.dirPaths.add(name)
           else result.dirs.add(name)
-          continue
-        }
-        // Глоб расширения (*.log, *.tmp)
-        if (variant.startsWith('*.')) {
-          result.exts.add(variant.slice(1)) // '.log'
           continue
         }
         // Паттерн с путём — файл в конкретной папке (docs/generated.md)
@@ -180,8 +224,50 @@ export function parseGitignore(workdir: string): GitignorePatterns {
   return result
 }
 
+/**
+ * Файлы, которые видит git: отслеживаемые + неотслеживаемые, но не игнорируемые.
+ * Это эталонный список для «что вообще является частью проекта» — .gitignore
+ * учитывается самим git (`**`, `!`, вложенные .gitignore).
+ * Возвращает null, если workdir не под git (или git недоступен) — тогда
+ * работают эвристики parseGitignore/IGNORED_DIRS.
+ *
+ * Асинхронно: `git ls-files` на большом репозитории идёт сотни миллисекунд,
+ * sync-вызов подвесил бы main-процесс на старте каждого проекта.
+ */
+export async function listGitFiles(workdir: string): Promise<Set<string> | null> {
+  return new Promise((resolve) => {
+    try {
+      execFile(
+        'git',
+        ['-C', workdir, 'ls-files', '-z', '--cached', '--others', '--exclude-standard'],
+        { encoding: 'utf-8', maxBuffer: 128 * 1024 * 1024, windowsHide: true, timeout: 20_000 },
+        (err, stdout) => {
+          if (err || !stdout) { resolve(null); return }
+          const set = new Set<string>()
+          for (const p of stdout.split('\0')) {
+            if (p) set.add(p.split('\\').join('/'))
+          }
+          resolve(set.size > 0 ? set : null)
+        },
+      )
+    } catch {
+      resolve(null)
+    }
+  })
+}
+
 /** Экспортирован для тестов. */
-export function isIgnored(relPath: string, name: string, gitignore: GitignorePatterns): boolean {
+export function isIgnored(
+  relPath: string,
+  name: string,
+  gitignore: GitignorePatterns,
+  gitFiles?: Set<string> | null,
+): boolean {
+  // Git — источник истины: файла нет в git-списке (уже с применённым .gitignore)
+  // → он не часть проекта. Снимает весь класс проблем: сгенерированные *.d.ts,
+  // node_modules, локальные артефакты сборки.
+  if (gitFiles && !gitFiles.has(relPath)) return true
+
   const segments = relPath.split('/')
   for (const seg of segments) {
     // ФС Windows case-insensitive — 'TEMP' и 'temp' одно и то же; сравним так же.
@@ -202,6 +288,14 @@ export function isIgnored(relPath: string, name: string, gitignore: GitignorePat
     if (gitignore.exts.has(ext)) return true
     if (BINARY_EXTS.has(ext)) return true
   }
+  // Glob-правила: последнее совпадение побеждает (как в git).
+  if (gitignore.globs.length > 0) {
+    let verdict = false
+    for (const g of gitignore.globs) {
+      if (g.re.test(relPath)) verdict = !g.negate
+    }
+    if (verdict) return true
+  }
   // Скрытые файлы (.env, .gitignore — оставляем; остальные .dotfiles — скрываем)
   if (name.startsWith('.') && name !== '.env' && name !== '.gitignore' && name !== '.editorconfig') {
     return true
@@ -209,11 +303,41 @@ export function isIgnored(relPath: string, name: string, gitignore: GitignorePat
   return false
 }
 
+/**
+ * Игнорируется ли путь в рамках уже запущенного индекса workdir.
+ * Нужен потребителям watcher-событий (карта проекта): fileIndexer не эмитит
+ * игнорируемые пути, но защита на стороне потребителя тоже полезна.
+ * Если индекс не запущен — считает по .gitignore без git-списка.
+ */
+export function isPathIgnored(workdir: string, relPath: string): boolean {
+  const entry = _indexes.get(workdir)
+  const name = relPath.split('/').pop() ?? relPath
+  if (entry) return isIgnored(relPath, name, entry.gitignore, entry.gitFiles)
+  return isIgnored(relPath, name, parseGitignore(workdir), null)
+}
+
 // ── Первичный scan ───────────────────────────────────────────────────────────
+
+/** Все директории, в которых есть файлы из git-списка (префиксы путей). */
+function buildDirSet(files: Set<string>): Set<string> {
+  const dirs = new Set<string>()
+  for (const f of files) {
+    let idx = f.lastIndexOf('/')
+    while (idx > 0) {
+      const dir = f.slice(0, idx)
+      if (dirs.has(dir)) break
+      dirs.add(dir)
+      idx = dir.lastIndexOf('/')
+    }
+  }
+  return dirs
+}
 
 async function scanDir(
   workdir: string,
   gitignore: GitignorePatterns,
+  gitFiles: Set<string> | null,
+  gitDirs: Set<string> | null,
   onFile: (entry: FileEntry) => void,
   count: { n: number },
 ): Promise<void> {
@@ -234,11 +358,14 @@ async function scanDir(
       if (d.isDirectory()) {
         if (IGNORED_DIRS.has(d.name.toLowerCase()) || gitignore.dirs.has(d.name)) continue
         if (d.name.startsWith('.') && d.name !== '.env') continue
+        // Git-список знает точно: если в поддереве нет ни одного файла из git —
+        // не спускаемся (node_modules, .cache и прочие локальные артефакты).
+        if (gitDirs && !gitDirs.has(relPath)) continue
         stack.push({ dir: fullPath, depth: depth + 1 })
         continue
       }
       if (d.isFile()) {
-        if (isIgnored(relPath, d.name, gitignore)) continue
+        if (isIgnored(relPath, d.name, gitignore, gitFiles)) continue
         let st
         try {
           st = await stat(fullPath)
@@ -253,7 +380,7 @@ async function scanDir(
           mime,
           size: st.size,
           mtime: st.mtimeMs,
-          type: mentionTypeFromFilename(d.name),
+          type: mentionTypeFromFilename(d.name) as 'file' | 'image',
         })
         count.n++
       }
@@ -269,17 +396,23 @@ async function scanDir(
 export async function startIndexing(workdir: string): Promise<void> {
   if (_indexes.has(workdir)) return
   const gitignore = parseGitignore(workdir)
+  // Git — эталонный список файлов проекта (учитывает .gitignore целиком:
+  // `**`, `!`, вложенные .gitignore). Без git работают эвристики.
+  const gitFiles = await listGitFiles(workdir)
+  const gitDirs = gitFiles ? buildDirSet(gitFiles) : null
   const entry: IndexEntry = {
     workdir,
     watcher: undefined as unknown as FSWatcher,
     files: [],
     ready: false,
+    gitFiles,
+    gitignore,
   }
   _indexes.set(workdir, entry)
 
   // Первичный scan (быстрее chokidar для нашего кэша)
   const count = { n: 0 }
-  await scanDir(workdir, gitignore, (fe) => entry.files.push(fe), count)
+  await scanDir(workdir, gitignore, gitFiles, gitDirs, (fe) => entry.files.push(fe), count)
   entry.files.sort((a, b) => b.mtime - a.mtime)
   entry.ready = true
 
@@ -299,10 +432,13 @@ export async function startIndexing(workdir: string): Promise<void> {
     const changedRel: string[] = []
     for (const fullPath of paths) {
       const relPath = relative(workdir, fullPath).split(sep).join('/')
-      changedRel.push(relPath)
       const name = basename(fullPath)
+      // Игнорируемые пути НЕ эмитим: раньше событие уходило потребителям
+      // (карта проекта) и файл из node_modules/сгенерированный *.d.ts
+      // переразбирался и попадал в граф мимо полного скана.
+      // Здесь проверяем эвристиками (.gitignore + IGNORED_DIRS), а не git-списком:
+      // только что созданный файл в git-списке ещё отсутствует.
       if (isIgnored(relPath, name, gitignore)) {
-        // игнорируемый файл — удаляем из кэша если был
         const idx = entry.files.findIndex(f => f.path === fullPath)
         if (idx >= 0) entry.files.splice(idx, 1)
         continue
@@ -311,11 +447,16 @@ export async function startIndexing(workdir: string): Promise<void> {
       try {
         st = await stat(fullPath)
       } catch {
-        // файл удалён — убираем из кэша
+        // файл удалён — событие всё равно нужно (потребитель уберёт его из графа)
+        changedRel.push(relPath)
         const idx = entry.files.findIndex(f => f.path === fullPath)
         if (idx >= 0) entry.files.splice(idx, 1)
         continue
       }
+      changedRel.push(relPath)
+      // Новый файл, которого не было в git-списке на момент скана — добавляем,
+      // чтобы следующая полная сборка его не выбросила.
+      if (entry.gitFiles && !entry.gitFiles.has(relPath)) entry.gitFiles.add(relPath)
       const fe: FileEntry = {
         path: fullPath,
         relPath,
@@ -323,7 +464,7 @@ export async function startIndexing(workdir: string): Promise<void> {
         mime: mimeFromExt(name),
         size: st.size,
         mtime: st.mtimeMs,
-        type: mentionTypeFromFilename(name),
+        type: mentionTypeFromFilename(name) as 'file' | 'image',
       }
       const idx = entry.files.findIndex(f => f.path === fullPath)
       if (idx >= 0) entry.files[idx] = fe

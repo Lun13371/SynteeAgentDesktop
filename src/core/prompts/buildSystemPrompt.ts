@@ -51,9 +51,10 @@ import {
   buildInstallPathsBlock,
   buildMemoryStatsBlock,
   buildGraphStatsBlock,
+  buildProjectMapBlock,
   buildSecretsBlock,
 } from './sections'
-import type { ProtectedVarPromptInfo, GraphStats } from './sections'
+import type { ProtectedVarPromptInfo, GraphStats, ProjectMapPromptInfo } from './sections'
 
 export type { PluginPromptInfo, ProtectedVarPromptInfo }
 
@@ -74,6 +75,8 @@ export interface SystemPromptParams {
   memoryStats?: { globalCount: number; projectCount: number; globalByKind: Record<string, number>; projectByKind: Record<string, number> }
   /** Knowledge graph stats of the project — agent sees project structure. */
   graphStats?: GraphStats
+  /** Состояние карты кода проекта — агент знает, что структурный граф доступен. */
+  projectMap?: ProjectMapPromptInfo
   customSystemPrompt?: string
   workdir?: string
   projectContext?: string
@@ -127,7 +130,7 @@ export interface SystemPromptParts {
  * SYSTEM_PROMPT_CACHE_BREAK (см. buildSystemPrompt).
  */
 export function buildSystemPromptParts(params: SystemPromptParams): SystemPromptParts {
-  const { userName, memoryContext, memoryStats, graphStats, workingMemory, customSystemPrompt, workdir, projectContext, projectInstructions, activeSkills, activePlugins, oneShotSkill, globalSkillsDir, globalPluginsDir, browserMode, imageMode, maxParallelSubAgents, pluginContext, pluginSections, protectedVars } = params
+  const { userName, memoryContext, memoryStats, graphStats, projectMap, workingMemory, customSystemPrompt, workdir, projectContext, projectInstructions, activeSkills, activePlugins, oneShotSkill, globalSkillsDir, globalPluginsDir, browserMode, imageMode, maxParallelSubAgents, pluginContext, pluginSections, protectedVars } = params
   const dateStr = new Date().toLocaleString('ru')
 
   const modeBlock = buildCodeModeBlock(workdir, projectContext, projectInstructions)
@@ -138,6 +141,7 @@ export function buildSystemPromptParts(params: SystemPromptParams): SystemPrompt
   const installPathsBlock = buildInstallPathsBlock(workdir, globalSkillsDir, globalPluginsDir)
   const memoryStatsBlock = buildMemoryStatsBlock(memoryStats)
   const graphStatsBlock = buildGraphStatsBlock(graphStats)
+  const projectMapBlock = buildProjectMapBlock(projectMap)
   const secretsBlock = buildSecretsBlock(protectedVars)
 
   // Mode injections (planning/ask) live ONLY in the history tail — see
@@ -203,6 +207,7 @@ ${imageBlock}
 ${pluginContextBlock}
 ${memoryStatsBlock}
 ${graphStatsBlock}
+${projectMapBlock}
 ${secretsBlock}
 ${memoryContext ? '\n' + memoryContext : ''}${workingMemory ? `\n## Working memory (what was done in this chat)\n${workingMemory}\n` : ''}`
 

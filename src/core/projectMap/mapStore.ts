@@ -254,6 +254,20 @@ export function getCallees(projectId: string, nodeId: string): CodeMapEdge[] {
   return rows.map(rowToEdge)
 }
 
+/**
+ * Рёбра для аналитики (god nodes / communities / path / affected): только
+ * calls|references|imports, без внешних пакетов.
+ */
+export function listAnalysisEdges(projectId: string, limit: number, types: CodeEdgeType[]): CodeMapEdge[] {
+  const ph = types.map(() => '?').join(',')
+  const rows = getDB().prepare(
+    `SELECT * FROM code_map_edges
+     WHERE project_id = ? AND type IN (${ph}) AND precision != 'external'
+     LIMIT ?`
+  ).all(projectId, ...types, limit) as Record<string, unknown>[]
+  return rows.map(rowToEdge)
+}
+
 export function getFileEdges(projectId: string, path: string, direction: 'out' | 'in'): CodeMapEdge[] {
   const fid = fileNodeId(path)
   const col = direction === 'out' ? 'from_node' : 'to_node'
@@ -282,6 +296,21 @@ export function getFile(projectId: string, path: string): CodeMapFile | null {
   return row ? rowToFile(row) : null
 }
 
+// ─── Служебные метки проекта (версии схемы парсинга/документов) ──────────────
+
+export function getMeta(projectId: string, key: string): string | null {
+  const row = getDB().prepare(
+    `SELECT value FROM code_map_meta WHERE project_id = ? AND key = ?`
+  ).get(projectId, key) as { value: string } | undefined
+  return row?.value ?? null
+}
+
+export function setMeta(projectId: string, key: string, value: string): void {
+  getDB().prepare(
+    `INSERT OR REPLACE INTO code_map_meta (project_id, key, value) VALUES (?, ?, ?)`
+  ).run(projectId, key, value)
+}
+
 export function getIndexedProjectIds(): string[] {
   const rows = getDB().prepare(`SELECT DISTINCT project_id FROM code_map_files`).all() as { project_id: string }[]
   return rows.map(r => r.project_id)
@@ -296,7 +325,7 @@ interface DocRow {
   nodeId: string
   filePath: string
   kind: CodeNodeKind
-  tier: 1 | 2
+  tier: 0 | 1 | 2
   text: string
   textHash: string
 }
@@ -368,14 +397,14 @@ export function listPendingDocs(projectId: string, limit: number): CodeMapDocInf
   const rows = getDB().prepare(
     `SELECT node_id, file_path, kind, tier, text, text_hash
      FROM code_map_docs
-     WHERE project_id = ? AND (embed_hash IS NULL OR embed_hash != text_hash)
+     WHERE project_id = ? AND tier > 0 AND (embed_hash IS NULL OR embed_hash != text_hash)
      ORDER BY tier ASC, rowid ASC LIMIT ?`
   ).all(projectId, limit) as Record<string, unknown>[]
   return rows.map(r => ({
     nodeId: r.node_id as string,
     filePath: r.file_path as string,
     kind: r.kind as CodeNodeKind,
-    tier: (r.tier as 1 | 2) ?? 2,
+    tier: (r.tier as 0 | 1 | 2) ?? 2,
     text: r.text as string,
     textHash: r.text_hash as string,
   }))
@@ -383,8 +412,12 @@ export function listPendingDocs(projectId: string, limit: number): CodeMapDocInf
 
 /** Проекты с неиндексированными документами (для выбора целей worker'а). */
 export function listPendingDocProjectIds(): string[] {
+  // Мелкие проекты первыми: пока большой греется минутами, маленькие
+  // закрываются за секунды — в настройках видно прогресс, а не вечное «прогрев».
   const rows = getDB().prepare(
-    `SELECT DISTINCT project_id FROM code_map_docs WHERE embed_hash IS NULL OR embed_hash != text_hash`
+    `SELECT project_id, COUNT(*) c FROM code_map_docs
+     WHERE tier > 0 AND (embed_hash IS NULL OR embed_hash != text_hash)
+     GROUP BY project_id ORDER BY c ASC`
   ).all() as { project_id: string }[]
   return rows.map(r => r.project_id)
 }
@@ -416,13 +449,18 @@ export function saveDocEmbeddings(
 }
 
 /** Счётчики для статуса/прогресса: всего документов и с актуальным вектором. */
-export function countDocs(projectId: string): { total: number; indexed: number } {
+export function countDocs(projectId: string): { total: number; indexed: number; lexicalOnly: number } {
   const db = getDB()
-  const total = (db.prepare(`SELECT COUNT(*) c FROM code_map_docs WHERE project_id = ?`).get(projectId) as { c: number }).c
-  const indexed = (db.prepare(
-    `SELECT COUNT(*) c FROM code_map_docs WHERE project_id = ? AND embed_hash = text_hash AND embedding IS NOT NULL`
+  const total = (db.prepare(
+    `SELECT COUNT(*) c FROM code_map_docs WHERE project_id = ? AND tier > 0`
   ).get(projectId) as { c: number }).c
-  return { total, indexed }
+  const indexed = (db.prepare(
+    `SELECT COUNT(*) c FROM code_map_docs WHERE project_id = ? AND tier > 0 AND embed_hash = text_hash AND embedding IS NOT NULL`
+  ).get(projectId) as { c: number }).c
+  const lexicalOnly = (db.prepare(
+    `SELECT COUNT(*) c FROM code_map_docs WHERE project_id = ? AND tier = 0`
+  ).get(projectId) as { c: number }).c
+  return { total, indexed, lexicalOnly }
 }
 
 /** Векторы проекта постранично (матрица для cosine строится лениво). */
@@ -510,5 +548,11 @@ export function refreshCounts(projectId: string): void {
   const nodes = (db.prepare(`SELECT COUNT(*) c FROM code_map_nodes WHERE project_id = ?`).get(projectId) as { c: number }).c
   const edges = (db.prepare(`SELECT COUNT(*) c FROM code_map_edges WHERE project_id = ?`).get(projectId) as { c: number }).c
   const files = (db.prepare(`SELECT COUNT(*) c FROM code_map_files WHERE project_id = ?`).get(projectId) as { c: number }).c
-  setStatus(projectId, { totalNodes: nodes, totalEdges: edges, indexedFiles: files })
+  const patch: Partial<Omit<CodeMapStatus, 'projectId'>> = { totalNodes: nodes, totalEdges: edges, indexedFiles: files }
+  // В готовой карте totalFiles — не «сколько предстоит разобрать» (снимок полного
+  // скана), а фактическое число файлов. Инкремент добавляет/удаляет файлы, и
+  // колонка «Файлы» показывала рассинхрон (1093/1078, 789/793).
+  const state = getStatus(projectId).state
+  if (state !== 'building') patch.totalFiles = files
+  setStatus(projectId, patch)
 }

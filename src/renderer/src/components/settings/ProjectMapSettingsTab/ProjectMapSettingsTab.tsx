@@ -187,10 +187,14 @@ export default function ProjectMapSettingsTab() {
           {stats.map(s => {
             const sem = semanticLive[s.projectId] ?? s.semantic
             const semLabel = SEMANTIC_LABELS[sem?.state] ?? sem?.state ?? '—'
+            // Отсутствующая папка проекта — не «ошибка карты»: подписываем явно,
+            // иначе выглядит как сломанный граф (было: две строки «ошибка»).
+            const missingDir = s.state === 'error' && (s.error ?? '').includes('не найдена')
+            const stateLabel = missingDir ? 'нет папки' : (STATE_LABELS[s.state] ?? s.state)
             return (
               <div key={s.projectId} className="pmap-settings-row">
                 <span className="pmap-settings-name" title={s.workdir}>{s.name}</span>
-                <span className={`pmap-settings-state pmap-settings-state--${s.state}`}>{STATE_LABELS[s.state] ?? s.state}</span>
+                <span className={`pmap-settings-state pmap-settings-state--${s.state}`} title={s.error ?? undefined}>{stateLabel}</span>
                 <span className="pmap-settings-num">{s.indexedFiles}/{s.totalFiles}</span>
                 <span className="pmap-settings-num">{s.totalNodes}</span>
                 <span className="pmap-settings-num">{s.totalEdges}</span>

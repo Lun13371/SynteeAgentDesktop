@@ -442,11 +442,20 @@ export class ToolDispatcher {
         )
       case 'project_map': {
         const args = {
-          action: resolvedArgs.action as 'search' | 'semantic' | 'callers' | 'callees' | 'file' | 'overview',
+          action: resolvedArgs.action as
+            | 'search' | 'semantic' | 'callers' | 'callees' | 'file' | 'overview'
+            | 'god' | 'communities' | 'path' | 'explain' | 'affected',
           query: resolvedArgs.query as string | undefined,
+          // `to` — второй узел для action=path; depth/relations — обход;
+          // budget — потолок ответа в токенах. Раньше белый список их терял,
+          // и path всегда падал с «requires query and to».
+          to: resolvedArgs.to as string | undefined,
           nodeId: resolvedArgs.nodeId as string | undefined,
           path: resolvedArgs.path as string | undefined,
           limit: resolvedArgs.limit as number | undefined,
+          depth: resolvedArgs.depth as number | undefined,
+          relations: resolvedArgs.relations as Array<'calls' | 'references' | 'imports'> | undefined,
+          budget: resolvedArgs.budget as number | undefined,
         }
         // Worker-поток: БД там не инициализирована — round-trip в main (как
         // recall_memory). В main-контекстах (chatSendEngine) колбэка нет —

@@ -81,6 +81,7 @@ function node(id, name, kind, opts = {}) {
     name, kind, parentName: opts.parentName ?? null,
     lineStart: opts.line ?? 1, lineEnd: opts.line ?? 10,
     signature: opts.signature ?? '', exported: opts.exported ?? false,
+    doc: opts.doc ?? null,
   }
 }
 
@@ -93,7 +94,7 @@ test('splitIdentifier — camelCase, snake_case, ABBR и короткие ток
   assert.deepEqual(api.splitIdentifier('a_b'), [], 'однобуквенные токены отфильтрованы')
 })
 
-test('buildDocsForFile — tier 1: файл + exported, tier 2: приватные, package исключён', () => {
+test('buildDocsForFile — tier 1: файл + exported; приватный без docstring → tier 0 (не эмбеддится), package исключён', () => {
   const api = loadMapSemantic()
   const fileNode = node('src/a.ts', 'a.ts', 'file', { filePath: 'src/a.ts' })
   const exported = node('src/a.ts#validateAccess', 'validateAccess', 'function', {
@@ -106,7 +107,10 @@ test('buildDocsForFile — tier 1: файл + exported, tier 2: приватны
   const byId = new Map(docs.map(d => [d.nodeId, d]))
   assert.equal(byId.get('src/a.ts').tier, 1)
   assert.equal(byId.get('src/a.ts#validateAccess').tier, 1)
-  assert.equal(byId.get('src/a.ts#helper').tier, 2)
+  // Внутренняя функция без docstring: текст = пересказ имени, E5 не даёт прироста
+  // над lexical — вектор не считаем (tier 0), но документ остаётся для lexical.
+  assert.equal(byId.get('src/a.ts#helper').tier, 0)
+  assert.ok(byId.has('src/a.ts#helper'), 'tier 0 остаётся в lexical-индексе')
   assert.ok(!byId.has('pkg:react'), 'package-узел не даёт документа')
   assert.ok(byId.get('src/a.ts#validateAccess').text.includes('validateAccess'))
   assert.ok(byId.get('src/a.ts#validateAccess').text.includes('src/a.ts'), 'путь в тексте документа')
@@ -115,6 +119,17 @@ test('buildDocsForFile — tier 1: файл + exported, tier 2: приватны
   const again = api.buildDocsForFile([fileNode, pkg, exported, hidden])
   assert.equal(again.find(d => d.nodeId === 'src/a.ts#validateAccess').textHash,
     byId.get('src/a.ts#validateAccess').textHash)
+})
+
+test('buildDocsForFile — приватный символ с docstring → tier 2', () => {
+  const api = loadMapSemantic()
+  const fileNode = node('src/a.ts', 'a.ts', 'file', { filePath: 'src/a.ts' })
+  const documented = node('src/a.ts#helper', 'helper', 'function', {
+    doc: 'Нормализует телефон в E.164 и отбрасывает мусорные символы из ввода',
+  })
+  const docs = api.buildDocsForFile([fileNode, documented])
+  const byId = new Map(docs.map(d => [d.nodeId, d]))
+  assert.equal(byId.get('src/a.ts#helper').tier, 2, 'docstring делает внутренний символ осмысленным для E5')
 })
 
 test('buildDocsForFile — python top-level функции в tier 1 (нет export-ключевика)', () => {
@@ -343,6 +358,13 @@ test('тул semantic end-to-end: real store, lexical-деградация, св
   const tool = transpile('src/core/tools/projectMap.ts', {
     '../projectMap/mapStore': store,
     '../projectMap/mapSemantic': mapSemantic,
+    '../projectMap/mapAnalytics': {
+      godNodes: () => [],
+      computeCommunities: () => ({ communities: [], assignment: new Map() }),
+      findPath: () => ({ found: false, hops: [], confidence: 0, weakest: null }),
+      affectedNodes: () => ({ root: null, results: [], byFile: [] }),
+      resolveAnalyticsNode: () => null,
+    },
     '../logger': { log: () => {} },
   })
   const res = await tool.projectMapQuery({ action: 'semantic', query: 'validate access permissions' }, 'p1')

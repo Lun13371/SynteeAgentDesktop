@@ -77,15 +77,19 @@ export const SEARCH_TOOL_SCHEMAS = [
     type: 'function' as const,
     function: {
       name: 'project_map',
-      description: 'Navigate the project code map (files, functions, classes, variables, and who-calls-whom) WITHOUT reading whole files — saves context. Built in the background from tree-sitter. Actions: "overview" (stats + most-imported files); "search" (find symbols by exact/partial NAME, shows callers/callees of the top match); "semantic" (find code by MEANING with a natural-language query — works in any language, e.g. "password validation logic" or "сжатие истории" — even when no symbol name matches; ranked by local embedding model + graph relations); "callers" (who calls a symbol); "callees" (what a symbol calls); "file" (a file\'s symbols + imports + imported-by). Identify a symbol by "query" (name) or "nodeId"; identify a file by "path" (relative). Edge precision is marked: no mark = resolved, "~" = heuristic, "?" = ambiguous (several candidates). Prefer "semantic" when the concept matters but you don\'t know the identifier; prefer "search" when you do. Prefer this over search_code for structural questions (dependencies, call chains, impact of a change). If the map is still building, fall back to search_code/read_file.',
+      description: 'Navigate the project code map (files, functions, classes, variables, who-calls-whom, subsystems, impact) WITHOUT reading whole files — saves context. Built in the background from tree-sitter. Actions: "overview" (stats + most-imported files + architecture hubs); "search" (find symbols by exact/partial NAME, shows callers/callees of the top match); "semantic" (find code by MEANING with a natural-language query — works in any language, e.g. "password validation logic" or "сжатие истории" — even when no symbol name matches; ranked by local embedding model + graph relations); "callers" (who calls a symbol); "callees" (what a symbol calls); "file" (a file\'s symbols + imports + imported-by); "god" (core of the architecture by degree centrality); "communities" (subsystems/clusters); "path" (how A connects to B, with weakest-edge confidence — needs query+to); "explain" (symbol + doc + subsystem + neighbours); "affected" (what breaks if X changes: reverse reachability over calls/references/imports). Identify a symbol by "query" (name) or "nodeId"; identify a file by "path" (relative). Edge precision is marked: no mark = resolved, "~" = heuristic, "?" = ambiguous (several candidates). Prefer "semantic" when the concept matters but you don\'t know the identifier; prefer "search" when you do. Prefer this over search_code for structural questions (dependencies, call chains, impact of a change). If the map is still building, fall back to search_code/read_file.',
       parameters: {
         type: 'object',
         properties: {
-          action: { type: 'string', enum: ['overview', 'search', 'semantic', 'callers', 'callees', 'file'], description: 'What to query.' },
-          query: { type: 'string', description: 'For search: symbol name. For semantic: natural-language description of what to find. For callers/callees: symbol name or nodeId.' },
+          action: { type: 'string', enum: ['overview', 'search', 'semantic', 'callers', 'callees', 'file', 'god', 'communities', 'path', 'explain', 'affected'], description: 'What to query.' },
+          query: { type: 'string', description: 'For search: symbol name. For semantic: natural-language description of what to find. For callers/callees/explain/affected: symbol name or nodeId. For path: the FROM node.' },
+          to: { type: 'string', description: 'For action=path: the TO node (name, nodeId or file path).' },
           nodeId: { type: 'string', description: 'Exact node id (from a previous project_map result), alternative to query.' },
-          path: { type: 'string', description: 'Relative file path (for action=file).' },
+          path: { type: 'string', description: 'Relative file path (for action=file, or action=affected to impact-check a whole file).' },
           limit: { type: 'number', description: 'Max rows (default 25, max 100).' },
+          depth: { type: 'number', description: 'For path/affected: max hops (path default 6, affected default 3).' },
+          relations: { type: 'array', items: { type: 'string', enum: ['calls', 'references', 'imports'] }, description: 'Restrict edge types for path/affected (default: all three).' },
+          budget: { type: 'number', description: 'Response budget in tokens (default 2000, ~3.5 chars/token). Raise it for big impact lists.' },
         },
         required: ['action'],
       },

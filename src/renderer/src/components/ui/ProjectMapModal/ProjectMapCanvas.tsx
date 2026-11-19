@@ -28,6 +28,8 @@ export const KIND_COLORS: Record<string, string> = {
   constructor: '#eab308',
   macro: '#d946ef',
   definition: '#94a3b8',
+  /** Секция markdown/ADR — «где это описано». */
+  section: '#0891b2',
 }
 
 interface Props {

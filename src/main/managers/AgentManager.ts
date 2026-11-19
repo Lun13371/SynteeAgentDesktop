@@ -1071,11 +1071,17 @@ resolve({ summary: record.summary, error: record.error })
               try {
                 const result = await projectMapQuery(
                   {
-                    action: msg.action as 'search' | 'semantic' | 'callers' | 'callees' | 'file' | 'overview',
+                    action: msg.action as
+                      | 'search' | 'semantic' | 'callers' | 'callees' | 'file' | 'overview'
+                      | 'god' | 'communities' | 'path' | 'explain' | 'affected',
                     query: msg.query as string | undefined,
+                    to: msg.to as string | undefined,
                     path: msg.path as string | undefined,
                     nodeId: msg.nodeId as string | undefined,
                     limit: msg.limit as number | undefined,
+                    depth: msg.depth as number | undefined,
+                    relations: msg.relations as Array<'calls' | 'references' | 'imports'> | undefined,
+                    budget: msg.budget as number | undefined,
                   },
                   (msg.projectId as string | undefined) ?? undefined,
                 )

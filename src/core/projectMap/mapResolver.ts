@@ -237,6 +237,71 @@ export function resolveImportSource(
     return found ? { kind: 'file', path: found } : { kind: 'unresolved' }
   }
 
+  // ── Swift ──
+  if (lang === 'swift') {
+    // `import Foundation` — модуль (system или SwiftPM-таргет); `import class A.B`.
+    const mod = src.replace(/^@testable\s+/, '').replace(/^(?:class|struct|enum|protocol|func|var|let|typealias)\s+/, '').split('.')[0].trim()
+    if (!mod) return { kind: 'unresolved' }
+    const matches = [...index.files].filter(f =>
+      f === mod + '.swift' || f.endsWith('/' + mod + '.swift') || f.startsWith(mod + '/') || f.includes('/' + mod + '/'))
+    if (matches.length === 1) return { kind: 'file', path: matches[0] }
+    return { kind: 'package', name: mod }
+  }
+
+  // ── Kotlin / Scala (JVM: package-путь → файл) ──
+  if (lang === 'kotlin' || lang === 'scala') {
+    const ext = lang === 'kotlin' ? '.kt' : '.scala'
+    const rel = src.replace(/\.(kt|kts|scala)$/, '').replace(/\./g, '/')
+    const last = rel.split('/').pop() ?? rel
+    const found = lookupFile(index, [
+      rel + ext,
+      posix.join('src/main/kotlin', rel) + ext,
+      posix.join('src/main/scala', rel) + ext,
+      posix.join('src', rel) + ext,
+    ])
+    if (found) return { kind: 'file', path: found }
+    // Верхнеуровневые функции/объекты живут в одноимённых файлах.
+    const matches = [...index.files].filter(f => f.endsWith('/' + last + ext) || f === last + ext)
+    if (matches.length === 1) return { kind: 'file', path: matches[0] }
+    return { kind: 'package', name: src.split('.').slice(0, 2).join('.') }
+  }
+
+  // ── Dart ──
+  if (lang === 'dart') {
+    const clean = src.replace(/^["']|["']$/g, '')
+    if (clean.startsWith('package:') || clean.startsWith('dart:')) {
+      const pkgPath = clean.replace(/^package:/, '')
+      const local = lookupFile(index, [posix.join('lib', pkgPath), pkgPath, posix.join('lib/src', pkgPath)])
+      if (local) return { kind: 'file', path: local }
+      return { kind: 'package', name: clean.replace(/^package:/, '').split('/')[0] }
+    }
+    if (clean.startsWith('.')) {
+      const base = posix.join(dir, clean)
+      const found = lookupFile(index, [base, base + '.dart'])
+      return found ? { kind: 'file', path: found } : { kind: 'unresolved' }
+    }
+    return { kind: 'package', name: clean.split('/')[0] }
+  }
+
+  // ── Elixir ──
+  if (lang === 'elixir') {
+    const mod = src.split('.').pop() ?? src
+    const snake = mod.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase()
+    const matches = [...index.files].filter(f =>
+      f.endsWith('/' + snake + '.ex') || f.endsWith('/' + snake + '.exs') ||
+      f.endsWith('/' + mod + '.ex') || f === snake + '.ex')
+    if (matches.length === 1) return { kind: 'file', path: matches[0] }
+    return { kind: 'package', name: src.split('.').slice(0, 2).join('.') }
+  }
+
+  // ── Lua ──
+  if (lang === 'lua') {
+    const clean = src.replace(/^["']|["']$/g, '').replace(/\./g, '/')
+    const found = lookupFile(index, [clean + '.lua', posix.join(dir, clean) + '.lua', clean])
+    if (found) return { kind: 'file', path: found }
+    return { kind: 'package', name: clean.split('/')[0] }
+  }
+
   // ── Прочее (json/yaml/lexical) ──
   const generic = lookupFile(index, [posix.join(dir, src), src])
   return generic ? { kind: 'file', path: generic } : { kind: 'package', name: packageName(src) }
@@ -353,6 +418,11 @@ for (const ext of ['.cs']) EXT_FAMILY[ext] = 'csharp'
 for (const ext of ['.rb']) EXT_FAMILY[ext] = 'ruby'
 for (const ext of ['.php']) EXT_FAMILY[ext] = 'php'
 for (const ext of ['.sh', '.bash']) EXT_FAMILY[ext] = 'bash'
+for (const ext of ['.swift']) EXT_FAMILY[ext] = 'swift'
+for (const ext of ['.kt', '.kts', '.scala']) EXT_FAMILY[ext] = 'jvm'
+for (const ext of ['.dart']) EXT_FAMILY[ext] = 'dart'
+for (const ext of ['.ex', '.exs']) EXT_FAMILY[ext] = 'elixir'
+for (const ext of ['.lua']) EXT_FAMILY[ext] = 'lua'
 
 function sameLanguageFamily(a: string, b: string): boolean {
   const fa = EXT_FAMILY[a.toLowerCase()]
@@ -490,6 +560,71 @@ function normalizeKind(kind: string): CodeMapNode['kind'] {
   return (known.includes(kind as CodeMapNode['kind']) ? kind : 'definition') as CodeMapNode['kind']
 }
 
+/**
+ * Префикс объявления, означающий «наружу»: export (TS/JS), pub (Rust),
+ * public/protected (C#/Java/Kotlin/Scala), final/abstract/static перед объявлением
+ * с модификатором доступа проверяются окном строк ниже.
+ */
+const EXPORT_PREFIX_RE = /^\s*(?:export\b|pub\b|public\b|protected\b)/
+
+/**
+ * Языки, где отсутствие модификатора доступа = публичный (Kotlin, Swift, Scala,
+ * Dart, Ruby, Elixir, Lua, PHP). Для них проверяем НЕ префикс публичности, а
+ * префикс приватности. Иначе все символы считались приватными: у Android-карты
+ * выходило tier>0 = 0 при 655 документов, и семантике было нечего эмбеддить.
+ */
+const DEFAULT_PUBLIC_LANGS = new Set(['kotlin', 'scala', 'swift', 'dart', 'ruby', 'elixir', 'lua', 'php'])
+
+/** Приватность «по префиксу строки» для языков с публичностью по умолчанию. */
+const PRIVATE_PREFIX_BY_LANG: Record<string, RegExp> = {
+  kotlin: /^\s*(?:private|internal|protected)\b/,
+  scala: /^\s*(?:private|protected)\b/,
+  swift: /^\s*(?:private|fileprivate|internal)\b/,
+  ruby: /^\s*(?:private|protected)\b/,
+  elixir: /^\s*defp\b/,
+  lua: /^\s*local\b/,
+  dart: /^\s*_/,
+  php: /^\s*(?:private|protected)\b/,
+}
+
+/**
+ * Проставить `exported` по исходнику. Signature из sidecar приходит БЕЗ
+ * модификатора (`function foo() {`), поэтому `^export` по сигнатуре не работал
+ * никогда — все узлы были private, ломая tier-1 семантики и список экспортов
+ * файла. Смотрим 3 строки вверх от объявления (декораторы, `export default`
+ * отдельной строкой) + языковые правила:
+ *  - Go — заглавная буква;
+ *  - Python — не `_` и не вложенный;
+ *  - Kotlin/Scala/Swift/Dart/Ruby/Elixir/Lua/PHP — публичные по умолчанию,
+ *    приватность только через явный модификатор.
+ */
+export function markExported(nodes: CodeMapNode[], content: string, language: string | null): void {
+  if (nodes.length === 0) return
+  const lines = content.split('\n')
+  const lang = language ?? ''
+  const privateRe = PRIVATE_PREFIX_BY_LANG[lang]
+  const defaultPublic = DEFAULT_PUBLIC_LANGS.has(lang)
+  for (const n of nodes) {
+    if (n.kind === 'file' || n.kind === 'package' || n.kind === 'section') continue
+    const start = Math.max(0, (n.lineStart || 1) - 1)
+    let exported = false
+    let explicitlyPrivate = false
+    for (let i = start; i >= Math.max(0, start - 2); i--) {
+      const line = (lines[i] ?? '').trimStart()
+      if (EXPORT_PREFIX_RE.test(line)) { exported = true; break }
+      // Декораторы/атрибуты пропускаем, не считая их модификаторами доступа.
+      if (line.startsWith('@') || line.startsWith('[')) continue
+      if (privateRe && privateRe.test(line)) { explicitlyPrivate = true; break }
+    }
+    if (!exported && !explicitlyPrivate) {
+      if (lang === 'go') exported = /^[A-Z]/.test(n.name)
+      else if (lang === 'python') exported = !n.name.startsWith('_') && !n.parentName
+      else if (defaultPublic) exported = !n.name.startsWith('_')
+    }
+    n.exported = exported
+  }
+}
+
 /** contains-рёбра: файл → символ, контейнер → вложенный символ. */
 export function containsEdges(projectId: string, filePath: string, nodes: CodeMapNode[]): CodeMapEdge[] {
   const edges: CodeMapEdge[] = []
@@ -512,8 +647,131 @@ export function containsEdges(projectId: string, filePath: string, nodes: CodeMa
   return edges
 }
 
-/** Загрузить tsconfig paths aliases (упрощённо, без JSONC-комментариев). */
-export function loadTsconfigAliases(workdir: string, readFile: (p: string) => string | null): Map<string, string> {
+// ─── Документы (markdown/ADR) ────────────────────────────────────────────────
+
+export interface DocSection {
+  title: string
+  level: number
+  lineStart: number
+  lineEnd: number
+  /** Текст секции без строки заголовка. */
+  text: string
+}
+
+/**
+ * Секции markdown по заголовкам `# … ######`. Даёт узлы «где это описано»:
+ * README/ADR/docs в карте кода отсутствовали полностью.
+ */
+export function parseMarkdownSections(content: string): DocSection[] {
+  const lines = content.split('\n')
+  const out: DocSection[] = []
+  let cur: { title: string; level: number; lineStart: number; body: string[] } | null = null
+  const flush = (endLine: number): void => {
+    if (!cur) return
+    out.push({ title: cur.title, level: cur.level, lineStart: cur.lineStart, lineEnd: endLine, text: cur.body.join('\n') })
+    cur = null
+  }
+  for (let i = 0; i < lines.length; i++) {
+    const m = /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(lines[i])
+    if (m) {
+      flush(i)
+      cur = { title: m[2].trim(), level: m[1].length, lineStart: i + 1, body: [] }
+      continue
+    }
+    if (cur) cur.body.push(lines[i])
+  }
+  flush(lines.length)
+  return out.filter(s => s.title.length > 0)
+}
+
+/**
+ * Узлы markdown-файла: сам файл + по узлу на секцию.
+ * id секции детерминирован по заголовку и строке (одинаковые заголовки
+ * «Examples» в разных местах не схлопываются).
+ */
+export function markdownNodes(projectId: string, filePath: string, content: string): CodeMapNode[] {
+  const lineCount = content.split('\n').length
+  const nodes: CodeMapNode[] = [{
+    id: fileNodeId(filePath),
+    projectId,
+    filePath,
+    name: posix.basename(filePath),
+    kind: 'file',
+    parentName: null,
+    lineStart: 1,
+    lineEnd: lineCount,
+    signature: '',
+    exported: true,
+    doc: null,
+  }]
+  const seen = new Set<string>()
+  for (const s of parseMarkdownSections(content)) {
+    const slug = s.title.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-|-$/g, '').slice(0, 60) || 'section'
+    let id = symbolNodeId(filePath, `${slug}-${s.lineStart}`)
+    if (seen.has(id)) id = `${id}-${seen.size}`
+    seen.add(id)
+    nodes.push({
+      id,
+      projectId,
+      filePath,
+      name: s.title.slice(0, 120),
+      kind: 'section',
+      parentName: null,
+      lineStart: s.lineStart,
+      lineEnd: s.lineEnd,
+      signature: `#${'#'.repeat(Math.max(0, s.level - 1))} ${s.title}`.slice(0, 200),
+      exported: true,
+      doc: s.text.trim().slice(0, 2000) || null,
+    })
+  }
+  return nodes
+}
+
+/**
+ * `references` секций доков на символы проекта: имя символа (≥4 символа)
+ * встречается в тексте секции. Precision heuristic — упоминание ≠ вызов.
+ * Ограничение по числу рёбер на секцию, чтобы README не тянул весь проект.
+ */
+export function docReferenceEdges(
+  index: ProjectIndex,
+  filePath: string,
+  nodes: CodeMapNode[],
+  maxPerSection = 8,
+): CodeMapEdge[] {
+  const edges: CodeMapEdge[] = []
+  const sections = nodes.filter(n => n.kind === 'section')
+  if (sections.length === 0) return edges
+  // Кандидаты: имена, встречающиеся в проекте; короткие/общие отбрасываем.
+  const candidates = [...index.defsByName.keys()].filter(n => n.length >= 4 && n.length <= 60 && !n.includes(' '))
+  for (const s of sections) {
+    const text = (s.doc ?? '').replace(/`/g, '')
+    if (!text) continue
+    let found = 0
+    for (const name of candidates) {
+      if (found >= maxPerSection) break
+      if (!text.includes(name)) continue
+      const defs = (index.defsByName.get(name) ?? []).filter(d => d.kind !== 'file' && d.kind !== 'package')
+      if (defs.length === 0) continue
+      // Одно ребро на имя: предпочитаем exported-определение.
+      const target = defs.find(d => d.exported) ?? defs[0]
+      const precision: CodeEdgePrecision = defs.length === 1 ? 'heuristic' : 'ambiguous'
+      edges.push({
+        id: edgeId(s.id, 'references', target.id, s.lineStart),
+        projectId: index.projectId,
+        fromNode: s.id,
+        toNode: target.id,
+        type: 'references',
+        precision,
+        filePath,
+        line: s.lineStart,
+      })
+      found++
+    }
+  }
+  return edges
+}
+
+/** Загрузить tsconfig paths aliases (упрощённо, без JSONC-комментариев). */export function loadTsconfigAliases(workdir: string, readFile: (p: string) => string | null): Map<string, string> {
   const aliases = new Map<string, string>()
   for (const name of ['tsconfig.json', 'tsconfig.web.json', 'tsconfig.node.json', 'jsconfig.json']) {
     const raw = readFile(path.join(workdir, name))

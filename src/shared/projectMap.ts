@@ -22,6 +22,8 @@ export type CodeNodeKind =
   | 'constructor'
   | 'macro'
   | 'definition'
+  /** Секция markdown-документа (README/ADR/доки) — «где это описано». */
+  | 'section'
 
 /** Тип ребра. */
 export type CodeEdgeType = 'contains' | 'imports' | 'calls' | 'references'
@@ -139,8 +141,13 @@ export interface CodeMapDocInfo {
   nodeId: string
   filePath: string
   kind: CodeNodeKind
-  /** 1 — файлы + exported (индексируются первыми), 2 — остальные символы. */
-  tier: 1 | 2
+  /**
+   * 0 — только lexical-поиск (текст хранится, вектор не считается: нет смысла
+   *     эмбеддить символ без docstring и без экспорта или файл без экспортов);
+   * 1 — публичный API (файлы с экспортами, exported-символы), эмбеддится первым;
+   * 2 — внутренние символы с реальным docstring.
+   */
+  tier: 0 | 1 | 2
   text: string
   textHash: string
 }

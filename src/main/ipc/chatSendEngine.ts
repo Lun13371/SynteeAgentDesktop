@@ -2258,11 +2258,19 @@ async function runChatSendScoped(
             try {
               const result = await projectMapQuery(
                 {
-                  action: msg.action as 'search' | 'semantic' | 'callers' | 'callees' | 'file' | 'overview',
+                  action: msg.action as
+                    | 'search' | 'semantic' | 'callers' | 'callees' | 'file' | 'overview'
+                    | 'god' | 'communities' | 'path' | 'explain' | 'affected',
                   query: msg.query as string | undefined,
+                  // Второй узел для action=path + обход/бюджет. Без этих полей
+                  // `path` всегда отвечал «requires query and to», хотя агент их присылал.
+                  to: msg.to as string | undefined,
                   path: msg.path as string | undefined,
                   nodeId: msg.nodeId as string | undefined,
                   limit: msg.limit as number | undefined,
+                  depth: msg.depth as number | undefined,
+                  relations: msg.relations as Array<'calls' | 'references' | 'imports'> | undefined,
+                  budget: msg.budget as number | undefined,
                 },
                 (msg.projectId as string | undefined) ?? undefined,
               )

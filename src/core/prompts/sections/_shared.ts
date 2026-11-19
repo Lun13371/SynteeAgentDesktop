@@ -34,6 +34,20 @@ export interface OneShotSkill {
   instructions: string
 }
 
+/**
+ * Состояние карты кода проекта для промпта. Агент видит, что карта построена,
+ * и получает правило «структурные вопросы — сначала project_map».
+ */
+export interface ProjectMapPromptInfo {
+  /** ready | building | idle | error */
+  state: string
+  files: number
+  nodes: number
+  edges: number
+  /** Сколько файлов ждёт разбора (0 — карта актуальна). */
+  pendingFiles?: number
+}
+
 /** Code-mode block params. */
 export interface CodeModeBlockParams {
   workdir?: string

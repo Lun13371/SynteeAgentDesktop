@@ -13,6 +13,7 @@ import { buildProjectGraph } from '../../core/memory/graphBuilder'
 import { getGraphStats } from '../../core/memory/graphStore'
 import { buildSystemPrompt } from '../../core/prompts/buildSystemPrompt'
 import type { ProtectedVarPromptInfo } from '../../core/prompts/buildSystemPrompt'
+import { getStatus as getProjectMapStatus } from '../../core/projectMap/mapStore'
 import { readProjectContextFiles } from '../../core/prompts/projectInstructions'
 import { resolveActive } from '../services/protectedVarsStore'
 import { getSkillManager } from '../../core/skills/skillManager'
@@ -179,6 +180,21 @@ export async function getSystemPrompt(store: Store, chatId?: string, isIncognito
       }
     }
 
+    // Project map (граф кода) — агент знает, что структурный граф доступен,
+    // и получает правило «структурные вопросы — сначала project_map».
+    const projectMapInfo = withRetrySync('projectMap', () => {
+      if (!promptProjectId) return undefined
+      const st = getProjectMapStatus(promptProjectId)
+      if (st.totalNodes === 0) return undefined
+      return {
+        state: st.state,
+        files: st.indexedFiles,
+        nodes: st.totalNodes,
+        edges: st.totalEdges,
+        pendingFiles: Math.max(0, st.totalFiles - st.indexedFiles),
+      }
+    }, undefined)
+
     // Absolute path to the global skills folder — for the install reference in the prompt.
     let globalSkillsDir = ''
     try { globalSkillsDir = path.join(app.getPath('userData'), 'skills') } catch { /* app may be unavailable */ }
@@ -237,7 +253,7 @@ export async function getSystemPrompt(store: Store, chatId?: string, isIncognito
         { key: 'tools', label: 'История инструментов', enabled: sources.tools, detail: 'Прошлые tool calls и результаты. Доступность инструментов текущего запуска не меняется.', characters: 0 },
       ]
     }
-    let systemPrompt = perfPhase('chat.system_prompt.build', () => buildSystemPrompt({ userName, memoryContext: sources.memory ? memoryContext : '', memoryStats: sources.memory ? memoryStats : undefined, graphStats: sources.memory ? graphStats : undefined, workingMemory: sources.memory ? mergedWorkingMemory : '', customSystemPrompt: sources.instructions ? customSystemPrompt : undefined, workdir, projectContext: sources.projectFiles ? projectContext : undefined, projectInstructions: includedFiles, activeSkills, activePlugins, oneShotSkill, globalSkillsDir, globalPluginsDir, browserMode: promptBrowserMode, imageMode: promptImageMode, maxParallelSubAgents: (store.get('agentSettings', DEFAULT_AGENT_SETTINGS) as AgentSettings)?.maxParallelSubAgents, pluginContext: sources.projectFiles ? pluginContext : [], pluginSections: sources.instructions ? pluginSections : [], protectedVars }))
+    let systemPrompt = perfPhase('chat.system_prompt.build', () => buildSystemPrompt({ userName, memoryContext: sources.memory ? memoryContext : '', memoryStats: sources.memory ? memoryStats : undefined, graphStats: sources.memory ? graphStats : undefined, projectMap: projectMapInfo, workingMemory: sources.memory ? mergedWorkingMemory : '', customSystemPrompt: sources.instructions ? customSystemPrompt : undefined, workdir, projectContext: sources.projectFiles ? projectContext : undefined, projectInstructions: includedFiles, activeSkills, activePlugins, oneShotSkill, globalSkillsDir, globalPluginsDir, browserMode: promptBrowserMode, imageMode: promptImageMode, maxParallelSubAgents: (store.get('agentSettings', DEFAULT_AGENT_SETTINGS) as AgentSettings)?.maxParallelSubAgents, pluginContext: sources.projectFiles ? pluginContext : [], pluginSections: sources.instructions ? pluginSections : [], protectedVars }))
 
     // Хук prompt:before-build — последняя точка вмешательства плагинов
     // в system prompt (modify → новый текст).

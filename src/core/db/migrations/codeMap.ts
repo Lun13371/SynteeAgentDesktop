@@ -85,6 +85,16 @@ export function runCodeMapSchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_cme_project_type ON code_map_edges(project_id, type);
     CREATE INDEX IF NOT EXISTS idx_cmd_project_file ON code_map_docs(project_id, file_path);
     CREATE INDEX IF NOT EXISTS idx_cmd_project_tier ON code_map_docs(project_id, tier);
+
+    -- Служебные метки проекта (версия схемы парсинга/документов). Смена версии
+    -- → одноразовая полная пересборка: иначе в БД остаются узлы/документы,
+    -- посчитанные старыми правилами (например, exported=0 у всех символов).
+    CREATE TABLE IF NOT EXISTS code_map_meta (
+      project_id TEXT NOT NULL,
+      key        TEXT NOT NULL,
+      value      TEXT NOT NULL,
+      PRIMARY KEY (project_id, key)
+    );
   `)
 
   // Старые БД без doc-колонки (docstring/декораторы для семантики) — идемпотентно.
