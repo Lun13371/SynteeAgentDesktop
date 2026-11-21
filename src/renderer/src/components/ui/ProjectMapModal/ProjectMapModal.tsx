@@ -10,8 +10,9 @@ import { AnimatePresence, motion } from 'framer-motion'
 import AppIcon from '../AppIcon/AppIcon'
 import ProjectMapCanvas, { KIND_COLORS } from './ProjectMapCanvas'
 import type { PhysicsNode, PhysicsLink } from '../../../pages/Memory/graph/graphPhysics'
-import type {
-  CodeMapGraph, CodeMapNode, CodeMapStatus, CodeNodeKind, CodeEdgePrecision,
+import {
+  codeMapPartialNote, isCodeMapPhaseTerminal,
+  type CodeMapGraph, type CodeMapNode, type CodeMapStatus, type CodeNodeKind, type CodeEdgePrecision,
 } from '../../../../../shared/projectMap'
 import { openFilePath } from '../../../utils/openFilePath'
 import './ProjectMapModal.css'
@@ -89,10 +90,13 @@ export default function ProjectMapModal({ open, onClose, projectId, projectName,
     void loadFiles()
     const unsub = window.syntee.projectMap.onProgress((p) => {
       if (p.projectId !== projectId) return
-      if (p.phase === 'ready') {
-        if (level === 'file' && selectedFile) void loadFile(selectedFile)
-        else void loadFiles()
-      }
+      // Терминальные фазы (ready/partial/error) — единственный момент, когда
+      // граф стоит перечитать: partial тоже несёт новые данные. На каждый файл
+      // (scanning/parsing/…) не перечитываем — это дорого.
+      if (!isCodeMapPhaseTerminal(p.phase)) return
+      if (p.phase === 'error') return
+      if (level === 'file' && selectedFile) void loadFile(selectedFile)
+      else void loadFiles()
     })
     return unsub
   }, [open, projectId, loadFiles, loadFile, level, selectedFile])
@@ -212,6 +216,7 @@ export default function ProjectMapModal({ open, onClose, projectId, projectName,
   if (!open) return null
 
   const stateLabel = status?.state === 'ready' ? 'готова'
+    : status?.state === 'partial' ? 'неполная'
     : status?.state === 'building' ? 'строится…'
     : status?.state === 'error' ? 'ошибка' : 'не построена'
 
@@ -237,7 +242,10 @@ export default function ProjectMapModal({ open, onClose, projectId, projectName,
               <AppIcon name="gitBranch" size="md" tone="accent" />
               <div>
                 <div className="pmap-title">Карта проекта</div>
-                <div className="pmap-subtitle">{projectName} · {stateLabel}{status ? ` · ${status.totalNodes} узлов, ${status.totalEdges} связей` : ''}</div>
+                <div
+                  className="pmap-subtitle"
+                  title={status?.state === 'partial' ? codeMapPartialNote(status) : undefined}
+                >{projectName} · {stateLabel}{status ? ` · ${status.totalNodes} узлов, ${status.totalEdges} связей` : ''}</div>
               </div>
             </div>
             <div className="pmap-header-actions">
@@ -291,7 +299,11 @@ export default function ProjectMapModal({ open, onClose, projectId, projectName,
               {loading && <div className="pmap-loading"><span className="pmap-spinner" /> Загрузка…</div>}
               {!loading && physicsNodes.length === 0 && (
                 <div className="pmap-empty">
-                  {status?.state === 'building' ? 'Карта строится в фоне…' : 'Нет данных. Нажмите «Пересобрать».'}
+                  {status?.state === 'building'
+                    ? 'Карта строится в фоне…'
+                    : status?.state === 'partial'
+                    ? codeMapPartialNote(status)
+                    : 'Нет данных. Нажмите «Пересобрать».'}
                 </div>
               )}
               {physicsNodes.length > 0 && (

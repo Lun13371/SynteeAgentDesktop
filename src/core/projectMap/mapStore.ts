@@ -119,6 +119,34 @@ export function replaceFile(
   tx()
 }
 
+/**
+ * Атомарно заменить ТОЛЬКО рёбра файла (узлы/запись файла не трогаются).
+ * Нужно инкрементальному перерезолвингу: узлы файла уже записаны, а связи
+ * приходится пересчитать после появления соседей в индексе.
+ *
+ * Одна транзакция: DELETE+INSERT не оставляют файл с частичным набором рёбер,
+ * а падение на вставке откатывает прежние рёбра целиком.
+ */
+export function replaceFileEdges(
+  projectId: string,
+  filePath: string,
+  edges: CodeMapEdge[],
+): void {
+  const db = getDB()
+  const del = db.prepare(`DELETE FROM code_map_edges WHERE project_id = ? AND file_path = ?`)
+  const ins = db.prepare(
+    `INSERT OR REPLACE INTO code_map_edges (id, project_id, from_node, to_node, type, precision, file_path, line)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  )
+  const tx = db.transaction(() => {
+    del.run(projectId, filePath)
+    for (const e of edges) {
+      ins.run(e.id, projectId, e.fromNode, e.toNode, e.type, e.precision, e.filePath, e.line)
+    }
+  })
+  tx()
+}
+
 /** Внешний пакет — глобальный узел проекта, не привязан к файлу. */
 export function ensurePackageNode(projectId: string, name: string): string {
   const id = packageNodeId(name)
@@ -277,6 +305,30 @@ export function getFileEdges(projectId: string, path: string, direction: 'out' |
   return rows.map(rowToEdge)
 }
 
+/**
+ * Файлы, зависящие от `filePath`: входящие imports/calls/references на ЛЮБОЙ
+ * узел файла (файловый узел = сам путь, плюс все символы файла).
+ *
+ * Возвращает distinct пути импортёров без самого файла. Индексы подобраны под
+ * запрос: idx_cmn_project_file закрывает подзапрос узлов файла,
+ * idx_cme_project_to — обе ветки `to_node` (равенство + IN), поэтому нет
+ * join'а edges×nodes и full scan'а.
+ */
+export function getDependentFilePaths(projectId: string, filePath: string): string[] {
+  const rows = getDB().prepare(
+    `SELECT DISTINCT e.file_path AS path
+     FROM code_map_edges e
+     WHERE e.project_id = ?
+       AND e.type IN ('imports','calls','references')
+       AND e.file_path != ?
+       AND e.file_path != ''
+       AND (e.to_node = ? OR e.to_node IN (
+         SELECT n.id FROM code_map_nodes n WHERE n.project_id = ? AND n.file_path = ?
+       ))`
+  ).all(projectId, filePath, fileNodeId(filePath), projectId, filePath) as { path: string }[]
+  return rows.map(r => r.path)
+}
+
 /** Обновить mtime/size файла без переразбора (случай «touch»: hash тот же). */
 export function updateFileStat(projectId: string, path: string, mtime: number, size: number): void {
   getDB().prepare(
@@ -290,6 +342,7 @@ export function listFiles(projectId: string): CodeMapFile[] {
   return rows.map(rowToFile)
 }
 
+/** Одна строка файла по PK (project_id, path) — индексный поиск без join'ов. */
 export function getFile(projectId: string, path: string): CodeMapFile | null {
   const row = getDB().prepare(`SELECT * FROM code_map_files WHERE project_id = ? AND path = ?`)
     .get(projectId, path) as Record<string, unknown> | undefined
@@ -320,6 +373,27 @@ export function getIndexedProjectIds(): string[] {
 // Документы выводятся из узлов карты и всегда пересчитываются заново; вектор —
 // единственное «состояние». Hash-гейт: upsert сохраняет вектор, если текст
 // не изменился; saveEmbeddings пишет вектор только под актуальный text_hash.
+
+/**
+ * Тег модели эмбеддингов — версия вектора, хранится в уже существующей колонке
+ * `model`. Смена тега объявляет все векторы несовместимыми: они не попадают ни
+ * в очередь поиска (listDocVectors), ни в счётчик indexed — worker переэмбеддит
+ * их и проштампует новым тегом. Отдельной миграции/колонки не нужно.
+ */
+export const EMBED_MODEL_TAG = 'e5'
+
+/**
+ * Вектор можно ПЕРЕНЕСТИ при переразборе: текст тот же и тег актуален.
+ *
+ * NULL-тег (строка из БД до появления тега) НЕ переносим. Раньше такой вектор
+ * сохранялся в расчёте на «очередь перештампует», но очередь (listPendingDocs)
+ * смотрит только на embed_hash, а у перенесённой строки он равен text_hash —
+ * вектор навсегда оставался невидимым и для поиска (model = tag), и для
+ * worker'а. Дроп вектора возвращает строку в очередь и штампует её тегом.
+ */
+function isPreservable(model: unknown): boolean {
+  return model === EMBED_MODEL_TAG
+}
 
 interface DocRow {
   nodeId: string
@@ -352,6 +426,7 @@ export function upsertDocs(projectId: string, docs: DocRow[]): void {
       const old = byId.get(d.nodeId)
       // Текст не изменился → переносим вектор как есть (hash-гейт).
       const keep = old && old.text_hash === d.textHash && old.embedding != null
+        && isPreservable(old.model)
       upsert.run(
         projectId, d.nodeId, d.filePath, d.kind, d.tier, d.text, d.textHash,
         keep ? old!.embedding : null,
@@ -364,12 +439,15 @@ export function upsertDocs(projectId: string, docs: DocRow[]): void {
   tx()
 }
 
-/** Документы файла: id → text_hash (для удаления осиротевших при sync). */
-export function listDocHashesByFile(projectId: string, filePath: string): Map<string, string> {
+/** Документы файла: id → text_hash/tier (для sync: осиротевшие и изменения). */
+export function listDocMetaByFile(
+  projectId: string,
+  filePath: string,
+): Map<string, { textHash: string; tier: number }> {
   const rows = getDB().prepare(
-    `SELECT node_id, text_hash FROM code_map_docs WHERE project_id = ? AND file_path = ?`
-  ).all(projectId, filePath) as { node_id: string; text_hash: string }[]
-  return new Map(rows.map(r => [r.node_id, r.text_hash]))
+    `SELECT node_id, text_hash, tier FROM code_map_docs WHERE project_id = ? AND file_path = ?`
+  ).all(projectId, filePath) as { node_id: string; text_hash: string; tier: number }[]
+  return new Map(rows.map(r => [r.node_id, { textHash: r.text_hash, tier: r.tier }]))
 }
 
 /** Удалить документы узлов (осиротевшие после переразбора/удаления файла). */
@@ -392,14 +470,37 @@ export function clearDocs(projectId: string): void {
   getDB().prepare(`DELETE FROM code_map_docs WHERE project_id = ?`).run(projectId)
 }
 
-/** Очередь worker'а: документы, чей вектор устарел или отсутствует. */
-export function listPendingDocs(projectId: string, limit: number): CodeMapDocInfo[] {
+/**
+ * Удалить документы, чьих узлов больше нет в графе (безопасная «полная чистка»
+ * после пересборки карты). Векторы выживших узлов остаются: текст тот же →
+ * hash-гейт сохраняет embedding, переэмбеддинга нет.
+ */
+export function pruneOrphanDocs(projectId: string): number {
+  const res = getDB().prepare(
+    `DELETE FROM code_map_docs
+     WHERE project_id = ?
+       AND node_id NOT IN (SELECT id FROM code_map_nodes WHERE project_id = ?)`
+  ).run(projectId, projectId)
+  return res.changes
+}
+
+/**
+ * Очередь worker'а: документы, чей вектор устарел, отсутствует или посчитан
+ * другой моделью (тег в колонке `model`).
+ */
+export function listPendingDocs(
+  projectId: string,
+  limit: number,
+  modelTag: string = EMBED_MODEL_TAG,
+): CodeMapDocInfo[] {
   const rows = getDB().prepare(
     `SELECT node_id, file_path, kind, tier, text, text_hash
      FROM code_map_docs
-     WHERE project_id = ? AND tier > 0 AND (embed_hash IS NULL OR embed_hash != text_hash)
+     WHERE project_id = ? AND tier > 0
+       AND (embed_hash IS NULL OR embed_hash != text_hash OR embedding IS NULL
+            OR model IS NULL OR model != ?)
      ORDER BY tier ASC, rowid ASC LIMIT ?`
-  ).all(projectId, limit) as Record<string, unknown>[]
+  ).all(projectId, modelTag, limit) as Record<string, unknown>[]
   return rows.map(r => ({
     nodeId: r.node_id as string,
     filePath: r.file_path as string,
@@ -411,24 +512,27 @@ export function listPendingDocs(projectId: string, limit: number): CodeMapDocInf
 }
 
 /** Проекты с неиндексированными документами (для выбора целей worker'а). */
-export function listPendingDocProjectIds(): string[] {
+export function listPendingDocProjectIds(modelTag: string = EMBED_MODEL_TAG): string[] {
   // Мелкие проекты первыми: пока большой греется минутами, маленькие
   // закрываются за секунды — в настройках видно прогресс, а не вечное «прогрев».
   const rows = getDB().prepare(
     `SELECT project_id, COUNT(*) c FROM code_map_docs
-     WHERE tier > 0 AND (embed_hash IS NULL OR embed_hash != text_hash)
+     WHERE tier > 0
+       AND (embed_hash IS NULL OR embed_hash != text_hash OR embedding IS NULL
+            OR model IS NULL OR model != ?)
      GROUP BY project_id ORDER BY c ASC`
-  ).all() as { project_id: string }[]
+  ).all(modelTag) as { project_id: string }[]
   return rows.map(r => r.project_id)
 }
 
 /**
  * Записать векторы пачки. UPDATE с гардом text_hash = ? — если текст изменился,
  * пока sidecar считал пачку, вектор не запишется (документ переэмбеддится).
+ * Тег модели пишется из item.model (по умолчанию — текущий EMBED_MODEL_TAG).
  */
 export function saveDocEmbeddings(
   projectId: string,
-  items: { nodeId: string; textHash: string; embedding: Buffer; model: string; embeddedAt: number }[],
+  items: { nodeId: string; textHash: string; embedding: Buffer; model?: string; embeddedAt: number }[],
 ): number {
   if (items.length === 0) return 0
   const db = getDB()
@@ -440,7 +544,10 @@ export function saveDocEmbeddings(
   let saved = 0
   const tx = db.transaction(() => {
     for (const it of items) {
-      const res = upd.run(it.embedding, it.model, it.embeddedAt, projectId, it.nodeId, it.textHash)
+      const res = upd.run(
+        it.embedding, it.model ?? EMBED_MODEL_TAG, it.embeddedAt,
+        projectId, it.nodeId, it.textHash,
+      )
       saved += res.changes
     }
   })
@@ -449,30 +556,44 @@ export function saveDocEmbeddings(
 }
 
 /** Счётчики для статуса/прогресса: всего документов и с актуальным вектором. */
-export function countDocs(projectId: string): { total: number; indexed: number; lexicalOnly: number } {
+export function countDocs(
+  projectId: string,
+  modelTag: string = EMBED_MODEL_TAG,
+): { total: number; indexed: number; lexicalOnly: number } {
   const db = getDB()
   const total = (db.prepare(
     `SELECT COUNT(*) c FROM code_map_docs WHERE project_id = ? AND tier > 0`
   ).get(projectId) as { c: number }).c
   const indexed = (db.prepare(
-    `SELECT COUNT(*) c FROM code_map_docs WHERE project_id = ? AND tier > 0 AND embed_hash = text_hash AND embedding IS NOT NULL`
-  ).get(projectId) as { c: number }).c
+    `SELECT COUNT(*) c FROM code_map_docs
+     WHERE project_id = ? AND tier > 0 AND embed_hash = text_hash
+       AND embedding IS NOT NULL AND model = ?`
+  ).get(projectId, modelTag) as { c: number }).c
   const lexicalOnly = (db.prepare(
     `SELECT COUNT(*) c FROM code_map_docs WHERE project_id = ? AND tier = 0`
   ).get(projectId) as { c: number }).c
   return { total, indexed, lexicalOnly }
 }
 
-/** Векторы проекта постранично (матрица для cosine строится лениво). */
-export function listDocVectors(projectId: string, pageSize = 2000): { nodeId: string; embedding: Buffer }[] {
+/**
+ * Векторы проекта постранично (матрица для cosine строится лениво).
+ * Только актуальные: под текущий text_hash и текущий тег модели — устаревший
+ * вектор не должен участвовать в ранжировании.
+ */
+export function listDocVectors(
+  projectId: string,
+  pageSize = 2000,
+  modelTag: string = EMBED_MODEL_TAG,
+): { nodeId: string; embedding: Buffer }[] {
   const out: { nodeId: string; embedding: Buffer }[] = []
   const db = getDB()
   let offset = 0
   for (;;) {
     const rows = db.prepare(
       `SELECT node_id, embedding FROM code_map_docs
-       WHERE project_id = ? AND embedding IS NOT NULL LIMIT ? OFFSET ?`
-    ).all(projectId, pageSize, offset) as { node_id: string; embedding: Buffer }[]
+       WHERE project_id = ? AND embedding IS NOT NULL AND embed_hash = text_hash AND model = ?
+       LIMIT ? OFFSET ?`
+    ).all(projectId, modelTag, pageSize, offset) as { node_id: string; embedding: Buffer }[]
     if (rows.length === 0) break
     for (const r of rows) out.push({ nodeId: r.node_id, embedding: r.embedding })
     offset += rows.length

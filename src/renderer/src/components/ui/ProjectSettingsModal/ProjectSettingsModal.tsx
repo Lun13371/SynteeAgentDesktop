@@ -314,6 +314,8 @@ export function ProjectSettingsModal({ open, project, onClose, onSaved, onInit }
                   <span className="psm-workdir-path">
                     {mapStatus?.state === 'ready'
                       ? `${mapStatus.totalNodes} узлов · ${mapStatus.totalEdges} связей · ${mapStatus.indexedFiles} файлов`
+                      : mapStatus?.state === 'partial'
+                      ? `Неполная карта · ${mapStatus.totalNodes} узлов · ${mapStatus.indexedFiles} файлов`
                       : mapStatus?.state === 'building' ? 'Строится…'
                       : mapStatus?.state === 'error' ? `Ошибка: ${mapStatus.error ?? ''}`
                       : 'Ещё не построена'}

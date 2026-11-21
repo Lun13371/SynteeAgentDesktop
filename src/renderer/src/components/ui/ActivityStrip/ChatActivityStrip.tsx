@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { motion } from 'framer-motion'
 import ActivityStrip, { type ActivityItem } from './ActivityStrip'
 import { useChatStore } from '../../../store/chat.store'
-import type { CodeMapProgress } from '../../../../../shared/projectMap'
+import { isCodeMapPhaseTerminal, isCodeMapSemanticSettled, isCodeMapStateUsable, type CodeMapProgress } from '../../../../../shared/projectMap'
 
 const ASSIST_LABELS: Record<string, string> = {
   binary: 'Скачиваю движок',
@@ -17,6 +17,8 @@ const MAP_LABELS: Record<string, string> = {
   parsing: 'Разбираю код',
   resolving: 'Строю связи',
   semantic: 'Индексирую семантику',
+  // partial — терминальная фаза: карта рабочая, но инвентарь файлов неполон.
+  partial: 'Карта неполная',
   ready: 'Карта готова',
   error: 'Ошибка карты',
 }
@@ -52,8 +54,12 @@ export default function ChatActivityStrip() {
       window.syntee.projectMap.getSemanticStatus(activeProjectId),
     ]).then(([st, sem]) => {
       if (cancelled) return
-      activeDoneRef.current = st.state === 'ready'
-        && (sem.totalDocs === 0 || sem.state === 'ready' || sem.state === 'off')
+      // partial — тоже «готово» для целей показа: граф рабочий, иначе полоска
+      // чужого проекта висела бы скрытой до бесконечности. Семантика считается
+      // завершённой везде, кроме warming: deferred (не запрашивали) и error
+      // (лексический фолбэк) сами не перейдут в ready.
+      activeDoneRef.current = isCodeMapStateUsable(st.state)
+        && (sem.totalDocs === 0 || isCodeMapSemanticSettled(sem.state))
     }).catch(() => { activeDoneRef.current = true })
     return () => { cancelled = true }
   }, [activeProjectId])
@@ -78,13 +84,16 @@ export default function ChatActivityStrip() {
       if (p.incremental && (p.changedFiles ?? 0) < 20) return
       // Трекинг готовности активного проекта по его же событиям.
       if (p.projectId === activeProjectId) {
-        if (p.semantic) activeDoneRef.current = p.semantic.state === 'ready'
-        else if (p.phase === 'ready' && !p.semantic) activeDoneRef.current = true
-        else if (p.phase !== 'ready') activeDoneRef.current = false
+        if (p.semantic) activeDoneRef.current = isCodeMapSemanticSettled(p.semantic.state)
+        else if (isCodeMapPhaseTerminal(p.phase)) activeDoneRef.current = true
+        else activeDoneRef.current = false
       }
       setMap(p)
       setMapVisible(true)
+      // Терминальные фазы (ready / partial / error) сами прячутся — partial
+      // не должен висеть спиннером вечно.
       if (p.phase === 'ready') setTimeout(() => setMapVisible(false), 3000)
+      if (p.phase === 'partial') setTimeout(() => setMapVisible(false), 8000)
       if (p.phase === 'error') setTimeout(() => setMapVisible(false), 6000)
     })
     return unsub
@@ -105,16 +114,22 @@ export default function ChatActivityStrip() {
   }
 
   if (mapVisible && map) {
-    const busy = map.phase !== 'ready' && map.phase !== 'error'
+    // partial — терминальная фаза: не спиннер и не «готово», а «неполная».
+    const partial = map.phase === 'partial'
+    const busy = !isCodeMapPhaseTerminal(map.phase)
     const detail: string[] = []
     if (map.projectName) detail.push(map.projectName)
     if (busy && map.totalFiles > 0) detail.push(`${map.indexedFiles}/${map.totalFiles}`)
     if (busy && (map.pendingProjects ?? 0) > 0) detail.push(`ещё ${map.pendingProjects} пр.`)
+    if (partial) {
+      if (map.totalFiles > map.indexedFiles) detail.push(`${map.indexedFiles}/${map.totalFiles} файлов`)
+      if (map.message) detail.push(map.message)
+    }
     if (map.phase === 'ready' && map.message) detail.push(map.message)
     if (map.error) detail.push(map.error)
     items.push({
       id: 'projectMap',
-      state: busy ? 'busy' : map.phase === 'ready' ? 'ready' : 'error',
+      state: busy ? 'busy' : partial ? 'warn' : map.phase === 'ready' ? 'ready' : 'error',
       label: MAP_LABELS[map.phase] ?? 'Карта проекта',
       detail: detail.join(' · ') || undefined,
       percent: map.percent,

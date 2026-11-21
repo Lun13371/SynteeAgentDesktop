@@ -4,18 +4,20 @@ import Select from '../../ui/Select/Select'
 import AppIcon from '../../ui/AppIcon/AppIcon'
 import { SectionTitle, Group, Field } from '../SettingsPrimitives'
 import ProjectMapModal from '../../ui/ProjectMapModal/ProjectMapModal'
-import { DEFAULT_PROJECT_MAP_SPEED, type ProjectMapSpeedSettings, type ProjectMapProjectStats, type ProjectMapAutoInfo, type CodeMapSemanticStatus } from '../../../../../shared/projectMap'
+import { DEFAULT_PROJECT_MAP_SPEED, codeMapPartialNote, isCodeMapPhaseTerminal, type ProjectMapSpeedSettings, type ProjectMapProjectStats, type ProjectMapAutoInfo, type CodeMapSemanticStatus } from '../../../../../shared/projectMap'
 import './ProjectMapSettingsTab.css'
 
 const STATE_LABELS: Record<string, string> = {
   idle: 'ожидает',
   building: 'индексация',
+  partial: 'неполная',
   ready: 'готова',
   error: 'ошибка',
 }
 
 const SEMANTIC_LABELS: Record<string, string> = {
   off: '—',
+  deferred: 'не запрошена',
   warming: 'прогрев',
   ready: 'готова',
   error: 'ошибка',
@@ -89,7 +91,7 @@ export default function ProjectMapSettingsTab() {
           loadStats()
         }
       }
-      if (p.phase !== 'ready' && p.phase !== 'error') return
+      if (!isCodeMapPhaseTerminal(p.phase)) return
       if (t) clearTimeout(t)
       t = setTimeout(loadStats, 400)
     })
@@ -194,11 +196,21 @@ export default function ProjectMapSettingsTab() {
             return (
               <div key={s.projectId} className="pmap-settings-row">
                 <span className="pmap-settings-name" title={s.workdir}>{s.name}</span>
-                <span className={`pmap-settings-state pmap-settings-state--${s.state}`} title={s.error ?? undefined}>{stateLabel}</span>
+                <span className={`pmap-settings-state pmap-settings-state--${s.state}`} title={s.state === 'partial' ? codeMapPartialNote(s) : s.error ?? undefined}>{stateLabel}</span>
                 <span className="pmap-settings-num">{s.indexedFiles}/{s.totalFiles}</span>
                 <span className="pmap-settings-num">{s.totalNodes}</span>
                 <span className="pmap-settings-num">{s.totalEdges}</span>
-                <span className="pmap-settings-num" title={sem?.error ?? undefined}>
+                <span
+                  className="pmap-settings-num"
+                  title={
+                    sem?.error
+                    ?? (sem?.state === 'deferred'
+                      ? 'Семантика не запрошена: поиск идёт лексически, прогрев E5 начнётся при первом semantic-запросе.'
+                      : sem?.state === 'off'
+                      ? 'Документов нет — карта ещё не собрана.'
+                      : undefined)
+                  }
+                >
                   {sem && sem.totalDocs > 0 ? `${sem.indexedDocs}/${sem.totalDocs}` : '—'}{sem && sem.totalDocs > 0 ? ` · ${semLabel}` : ''}
                 </span>
                 <span className="pmap-settings-actions">

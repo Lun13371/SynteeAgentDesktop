@@ -130,6 +130,8 @@ export async function projectMapQuery(args: ProjectMapArgs, projectId?: string):
   if (status.state === 'idle' && status.totalNodes === 0) {
     return { success: false, output: '', error: 'Project map is not built yet. It builds in the background — try again shortly, or use search_code/read_file meanwhile.' }
   }
+  // partial — карта рабочая, но инвентарь файлов неполон: предупреждаем честно,
+  // иначе агент примет «нет в графе» за «нет в проекте».
   const limit = Math.max(1, Math.min(args.limit ?? 25, 100))
   const started = Date.now()
 
@@ -151,6 +153,11 @@ async function runAction(
   limit: number,
   status: import('../../shared/projectMap').CodeMapStatus,
 ): Promise<ToolResult> {
+  // partial — карта рабочая, но инвентарь файлов неполон: предупреждаем честно,
+  // иначе агент примет «нет в графе» за «нет в проекте».
+  const partialNotice = status.state === 'partial'
+    ? 'NOTE: this map is partial (file inventory incomplete) — some files may be missing. Missing results are not proof of absence; verify with search_code/read_file.'
+    : null
   switch (args.action) {
       case 'overview': {
         const files = store.listFiles(projectId)
@@ -177,6 +184,7 @@ async function runAction(
           : []
         const out = [
           `Project map: ${status.state}, ${status.totalNodes} nodes, ${status.totalEdges} edges, ${files.length} files.`,
+          partialNotice ?? '',
           hubs.length ? `Most imported:\n${hubs.join('\n')}` : '',
           godLines.join('\n'),
           'Actions: search | semantic | callers | callees | file | god | communities | path | explain | affected',

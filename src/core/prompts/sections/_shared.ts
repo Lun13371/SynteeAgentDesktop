@@ -39,7 +39,7 @@ export interface OneShotSkill {
  * и получает правило «структурные вопросы — сначала project_map».
  */
 export interface ProjectMapPromptInfo {
-  /** ready | building | idle | error */
+  /** ready | partial | building | idle | error (partial — граф рабочий, инвентарь неполон) */
   state: string
   files: number
   nodes: number

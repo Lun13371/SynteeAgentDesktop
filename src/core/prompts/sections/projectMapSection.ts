@@ -11,12 +11,15 @@ import type { ProjectMapPromptInfo } from './_shared'
 
 export function buildProjectMapBlock(info?: ProjectMapPromptInfo): string {
   // Пока карты нет (не построена / ошибка) — не советуем инструмент впустую.
-  if (!info || (info.state !== 'ready' && info.state !== 'building')) return ''
+  // partial считается пригодной: граф отвечает, просто может быть неполон.
+  if (!info || (info.state !== 'ready' && info.state !== 'partial' && info.state !== 'building')) return ''
   const { files, nodes, edges, state } = info
   if (nodes === 0) return ''
 
   const status = state === 'ready'
     ? `ready — ${files} files, ${nodes} nodes, ${edges} edges`
+    : state === 'partial'
+    ? `partial — ${files} files, ${nodes} nodes, ${edges} edges (file inventory incomplete: some files may be missing)`
     : `building in background (${files} files indexed so far)`
 
   return `\n## Project map (code graph) — ${status}

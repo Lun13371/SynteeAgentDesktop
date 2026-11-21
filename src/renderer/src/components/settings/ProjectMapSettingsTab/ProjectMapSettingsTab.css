@@ -55,6 +55,7 @@
 
 .pmap-settings-state--ready { color: #4ade80; }
 .pmap-settings-state--building { color: var(--accent); }
+.pmap-settings-state--partial { color: #fbbf24; }
 .pmap-settings-state--error { color: #f87171; }
 .pmap-settings-state--idle { color: var(--text-muted); }
 

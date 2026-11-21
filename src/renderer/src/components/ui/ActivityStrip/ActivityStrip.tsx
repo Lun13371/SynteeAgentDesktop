@@ -4,7 +4,11 @@ import './ActivityStrip.css'
 /** Одна активность в тонкой полоске под инпутом (помощники, индексация, …). */
 export interface ActivityItem {
   id: string
-  state: 'busy' | 'ready' | 'error'
+  /**
+   * warn — работа завершилась, но результат неполный (например, карта проекта
+   * собрана по неполному инвентарю файлов). Ни спиннер, ни галочка «готово».
+   */
+  state: 'busy' | 'ready' | 'warn' | 'error'
   label: string
   /** Доп. сведения: проект, счётчики, остаток очереди, текст ошибки. */
   detail?: string
@@ -40,6 +44,7 @@ export default function ActivityStrip({ items }: { items: ActivityItem[] }) {
             >
               {it.state === 'busy' && <span className="activity-strip-spinner" />}
               {it.state === 'ready' && <span className="activity-strip-check">✓</span>}
+              {it.state === 'warn' && <span className="activity-strip-warn">~</span>}
               {it.state === 'error' && <span className="activity-strip-err">!</span>}
               <span className="activity-strip-label">{it.label}</span>
               {it.detail && <span className="activity-strip-detail">{it.detail}</span>}

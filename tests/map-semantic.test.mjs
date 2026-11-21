@@ -23,6 +23,7 @@ import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
 import ts from 'typescript'
 import Database from 'better-sqlite3'
+import { setTimeout as delay } from 'node:timers/promises'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const nodeRequire = createRequire(import.meta.url)
@@ -51,6 +52,8 @@ function loadMapSemantic(shims = {}) {
     findNodes: () => [],
     getNode: () => null,
     listDocHashesByFile: () => new Map(),
+    listDocMetaByFile: () => new Map(),
+    pruneOrphanDocs: () => 0,
     upsertDocs: () => {},
     deleteDocsByIds: () => {},
     deleteDocsByFile: () => {},
@@ -529,4 +532,197 @@ test('buildSymbolDocText — docstring/декораторы попадают в 
   // Разрывы строк в doc-тексте схлопываются
   const multiline = api.buildSymbolDocText({ ...base, doc: 'первая строка\nвторая строка' })
   assert.ok(!/[\n\r]/.test(multiline), 'doc в одну строку')
+})
+
+// ─── Версия модели (тег в колонке model) и guard устаревших векторов ─────────
+
+test('mapStore docs: вектор другой модели не считается indexed и попадает в очередь', () => {
+  const db = new Database(':memory:')
+  const store = loadMapStore(db)
+  store.upsertDocs('p1', [
+    { nodeId: 'a', filePath: 'a.ts', kind: 'function', tier: 1, text: 'fn a', textHash: 'h1' },
+  ])
+  // Вектор посчитан старой/другой моделью — в поиске он не годится.
+  store.saveDocEmbeddings('p1', [
+    { nodeId: 'a', textHash: 'h1', embedding: bufferOf([1, 0]), model: 'old-model', embeddedAt: 1 },
+  ])
+  assert.equal(store.countDocs('p1').indexed, 0, 'чужая модель не даёт indexed')
+  assert.equal(store.listDocVectors('p1').length, 0, 'устаревший вектор не попадает в матрицу')
+  assert.deepEqual(store.listPendingDocs('p1', 10).map(d => d.nodeId), ['a'], 'документ снова в очереди')
+
+  // Текущая модель — indexed и матрица.
+  store.saveDocEmbeddings('p1', [
+    { nodeId: 'a', textHash: 'h1', embedding: bufferOf([1, 0]), model: 'e5', embeddedAt: 2 },
+  ])
+  assert.equal(store.countDocs('p1').indexed, 1)
+  assert.deepEqual(store.listDocVectors('p1').map(v => v.nodeId), ['a'])
+  assert.equal(store.listPendingDocs('p1', 10).length, 0, 'очередь пуста')
+})
+
+test('mapStore docs: listDocVectors отбрасывает вектор под устаревший text_hash', () => {
+  const db = new Database(':memory:')
+  const store = loadMapStore(db)
+  const doc = { nodeId: 'a', filePath: 'a.ts', kind: 'function', tier: 1, text: 'v1', textHash: 'h1' }
+  store.upsertDocs('p1', [doc])
+  store.saveDocEmbeddings('p1', [
+    { nodeId: 'a', textHash: 'h1', embedding: bufferOf([1, 0]), model: 'e5', embeddedAt: 1 },
+  ])
+  assert.equal(store.listDocVectors('p1').length, 1)
+  // Текст сменился: embed_hash остался старым, но text_hash уже другой.
+  store.upsertDocs('p1', [{ ...doc, text: 'v2', textHash: 'h2' }])
+  assert.equal(store.listDocVectors('p1').length, 0, 'устаревший вектор не участвует в ранжировании')
+})
+
+test('mapStore docs: upsertDocs переносит вектор при равном тексте (в т.ч. tier 0→1)', () => {
+  const db = new Database(':memory:')
+  const store = loadMapStore(db)
+  const doc = { nodeId: 'a', filePath: 'a.ts', kind: 'function', tier: 0, text: 'same text', textHash: 'hs' }
+  store.upsertDocs('p1', [doc])
+  store.saveDocEmbeddings('p1', [
+    { nodeId: 'a', textHash: 'hs', embedding: bufferOf([1, 0]), model: 'e5', embeddedAt: 1 },
+  ])
+  // Текст тот же, tier вырос — вектор должен выжить (не переэмбеддится).
+  store.upsertDocs('p1', [{ ...doc, tier: 1 }])
+  assert.equal(store.countDocs('p1').indexed, 1, 'равный текст → вектор сохранён')
+  assert.equal(store.listPendingDocs('p1', 10).length, 0)
+})
+
+test('mapStore docs: pruneOrphanDocs чистит только документы без узлов', () => {
+  const db = new Database(':memory:')
+  const store = loadMapStore(db)
+  const meta = { projectId: 'p1', path: 'a.ts', language: 'typescript', hash: 'x', mtime: 1, size: 1, parser: 'ts', truncated: false, indexedAt: 1 }
+  const alive = { id: 'a.ts#f', projectId: 'p1', filePath: 'a.ts', name: 'f', kind: 'function', parentName: null, lineStart: 1, lineEnd: 2, signature: '', exported: true, doc: null }
+  store.replaceFile('p1', meta, [alive], [])
+  store.upsertDocs('p1', [
+    { nodeId: 'a.ts#f', filePath: 'a.ts', kind: 'function', tier: 1, text: 'fn f', textHash: 'h1' },
+    { nodeId: 'a.ts#gone', filePath: 'a.ts', kind: 'function', tier: 1, text: 'fn gone', textHash: 'h2' },
+  ])
+  store.saveDocEmbeddings('p1', [
+    { nodeId: 'a.ts#f', textHash: 'h1', embedding: bufferOf([1, 0]), model: 'e5', embeddedAt: 1 },
+    { nodeId: 'a.ts#gone', textHash: 'h2', embedding: bufferOf([1, 0]), model: 'e5', embeddedAt: 1 },
+  ])
+  assert.equal(store.pruneOrphanDocs('p1'), 1, 'удалён только осиротевший документ')
+  assert.equal(store.countDocs('p1').indexed, 1, 'вектор выжившего узла не потерян')
+})
+
+// ─── Поиск: гибрид, bounded fallback, deferred-статус ────────────────────────
+
+test('searchSemantic — точное имя не ждёт sidecar (векторный канал пропускается)', async () => {
+  const target = node('src/auth.ts#validateAccess', 'validateAccess', 'function', { exported: true })
+  let embedCalls = 0
+  const api = loadMapSemantic({
+    store: {
+      countDocs: () => ({ total: 1, indexed: 1 }),
+      listDocTexts: () => [
+        { nodeId: target.id, filePath: 'src/auth.ts', kind: 'function', tier: 1, text: 'function validateAccess', textHash: 'h1' },
+      ],
+      listDocVectors: () => [{ nodeId: target.id, embedding: bufferOf([1, 0]) }],
+      findNodes: (_pid, q) => (q.toLowerCase() === 'validateaccess' ? [target] : []),
+      getNode: (_pid, id) => (id === target.id ? target : null),
+    },
+    sidecar: {
+      resolveSemanticModelPaths: () => ({ modelPath: 'm', tokenizerPath: 't' }),
+      sidecarSemanticEmbed: async () => { embedCalls++; await delay(2000); return [[1, 0]] },
+    },
+  })
+  const started = Date.now()
+  const res = await api.searchSemantic('p1', 'validateAccess', 5)
+  const elapsed = Date.now() - started
+  assert.equal(res.hits[0]?.node.id, target.id)
+  assert.equal(embedCalls, 0, 'при точном имени инференс не вызывается')
+  assert.ok(elapsed < 500, `ответ мгновенный, а не 6с (${elapsed}ms)`)
+})
+
+test('searchSemantic — дескриптивный запрос сохраняет гибрид (e5 + lexical)', async () => {
+  const a = node('src/chart.ts#drawChart', 'drawChart', 'function', { filePath: 'src/chart.ts' })
+  const b = node('src/chart.ts#drawAxis', 'drawAxis', 'function', { filePath: 'src/chart.ts' })
+  const api = loadMapSemantic({
+    store: {
+      countDocs: () => ({ total: 2, indexed: 2 }),
+      listDocTexts: () => [
+        { nodeId: a.id, filePath: 'src/chart.ts', kind: 'function', tier: 1, text: 'function drawChart — draws canvas diagram', textHash: 'h1' },
+        { nodeId: b.id, filePath: 'src/chart.ts', kind: 'function', tier: 1, text: 'function drawAxis — axis ticks', textHash: 'h2' },
+      ],
+      listDocVectors: () => [
+        { nodeId: a.id, embedding: bufferOf([1, 0]) },
+        { nodeId: b.id, embedding: bufferOf([0, 1]) },
+      ],
+      findNodes: () => [],
+      getNode: (_pid, id) => (id === a.id ? a : id === b.id ? b : null),
+    },
+    sidecar: {
+      resolveSemanticModelPaths: () => ({ modelPath: 'm', tokenizerPath: 't' }),
+      sidecarSemanticEmbed: async () => [[1, 0]],
+    },
+  })
+  const res = await api.searchSemantic('p1', 'diagram of a canvas', 5)
+  assert.equal(res.mode, 'e5', 'векторы готовы → e5-режим')
+  assert.equal(res.hits[0]?.node.id, a.id)
+  assert.equal(res.hits[0].matchedBy, 'both', 'вектор + слова документа: гибридное слияние')
+})
+
+test('searchSemantic — зависший sidecar: bounded fallback в lexical', async () => {
+  const a = node('src/chart.ts#drawChart', 'drawChart', 'function', { filePath: 'src/chart.ts' })
+  const api = loadMapSemantic({
+    store: {
+      countDocs: () => ({ total: 1, indexed: 1 }),
+      listDocTexts: () => [
+        { nodeId: a.id, filePath: 'src/chart.ts', kind: 'function', tier: 1, text: 'function drawChart — draws canvas diagram', textHash: 'h1' },
+      ],
+      listDocVectors: () => [{ nodeId: a.id, embedding: bufferOf([1, 0]) }],
+      findNodes: () => [],
+      getNode: (_pid, id) => (id === a.id ? a : null),
+    },
+    sidecar: {
+      resolveSemanticModelPaths: () => ({ modelPath: 'm', tokenizerPath: 't' }),
+      sidecarSemanticEmbed: () => new Promise(() => { /* навсегда занят */ }),
+    },
+  })
+  const started = Date.now()
+  const res = await api.searchSemantic('p1', 'diagram canvas', 5)
+  const elapsed = Date.now() - started
+  assert.equal(res.mode, 'lexical', 'не дождались вектора — честный lexical')
+  assert.ok(res.hits.length > 0)
+  assert.ok(elapsed < 3000, `дедлайн bounded (${elapsed}ms), а не 6с`)
+})
+
+test('searchSemantic — ноль E5-документов (только tier 0): lexical/имя всё равно работают', async () => {
+  const a = node('src/chart.ts#drawChart', 'drawChart', 'function', { filePath: 'src/chart.ts' })
+  let embedCalls = 0
+  const api = loadMapSemantic({
+    store: {
+      // total/indexed — только по E5-eligible (tier>0); tier 0 живёт в lexical.
+      countDocs: () => ({ total: 0, indexed: 0, lexicalOnly: 2 }),
+      listDocTexts: () => [
+        { nodeId: a.id, filePath: 'src/chart.ts', kind: 'function', tier: 0, text: 'function drawChart — draws canvas diagram', textHash: 'h1' },
+      ],
+      findNodes: (_pid, q) => (q.toLowerCase() === 'drawchart' ? [a] : []),
+      getNode: (_pid, id) => (id === a.id ? a : null),
+    },
+    sidecar: {
+      resolveSemanticModelPaths: () => ({ modelPath: 'm', tokenizerPath: 't' }),
+      sidecarSemanticEmbed: async () => { embedCalls++; return [[1, 0]] },
+    },
+  })
+  const byWords = await api.searchSemantic('p1', 'canvas diagram', 5)
+  assert.equal(byWords.mode, 'lexical', 'не «none»: lexical-канал по tier 0 работает')
+  assert.equal(byWords.hits[0]?.node.id, a.id)
+  const byName = await api.searchSemantic('p1', 'drawChart', 5)
+  assert.equal(byName.hits[0]?.node.id, a.id)
+  assert.equal(embedCalls, 0, 'E5-eligible документов нет — инференс не вызывается')
+})
+
+test('getSemanticStatus — незапрошенный проект честно deferred, а не вечный warming', () => {
+  const api = loadMapSemantic({
+    store: { countDocs: () => ({ total: 5, indexed: 0 }) },
+  })
+  const st = api.getSemanticStatus('p1')
+  assert.equal(st.state, 'deferred', 'векторов нет и прогрев не запрошен')
+  assert.equal(st.mode, 'lexical', 'без модели — lexical-режим')
+  assert.equal(st.indexedDocs, 0)
+
+  const done = loadMapSemantic({ store: { countDocs: () => ({ total: 5, indexed: 5 }) } })
+  assert.equal(done.getSemanticStatus('p1').state, 'ready')
+  const empty = loadMapSemantic({ store: { countDocs: () => ({ total: 0, indexed: 0 }) } })
+  assert.equal(empty.getSemanticStatus('p1').state, 'off')
 })

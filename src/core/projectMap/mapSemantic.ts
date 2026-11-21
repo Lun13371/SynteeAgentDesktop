@@ -10,18 +10,29 @@
  *
  * Интеграция с mapBuilder: syncFileDocs вызывается рядом с каждым
  * store.replaceFile / removeFile (полная сборка, инкрементал, удаление файлов),
- * worker просыпается по nudge() и по пачкам (32 при сборке карты / 128 в
+ * worker просыпается по nudge() и по пачкам (64 при сборке карты / 128 в
  * простое) гоняет очередь через sidecar, уступая foreground-чату. Sidecar
  * serial — во время сборки карты embed-запросы встают за парсингом, поэтому
  * пачки при сборке меньше и с паузой.
  *
+ * Ревизии раздельные: правка текстов документов инвалидирует lexical-индекс и
+ * матрицу векторов, а запись векторов — только матрицу. Иначе каждая пачка
+ * эмбеддингов пересобирала бы lexical-индекс по всем документам проекта.
+ *
  * Поиск — гибрид трёх каналов: cosine по векторам (матрица проекта в памяти,
  * лениво, только для активного проекта), lexical по инвертированному индексу
- * слов документов, точное имя через findNodes. Слияние RRF. Без модели или до
- * догрева векторов работает lexical-канал — тул честно помечает режим.
+ * слов документов, точное имя через findNodes. Слияние RRF. Лексические каналы
+ * считаются первыми и никогда не ждут sidecar: точное имя отвечает сразу,
+ * вектор — с коротким дедлайном. Без модели или до догрева векторов работает
+ * lexical-канал — тул честно помечает режим.
+ *
+ * Прогрев E5 — только по явному запросу (semantic-поиск, открытая карта
+ * активного проекта); глобального фонового прогрева нет, а не запрошенные
+ * проекты в статусе честно помечены 'deferred'.
  */
 import { createHash } from 'crypto'
 import * as store from './mapStore'
+import { EMBED_MODEL_TAG } from './mapStore'
 import { sidecarSemanticEmbed, resolveSemanticModelPaths } from '../sidecar/sidecarClient'
 import { ensureModelFiles } from '../memory/semanticIndex'
 import { embeddingToBuffer } from '../context/embeddings'
@@ -30,6 +41,12 @@ import type {
   CodeMapDocInfo, CodeMapNode, CodeMapProgress, CodeMapSemanticHit,
   CodeMapSemanticMode, CodeMapSemanticResult, CodeMapSemanticState, CodeMapSemanticStatus,
 } from '../../shared/projectMap'
+
+/**
+ * Тег модели — версия вектора (колонка `model` в code_map_docs). Источник —
+ * mapStore; fallback нужен только тестовым шимам, где store подменён пустышкой.
+ */
+const MODEL_TAG: string = (EMBED_MODEL_TAG as string | undefined) ?? 'e5'
 
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
 
@@ -144,36 +161,66 @@ export function buildDocsForFile(nodes: CodeMapNode[]): CodeMapDocInfo[] {
 // ─── Синхронизация карты → документы ─────────────────────────────────────────
 
 /**
- * Ревизия проекта растёт при каждом изменении документов; кэши (матрица
- * векторов, lexical-индекс) перестраиваются лениво при следующем запросе.
+ * Раздельные ревизии проекта. Документы (тексты/состав) и векторы меняются в
+ * разном темпе: правка файла меняет документы, а прогрев пишет по пачке
+ * векторов. Раньше ревизия была одна, и каждая запись векторов выбрасывала
+ * lexical-индекс — при прогреве на 15k документов это пересобирало постинги
+ * десятки раз на пустом месте.
  */
-const revByProject = new Map<string, number>()
-function bumpRev(projectId: string): void {
-  revByProject.set(projectId, (revByProject.get(projectId) ?? 0) + 1)
+interface ProjectRevs { docs: number; vectors: number }
+
+const revsByProject = new Map<string, ProjectRevs>()
+function revsOf(projectId: string): ProjectRevs {
+  let r = revsByProject.get(projectId)
+  if (!r) { r = { docs: 0, vectors: 0 }; revsByProject.set(projectId, r) }
+  return r
+}
+
+/** Состав/тексты документов изменились — инвалидируются lexical и матрица. */
+function bumpDocsRev(projectId: string): void {
+  const r = revsOf(projectId)
+  r.docs++
+  r.vectors++
+}
+
+/** Появились/обновились векторы — инвалидируется только матрица. */
+function bumpVectorRev(projectId: string): void {
+  revsOf(projectId).vectors++
 }
 
 /** Пересобрать документы файла по его узлам. Вызывается рядом с replaceFile. */
 export function syncFileDocs(projectId: string, filePath: string, nodes: CodeMapNode[]): void {
   const desired = buildDocsForFile(nodes)
-  const existing = store.listDocHashesByFile(projectId, filePath)
+  const existing = store.listDocMetaByFile(projectId, filePath)
   const keep = new Set(desired.map(d => d.nodeId))
   const orphan = [...existing.keys()].filter(id => !keep.has(id))
   store.upsertDocs(projectId, desired)
   store.deleteDocsByIds(projectId, orphan)
-  bumpRev(projectId)
+  bumpDocsRev(projectId)
   semanticWorker.nudge()
 }
 
 /** Файл исчез из карты (удалён с диска / перестал поддерживаться). */
 export function removeFileDocs(projectId: string, filePath: string): void {
   store.deleteDocsByFile(projectId, filePath)
-  bumpRev(projectId)
+  bumpDocsRev(projectId)
+}
+
+/**
+ * Полная пересборка карты: документы осиротевших узлов удаляются, документы
+ * выживших остаются с векторами (текст тот же → hash-гейт сохранит embedding).
+ * Полный clearDocs оставлен для миграции схемы, когда правила текста сменились.
+ */
+export function pruneProjectDocs(projectId: string): number {
+  const removed = store.pruneOrphanDocs(projectId)
+  if (removed > 0) bumpDocsRev(projectId)
+  return removed
 }
 
 /** Полная пересборка карты — документы тоже под ноль. */
 export function clearProjectDocs(projectId: string): void {
   store.clearDocs(projectId)
-  bumpRev(projectId)
+  bumpDocsRev(projectId)
 }
 
 // ─── Lexical: инвертированный индекс слов документов ─────────────────────────
@@ -188,9 +235,9 @@ interface LexicalIndex {
 const lexicalByProject = new Map<string, LexicalIndex>()
 
 /**
- * Минимальный интервал пересборки кэшей. Во время прогрева rev растёт с каждой
- * пачкой worker'а — без guard'а каждый запрос пересобирал бы индекс заново
- * (sync-работа в main). 2с устаревания на поисковый результат не влияют.
+ * Минимальный интервал пересборки кэшей. Во время прогрева документы меняются
+ * с каждой пачкой файлов — без guard'а каждый запрос пересобирал бы индекс
+ * заново (sync-работа в main). 2с устаревания на поисковый результат не влияют.
  */
 const CACHE_REBUILD_MIN_MS = 2000
 
@@ -199,7 +246,7 @@ function tokenizeDoc(text: string): string[] {
 }
 
 function getLexicalIndex(projectId: string): LexicalIndex {
-  const rev = revByProject.get(projectId) ?? 0
+  const rev = revsOf(projectId).docs
   const cached = lexicalByProject.get(projectId)
   if (cached && (cached.rev === rev || Date.now() - cached.builtAt < CACHE_REBUILD_MIN_MS)) return cached
   const idx: LexicalIndex = { rev, builtAt: Date.now(), docCount: 0, postings: new Map() }
@@ -251,11 +298,16 @@ let matrixProjectId: string | null = null
 let matrix: VectorMatrix | null = null
 
 function getMatrix(projectId: string): VectorMatrix | null {
-  const rev = revByProject.get(projectId) ?? 0
+  const rev = revsOf(projectId).vectors
   if (matrix && matrixProjectId === projectId
     && (matrix.rev === rev || Date.now() - matrix.builtAt < CACHE_REBUILD_MIN_MS)) return matrix
-  const rows = store.listDocVectors(projectId)
-  if (rows.length === 0) return null
+  const rows = store.listDocVectors(projectId, 2000, MODEL_TAG)
+  if (rows.length === 0) {
+    // Векторов ещё нет (проект не грели) — матрицу не держим, честно null.
+    matrix = null
+    matrixProjectId = projectId
+    return null
+  }
   const dim = rows[0].embedding.byteLength >> 2
   const vectors = new Float32Array(rows.length * dim)
   const norms = new Float32Array(rows.length)
@@ -332,11 +384,13 @@ export function rrfMerge(vectorIds: string[], docWordIds: string[], nameIds: str
 // ─── Поиск ───────────────────────────────────────────────────────────────────
 
 /**
- * Дедлайн query-эмбеда. Sidecar serial: во время прогрева worker гоняет пачки,
- * memory-циклы могут держать его 60с+ — запрос тула не должен ждать в очереди.
- * Не успел за 6с → честный lexical-ответ (векторы дозреют — режим сменится сам).
+ * Дедлайн query-эмбеда для интерактивного поиска. Sidecar serial: во время
+ * прогрева worker гоняет пачки, memory-циклы держат его до 60с — запрос тула
+ * не должен стоять в этой очереди. Не успел → сразу честный lexical-ответ
+ * (векторы дозреют — режим сменится сам). Тёплому sidecar на один короткий
+ * текст хватает десятков миллисекунд, 1.5с — уже «занят».
  */
-const QUERY_EMBED_DEADLINE_MS = 6000
+const QUERY_EMBED_DEADLINE_MS = 1500
 
 /**
  * Тестовые пути приглушаются в ранжировании: тесты поверхностно повторяют
@@ -361,71 +415,98 @@ function queryIdentifierWords(query: string): string[] {
   return [...new Set(query.split(/[^A-Za-z0-9_]+/).filter(w => w.length >= 3 && w.length <= 64))].slice(0, 5)
 }
 
+/** Имя узла, совпавшее с запросом/словом запроса целиком (регистр не важен). */
+function sameName(a: string, b: string): boolean {
+  return a === b || a.replace(/[^a-z0-9]/g, '') === b.replace(/[^a-z0-9]/g, '')
+}
+
 /**
  * Гибридный семантический поиск по карте. mode='e5' — векторы готовы; 'lexical'
- * — модель недоступна/векторы ещё не догрели; 'none' — документов нет.
+ * — модель недоступна/векторы не догрели/запрос попал в точное имя; 'none' —
+ * ни один канал не дал ответа.
+ *
+ * Порядок важен: лексические каналы (слова документов + точное имя) считаются
+ * первыми и синхронно — поиск по идентификатору отвечает мгновенно и никогда
+ * не ждёт инференс. Векторный канал подключается только если он уже готов
+ * (модель есть, актуальные векторы в БД) и запрос не пойман точным именем;
+ * ждёт он не дольше QUERY_EMBED_DEADLINE_MS. Дескриптивные запросы получают
+ * полный гибрид, холодный/занятый sidecar — bounded lexical fallback.
  */
 export async function searchSemantic(projectId: string, query: string, limit = 10): Promise<CodeMapSemanticResult> {
   const started = Date.now()
-  // Запрос = сигнал «семантика этого проекта нужна» → worker прогреет его в фоне.
+  // Запрос = явный сигнал «семантика этого проекта нужна» → worker прогреет его.
   semanticWorker.request(projectId)
-  const { total, indexed } = store.countDocs(projectId)
-  if (total === 0) return { mode: 'none', totalDocs: 0, indexedDocs: 0, hits: [] }
+  const { total, indexed, lexicalOnly } = store.countDocs(projectId, MODEL_TAG)
+  // Нет документов вообще — искать нечего. Документы tier 0 (только lexical)
+  // НЕ повод для 'none': lexical-канал по ним работает и без E5.
+  if (total === 0 && (lexicalOnly ?? 0) === 0) {
+    return { mode: 'none', totalDocs: 0, indexedDocs: 0, hits: [] }
+  }
   const k = Math.max(limit * 4, 40)
 
-  let vectorIds: string[] = []
-  let mode: CodeMapSemanticMode = 'none'
-  let embedMs = -1
-  const paths = resolveSemanticModelPaths()
-  if (paths && indexed > 0) {
-    const embedStarted = Date.now()
-    try {
-      const qvec = await Promise.race([
-        sidecarSemanticEmbed([query], 'query', paths),
-        sleep(QUERY_EMBED_DEADLINE_MS).then(() => null),
-      ])
-      embedMs = Date.now() - embedStarted
-      const vec = qvec?.[0] ? Float32Array.from(qvec[0]) : null
-      const m = vec ? getMatrix(projectId) : null
-      if (vec && m) {
-        const matrixStarted = Date.now()
-        vectorIds = topKByCosine(m, vec, k)
-        mode = 'e5'
-        log(`[mapSemantic] query vector top-K: %d hits from %d vectors (matrix+cosine %dms)`,
-          vectorIds.length, m.ids.length, Date.now() - matrixStarted)
-      }
-      if (embedMs >= QUERY_EMBED_DEADLINE_MS) {
-        log('[mapSemantic] query embed deadline hit (%dms) — sidecar busy, lexical fallback', embedMs)
-      }
-    } catch (e) {
-      embedMs = Date.now() - embedStarted
-      // sidecar занят/недоступен — тихо деградируем в lexical, агент видит режим.
-      log('[mapSemantic] query embed failed (%dms), falling back to lexical: %s',
-        embedMs, e instanceof Error ? e.message : String(e))
-    }
-  }
-
+  // ── 1. Lexical + точное имя (sync, без sidecar) ──
   const lexicalStarted = Date.now()
   const docWordIds = lexicalTopK(projectId, query, k)
   const nameIds: string[] = []
   const seenNames = new Set<string>()
+  let strongExactName = false
+  const qLower = query.trim().toLowerCase()
   // Слова-идентификаторы первыми: точное имя сильнее полного-запроса LIKE.
   for (const w of queryIdentifierWords(query)) {
     const lower = w.toLowerCase()
     for (const n of store.findNodes(projectId, w, 5)) {
       const nameLower = n.name.toLowerCase()
-      if (nameLower !== lower && !nameLower.startsWith(lower)) continue
+      if (!nameLower.startsWith(lower)) continue
+      if (sameName(nameLower, lower)) strongExactName = true
       if (seenNames.has(n.id)) continue
       seenNames.add(n.id)
       nameIds.push(n.id)
     }
   }
   for (const n of store.findNodes(projectId, query, 10)) {
+    if (sameName(n.name.toLowerCase(), qLower)) strongExactName = true
     if (!seenNames.has(n.id)) { seenNames.add(n.id); nameIds.push(n.id) }
   }
   const lexicalMs = Date.now() - lexicalStarted
 
-  if (mode !== 'e5' && (docWordIds.length > 0 || nameIds.length > 0)) mode = 'lexical'
+  // ── 2. Векторный канал — только если готов и нужен ──
+  let vectorIds: string[] = []
+  let embedMs = -1
+  if (strongExactName) {
+    log('[mapSemantic] query "%s" — exact name match, vector channel skipped', query)
+  } else if (indexed > 0) {
+    const paths = resolveSemanticModelPaths()
+    const m = paths ? getMatrix(projectId) : null
+    if (paths && m && m.ids.length > 0) {
+      const embedStarted = Date.now()
+      try {
+        const qvec = await Promise.race([
+          sidecarSemanticEmbed([query], 'query', paths),
+          sleep(QUERY_EMBED_DEADLINE_MS).then(() => null),
+        ])
+        embedMs = Date.now() - embedStarted
+        const vec = qvec?.[0] ? Float32Array.from(qvec[0]) : null
+        if (vec) {
+          const matrixStarted = Date.now()
+          vectorIds = topKByCosine(m, vec, k)
+          log(`[mapSemantic] query vector top-K: %d hits from %d vectors (matrix+cosine %dms)`,
+            vectorIds.length, m.ids.length, Date.now() - matrixStarted)
+        }
+        if (embedMs >= QUERY_EMBED_DEADLINE_MS) {
+          log('[mapSemantic] query embed deadline hit (%dms) — sidecar busy, lexical fallback', embedMs)
+        }
+      } catch (e) {
+        embedMs = Date.now() - embedStarted
+        // sidecar занят/недоступен — тихо деградируем в lexical, агент видит режим.
+        log('[mapSemantic] query embed failed (%dms), falling back to lexical: %s',
+          embedMs, e instanceof Error ? e.message : String(e))
+      }
+    }
+  }
+
+  let mode: CodeMapSemanticMode = 'none'
+  if (vectorIds.length > 0) mode = 'e5'
+  else if (docWordIds.length > 0 || nameIds.length > 0) mode = 'lexical'
   if (mode === 'none') {
     log(`[mapSemantic] query "%s" — no channels (%d docs, %d indexed, %dms)`, query, total, indexed, Date.now() - started)
     return { mode, totalDocs: total, indexedDocs: indexed, hits: [] }
@@ -453,7 +534,6 @@ export async function searchSemantic(projectId: string, query: string, limit = 1
 // ─── Worker: фоновый эмбеддинг очереди документов ────────────────────────────
 
 const NUDGE_DELAY_MS = 1500
-const START_DELAY_MS = 5000
 const MODEL_RETRY_MS = 5 * 60 * 1000
 const EMBED_RETRY_MS = 15_000
 const IDLE_POLL_MS = 2000
@@ -499,15 +579,21 @@ class SemanticWorker {
     this.nudge()
   }
 
-  hasRequested(projectId: string): boolean { return this.requested.has(projectId) }
+  hasRequested(projectId: string): boolean {
+    return this.activeProjectId === projectId || this.requested.has(projectId)
+  }
   setActiveProject(projectId: string | null): void {
     this.activeProjectId = projectId
     this.nudge()
   }
 
+  /**
+   * Никакого глобального прогрева на старте: E5 опционален и включается только
+   * явным запросом (semantic-поиск или открытая карта проекта). start() лишь
+   * снимает флаг stopped — первый nudge придёт от request()/syncFileDocs.
+   */
   start(): void {
     this.stopped = false
-    setTimeout(() => { if (!this.stopped) this.nudge() }, START_DELAY_MS)
   }
 
   stop(): void {
@@ -518,6 +604,8 @@ class SemanticWorker {
   /** Разбудить worker: появились новые/изменённые документы. Debounce 1.5s. */
   nudge(): void {
     if (this.stopped || this.running || this.timer) return
+    // Ни один проект не запрошен — греть нечего, цикл не запускаем вовсе.
+    if (!this.activeProjectId && this.requested.size === 0) return
     this.timer = setTimeout(() => {
       this.timer = null
       void this.loop()
@@ -544,7 +632,10 @@ class SemanticWorker {
       this.timer = null
       void this.loop()
     }, delayMs)
-    for (const pid of store.listPendingDocProjectIds()) {
+    for (const pid of store.listPendingDocProjectIds(MODEL_TAG)) {
+      // Ошибку показываем только по проектам, которые реально ждут прогрева:
+      // у остальных честный статус 'deferred'.
+      if (!this.hasRequested(pid)) continue
       this.stateByProject.set(pid, 'error')
       this.errorByProject.set(pid, error)
       this.emitSemanticProgress(pid, true)
@@ -612,7 +703,7 @@ class SemanticWorker {
   private async loopInner(): Promise<void> {
       for (;;) {
       if (this.stopped) return
-      const projects = store.listPendingDocProjectIds()
+      const projects = store.listPendingDocProjectIds(MODEL_TAG).filter(pid => this.hasRequested(pid))
       if (projects.length === 0) {
         // Всё проиндексировано: финальные ready-события по затронутым проектам
         // (баннер закрывается, настройки обновляют счётчики), затем ждём nudge.
@@ -631,37 +722,18 @@ class SemanticWorker {
         return
       }
 
-      // Приоритет: активный проект (открытый чат) → явно запрошенные
-      // (semantic-запрос/открытая карта) → ФОНОВЫЙ ОДИН проект.
-      //
-      // Без фолбэка worker засыпал навсегда, когда активного проекта нет
-      // (пользователь просто открыл настройки): в таблице все проекты висели
-      // как «0/N · прогрев», а инференс не запускался вообще. Теперь, если
-      // ни активного, ни запросов нет, греется ровно ОДИН проект (самый
-      // «верхний» в списке pending) — по одному, последовательно, не все сразу.
-      let ordered: string[]
-      if (this.activeProjectId && projects.includes(this.activeProjectId)) {
-        ordered = [this.activeProjectId]
-      } else {
-        const requested = projects.filter(pid => this.requested.has(pid))
-        ordered = requested.length > 0 ? requested : projects.slice(0, 1)
-      }
-      if (ordered.length === 0) {
-        // Есть неиндексированные документы, но их проекты не запрошены —
-        // спим до следующего nudge (request() его вызовет).
-        if (this.touched.size > 0) {
-          for (const pid of this.touched) this.emitSemanticProgress(pid, true)
-          this.touched.clear()
-        }
-        return
-      }
+      const ordered = this.activeProjectId && projects.includes(this.activeProjectId)
+        ? [this.activeProjectId, ...projects.filter(pid => pid !== this.activeProjectId)]
+        : projects
       let worked = false
 
       for (const pid of ordered) {
         if (this.stopped) return
         await this.waitWhileForeground()
+        if (this.stopped) return
+        if (!this.hasRequested(pid)) continue
         const batch = this.mapBuilding() ? BATCH_BUILD : BATCH_IDLE
-        const docs = store.listPendingDocs(pid, batch)
+        const docs = store.listPendingDocs(pid, batch, MODEL_TAG)
         if (docs.length === 0) continue
         this.stateByProject.set(pid, 'warming')
         this.errorByProject.delete(pid)
@@ -683,7 +755,7 @@ class SemanticWorker {
           nodeId: d.nodeId,
           textHash: d.textHash,
           embedding: embeddingToBuffer(Float32Array.from(vectors![i])),
-          model: 'e5',
+          model: MODEL_TAG,
           embeddedAt: now,
         }))
         let saved = 0
@@ -700,7 +772,9 @@ class SemanticWorker {
         if (saved < docs.length) {
           log('[mapSemantic] batch saved %d/%d (hash-gate rejects stale texts)', saved, docs.length)
         }
-        bumpRev(pid)
+        // Векторы изменились → инвалидируем ТОЛЬКО матрицу, lexical-индекс
+        // (построенный по текстам документов) остаётся валидным.
+        bumpVectorRev(pid)
         if (saved > 0) worked = true
         this.emitSemanticProgress(pid)
         log('[mapSemantic] batch %s: %d docs in %dms (saved %d, tier up to %d)',
@@ -718,14 +792,25 @@ export const semanticWorker = new SemanticWorker()
 
 // ─── Статус и прогресс ───────────────────────────────────────────────────────
 
-/** Текущее состояние семантического слоя проекта (для IPC/настроек). */
+/**
+ * Текущее состояние семантического слоя проекта (для IPC/настроек).
+ *
+ * 'deferred' — документы есть, но проект не запрашивали: векторов нет и
+ * прогрева не будет, пока не придёт semantic-запрос. Это честное состояние, а
+ * не вечный 'warming'. Ошибка воркера важнее deferred — она объясняет причину.
+ */
 export function getSemanticStatus(projectId: string): CodeMapSemanticStatus {
-  const { total, indexed } = store.countDocs(projectId)
+  const { total, indexed, lexicalOnly } = store.countDocs(projectId, MODEL_TAG)
   const snap = semanticWorker.snapshot(projectId)
+  const requested = semanticWorker.hasRequested(projectId)
   let state: CodeMapSemanticState
-  if (total === 0) state = 'off'
+  if (total === 0 && (lexicalOnly ?? 0) === 0) state = 'off'
+  // Только lexical-документы (tier 0): поиск уже готов, эмбеддить нечего.
+  else if (total === 0) state = 'ready'
   else if (indexed >= total) state = 'ready'
-  else state = snap.state ?? 'warming'
-  const mode: CodeMapSemanticMode = resolveSemanticModelPaths() ? 'e5' : 'lexical'
-  return { state, mode, totalDocs: total, indexedDocs: indexed, error: snap.error }
+  else if (!requested) state = 'deferred'
+  else if (snap.state === 'error') state = 'error'
+  else state = 'warming'
+  const mode: CodeMapSemanticMode = indexed > 0 && resolveSemanticModelPaths() ? 'e5' : 'lexical'
+  return { state, mode, totalDocs: total, indexedDocs: indexed, error: state === 'error' ? snap.error : null }
 }

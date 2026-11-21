@@ -76,7 +76,18 @@ export interface CodeMapFile {
   indexedAt: number
 }
 
-export type CodeMapState = 'idle' | 'building' | 'ready' | 'error'
+/**
+ * Состояние карты проекта.
+ *  - idle     — карты нет;
+ *  - building — идёт сборка;
+ *  - partial  — карта построена, но по НЕПОЛНОМУ инвентарю файлов (первичный скан
+ *               не успел, упёрлись в лимит файлов или watcher мёртв). Граф рабочий
+ *               и отвечает на запросы, но часть файлов может отсутствовать, а
+ *               удаления в этом состоянии не применяются;
+ *  - ready    — полная карта;
+ *  - error    — сборка упала.
+ */
+export type CodeMapState = 'idle' | 'building' | 'partial' | 'ready' | 'error'
 
 export interface CodeMapStatus {
   projectId: string
@@ -98,7 +109,11 @@ export interface CodeMapGraph {
 /** Прогресс-событие для баннера/настроек (паттерн assistants.onSetupProgress). */
 export interface CodeMapProgress {
   projectId: string
-  phase: 'scanning' | 'parsing' | 'resolving' | 'semantic' | 'ready' | 'error'
+  /**
+   * partial — сборка завершилась по неполному инвентарю файлов: терминальная
+   * фаза (не «крутится вечно» и не «готова»), карта при этом рабочая.
+   */
+  phase: 'scanning' | 'parsing' | 'resolving' | 'semantic' | 'partial' | 'ready' | 'error'
   percent: number
   indexedFiles: number
   totalFiles: number
@@ -133,8 +148,16 @@ export interface GetGraphOptions {
 /** Режим последнего семантического поиска: e5 — векторы, lexical — слова. */
 export type CodeMapSemanticMode = 'e5' | 'lexical' | 'none'
 
-/** Состояние семантического слоя проекта. */
-export type CodeMapSemanticState = 'off' | 'warming' | 'ready' | 'error'
+/**
+ * Состояние семантического слоя проекта.
+ *  - off      — документов нет (карта не собрана);
+ *  - deferred — документы есть, но проект ещё не запрашивали: векторов нет,
+ *               прогрев не запущен (E5 включается только явным запросом);
+ *  - warming  — идёт эмбеддинг очереди;
+ *  - ready    — все документы имеют актуальный вектор;
+ *  - error    — sidecar/модель недоступны, поиск работает лексически.
+ */
+export type CodeMapSemanticState = 'off' | 'deferred' | 'warming' | 'ready' | 'error'
 
 /** Документ символа/файла для эмбеддинга — выводится из узлов карты. */
 export interface CodeMapDocInfo {
@@ -199,4 +222,44 @@ export interface ProjectMapAutoInfo {
   cores: number
   memGB: number
   backgroundDelayMs: number
+}
+
+// ─── Человеческие подписи «неполной» карты ──────────────────────────────────
+
+/**
+ * Терминальные фазы прогресса: проход закончился (полностью, частично или
+ * ошибкой). По ним UI прячет полоску активности и обновляет таблицу — иначе
+ * `partial` висел бы вечным спиннером.
+ */
+export function isCodeMapPhaseTerminal(phase: CodeMapProgress['phase']): boolean {
+  return phase === 'ready' || phase === 'partial' || phase === 'error'
+}
+
+/** Карта пригодна к запросам: полная или частичная (partial — рабочий граф). */
+export function isCodeMapStateUsable(state: CodeMapState): boolean {
+  return state === 'ready' || state === 'partial'
+}
+
+/**
+ * Семантический слой ничего не считает прямо сейчас.
+ * `deferred` (векторов нет, прогрев не запрашивали) и `error` (лексический
+ * фолбэк) сами по себе никогда не станут `ready` — считать их «ещё работаю»
+ * значит держать UI в ожидании вечно. Активна только `warming`.
+ */
+export function isCodeMapSemanticSettled(state: CodeMapSemanticState): boolean {
+  return state !== 'warming'
+}
+
+/**
+ * Пояснение к неполной карте — показываем вместо «готова»/спиннера.
+ * Цифры покрытия выводим только когда indexed/total реально расходятся:
+ * у partial билдер пишет в оба поля фактическое число файлов графа.
+ */
+export function codeMapPartialNote(
+  stats?: { indexedFiles?: number; totalFiles?: number } | null,
+): string {
+  const indexed = stats?.indexedFiles ?? 0
+  const total = stats?.totalFiles ?? 0
+  const coverage = total > indexed ? ` (${indexed} из ${total} файлов)` : ''
+  return `Карта неполная${coverage}: инвентарь файлов ещё не сошёлся, часть файлов может отсутствовать. Досчитается автоматически.`
 }
