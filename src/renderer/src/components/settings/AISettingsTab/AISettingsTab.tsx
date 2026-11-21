@@ -6,7 +6,8 @@ import type {
   ModelParams,
   ModelRole,
   ModelCapability,
-  ModelMeta
+  ModelMeta,
+  CodexAuthState
 } from '../../../../../shared/types'
 import { BUILTIN_PROVIDERS_META } from '../../../../../shared/data/builtinModels'
 import ModelPicker from '../../ui/ModelPicker/ModelPicker'
@@ -97,6 +98,9 @@ export default function AISettingsTab() {
   )
   const [imageModelId, setImageModelId] = useState('')
   const [imageProviderId, setImageProviderId] = useState('')
+  // ChatGPT-подписка авторизуется токеном, а не API-ключом, поэтому признак
+  // «настроен» берём из реального статуса входа (codex:status).
+  const [codexAuth, setCodexAuth] = useState<CodexAuthState | null>(null)
 
   // ── Debounce для systemPrompt textarea ──────────────────────────────
   // Раньше updateParams({ systemPrompt }) звался на каждое нажатие → IPC
@@ -113,17 +117,19 @@ export default function AISettingsTab() {
 
   const load = async () => {
     try {
-      const [p, a, pm, imgS, models] = await Promise.all([
+      const [p, a, pm, imgS, models, codexState] = await Promise.all([
         window.syntee.providers.getAll() as Promise<Provider[]>,
         window.syntee.models.getAssignments() as Promise<ModelAssignment[]>,
         window.syntee.models.getParams() as Promise<ModelParams>,
         window.syntee.image.getSettings(),
-        window.syntee.models.getAll() as Promise<ModelMeta[]>
+        window.syntee.models.getAll() as Promise<ModelMeta[]>,
+        window.syntee.codex.status() as Promise<CodexAuthState>
       ])
       setProviders(p)
       setAllModels(models)
       setAssignments(a)
       setParams(pm)
+      setCodexAuth(codexState)
       if (!systemPromptTimerRef.current) setSystemPromptDraft(pm.systemPrompt)
       setImageModelId(imgS.modelId || '')
       setImageProviderId(imgS.providerId || '')
@@ -149,13 +155,35 @@ export default function AISettingsTab() {
     return () => window.clearTimeout(timer)
   }, [gatewayLastFetch])
 
+  // Вход по ChatGPT-подписке мог случиться в другой вкладке/окне — держим
+  // карточку в актуальном состоянии, а не только после ручного load().
+  useEffect(() => {
+    const off = window.syntee.codex.onAuthChanged(() => {
+      const timer = window.setTimeout(() => { void load() }, 0)
+      return () => window.clearTimeout(timer)
+    })
+    return () => { off() }
+  }, [])
+
   const getProviderMeta = (id: string) => BUILTIN_PROVIDERS_META[id]
 
-  const isConfigured = (id: string) =>
-    providers.find(
-      (p) =>
-        p.id === id && p.enabled && (p.apiKey || p.anonymous || p.isCustom || p.type === 'ollama')
-    )
+  const isCodexProvider = (id: string) =>
+    id === 'openai-codex' || providers.find((p) => p.id === id)?.type === 'openai-codex'
+
+  const isConfigured = (id: string) => {
+    const provider = providers.find((p) => p.id === id)
+    // ChatGPT-подписка: API-ключа нет, настроенность = активный вход по OAuth
+    // или импортированный логин Codex CLI.
+    if (isCodexProvider(id)) return Boolean(provider?.enabled) && !!codexAuth?.connected
+    return !!provider && provider.enabled &&
+      !!(provider.apiKey || provider.anonymous || provider.isCustom || provider.type === 'ollama')
+  }
+  const statusLabel = (id: string, configured: boolean) => {
+    if (!isCodexProvider(id)) return configured ? 'Настроен' : 'Не настроен'
+    if (!codexAuth?.connected) return 'Не настроен'
+    const plan = codexAuth.plan ? ` · ${codexAuth.plan.charAt(0).toUpperCase()}${codexAuth.plan.slice(1)}` : ''
+    return `Подключено${plan}`
+  }
   const matchesProvider = (id: string, name: string, custom: boolean) => {
     const query = providerQuery.trim().toLowerCase()
     return (
@@ -304,7 +332,7 @@ export default function AISettingsTab() {
                       <span
                         className={`provider-status ${configured ? 'provider-status--ok' : ''}`}
                       >
-                        {configured ? 'Настроен' : 'Не настроен'}
+                        {statusLabel(id, configured)}
                       </span>
                     </div>
                     <div className="provider-card-footer">
