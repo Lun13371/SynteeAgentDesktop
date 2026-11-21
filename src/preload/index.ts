@@ -1008,7 +1008,13 @@ const synteeAPI = {
       ipcRenderer.invoke('git:showFiles', params),
     branchList: (workdir: string, all?: boolean) =>
       ipcRenderer.invoke('git:branchList', workdir, all),
-    checkout: (params: { workdir: string; branch: string }) =>
+    // Фоновое обновление удалённых веток (`fetch --all --prune`): дедуп и
+    // rate limit — в main (src/main/git/refresh.ts). Никогда не бросает.
+    refreshBranches: (workdir: string) =>
+      ipcRenderer.invoke('git:refreshBranches', workdir),
+    // remote=true — переключение на удалённую ветку: branch без префикса
+    // refs/remotes/ (origin/feat/x); в main создаётся локальная tracking-ветка.
+    checkout: (params: { workdir: string; branch: string; remote?: boolean }) =>
       ipcRenderer.invoke('git:checkout', params),
     branchCreate: (params: { workdir: string; branch: string; checkout?: boolean }) =>
       ipcRenderer.invoke('git:branchCreate', params),

@@ -956,9 +956,11 @@ declare const synteeAPI: {
             hash: string;
         }) => Promise<any>;
         branchList: (workdir: string, all?: boolean) => Promise<any>;
+        refreshBranches: (workdir: string) => Promise<any>;
         checkout: (params: {
             workdir: string;
             branch: string;
+            remote?: boolean;
         }) => Promise<any>;
         branchCreate: (params: {
             workdir: string;

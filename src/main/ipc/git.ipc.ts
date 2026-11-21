@@ -1,7 +1,9 @@
 import { ipcMain } from 'electron'
 import { runGit } from '../git/runGit'
-import { parseBranchList } from '../../shared/git/parseBranches'
-import { buildCheckoutArgs, explainCheckoutError } from '../../shared/git/checkoutPlan'
+import { BRANCH_LIST_ALL_ARGS, BRANCH_LIST_LOCAL_ARGS, parseBranchList, parseLocalBranchList } from '../../shared/git/parseBranches'
+import { checkoutBranch } from '../git/checkout'
+import { isValidBranchName, normalizeLocalBranchName } from '../../shared/git/checkoutPlan'
+import { refreshBranches } from '../git/refresh'
 import { readGraph } from '../git/graph'
 import { generateCommitMessage } from '../git/commitMessage'
 import { readFile, stat } from 'fs/promises'
@@ -405,36 +407,33 @@ export function registerGitIPC(): void {
   // ── git branchList — список веток ────────────────────────────────────
   // all=true → объекты { name, current, remote } (включая удалённые).
   // Без all → только локальные строки, это дефолт для панелей переключения.
+  // Формат/парсинг — в src/shared/git/parseBranches.ts: там же объяснение, почему
+  // `%(refname:lstrip=2)`, а не `%(refname:short)` (алиасы origin/HEAD и
+  // «heads/…»/«remotes/…» при совпадении имён), и почему отсекается псевдо-ветка
+  // detached HEAD.
   ipcMain.handle('git:branchList', async (_e, workdir: string, all?: boolean) => {
     if (!workdir) return { success: false, error: 'workdir is required', branches: [], current: null }
     try {
       if (all) {
-        // Парсинг — в src/shared/git/parseBranches.ts (там же объяснение бага с trim).
-        const out = await runGit(workdir, [
-          'branch', '--list', '--all',
-          '--format=%(HEAD)%09%(refname)%09%(refname:short)',
-        ])
+        const out = await runGit(workdir, BRANCH_LIST_ALL_ARGS)
         const { branches, current } = parseBranchList(out)
         return { success: true, branches, current }
       }
 
-      const out = await runGit(workdir, ['branch', '--list', '--format=%(HEAD)%09%(refname:short)'])
-      const branches: string[] = []
-      let current: string | null = null
-      for (const rawLine of out.split('\n')) {
-        const line = rawLine.replace(/\r$/, '')
-        if (!line.trim()) continue
-        // «*» стоит в первой колонке, имя — после TAB (trim съел бы TAB у не-текущих).
-        const isCurrent = line.charAt(0) === '*'
-        const name = line.slice(line.indexOf('\t') + 1).trim()
-        if (!name) continue
-        if (isCurrent) current = name
-        branches.push(name)
-      }
+      const out = await runGit(workdir, BRANCH_LIST_LOCAL_ARGS)
+      const { branches, current } = parseLocalBranchList(out)
       return { success: true, branches, current }
     } catch (e) {
       return { success: false, error: String((e as Error)?.message ?? e), branches: [], current: null }
     }
+  })
+
+  // ── git refreshBranches — фоновый `fetch --all --prune` ──────────────
+  // Дедуп по общему .git + rate limit живут в src/main/git/refresh.ts: панель,
+  // граф и чип дёргают обновление независимо, а fetch должен быть один.
+  ipcMain.handle('git:refreshBranches', async (_e, workdir: string) => {
+    if (!workdir) return { success: false, error: 'workdir is required' }
+    return refreshBranches(workdir)
   })
 
   // ── git checkout — переключение ветки ────────────────────────────────
@@ -443,24 +442,28 @@ export function registerGitIPC(): void {
   // «Command failed: git … stash push». Не-конфликтующие правки git переносит
   // сам, а при конфликте отдаём читаемую причину (buildCheckoutArgs/explain в
   // src/shared/git/checkoutPlan.ts).
-  ipcMain.handle('git:checkout', async (_e, params: { workdir: string; branch: string }) => {
-    if (!params.workdir || !params.branch) return { success: false, error: 'workdir and branch are required' }
-    try {
-      const out = await runGit(params.workdir, buildCheckoutArgs(params.branch))
-      return { success: true, output: out }
-    } catch (e) {
-      return { success: false, error: explainCheckoutError(String((e as Error)?.message ?? e)) }
-    }
+  //
+  // remote=true — переключение на УДАЛЁННУЮ ветку: branch приходит без префикса
+  // refs/remotes/ (origin/feat/x), создаётся локальная tracking-ветка feat/x.
+  // Detached HEAD не возникает, существующая локальная ветка не перезаписывается
+  // (src/main/git/checkout.ts).
+  ipcMain.handle('git:checkout', async (_e, params: { workdir: string; branch: string; remote?: boolean }) => {
+    if (!params?.workdir || !params?.branch) return { success: false, error: 'workdir and branch are required' }
+    return checkoutBranch(params.workdir, { branch: params.branch, remote: params.remote })
   })
 
   // ── git branchCreate — создание новой ветки ──────────────────────────
   ipcMain.handle('git:branchCreate', async (_e, params: { workdir: string; branch: string; checkout?: boolean }) => {
     if (!params.workdir || !params.branch) return { success: false, error: 'workdir and branch are required' }
+    // Имя уходит в argv git: без проверки `-D`/`--orphan` стали бы опцией, а не
+    // веткой. Тот же валидатор, что у checkout (git-check-ref-format).
+    const branch = normalizeLocalBranchName(params.branch)
+    if (!isValidBranchName(branch)) return { success: false, error: 'Некорректное имя ветки' }
     try {
-      const args = ['branch', params.branch]
+      const args = ['branch', branch]
       const out = await runGit(params.workdir, args)
       if (params.checkout) {
-        await runGit(params.workdir, ['checkout', params.branch])
+        await runGit(params.workdir, ['checkout', branch, '--'])
       }
       return { success: true, output: out }
     } catch (e) {

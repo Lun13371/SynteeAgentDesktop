@@ -14,8 +14,10 @@
  * Состояний ровно два: раскрыто / свёрнуто (чип). Закрытие — только крестиком
  * или повторным кликом по чипу; клик по пустому месту панель не трогает.
  *
- * Данные: `git:repoSummary` (агрегат), `git:branchList`, `git:generateCommitMessage`
- * (локальная мини-модель), прогресс — `liveByChat[chatId].todo`.
+ * Данные: `git:repoSummary` (агрегат) и ОБЩИЙ стор веток `useGitBranches`
+ * (локальные + удалённые, дедуплицированные чтения, общий checkout/create с
+ * GitPanel), `git:generateCommitMessage` (локальная мини-модель), прогресс —
+ * `liveByChat[chatId].todo`.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
@@ -38,6 +40,7 @@ import {
 import type { LastTurnChanges } from '../../../../../shared/types'
 import { useChatStore } from '../../../store/chat.store'
 import { useUIStore } from '../../../store/ui.store'
+import { localNameForRemote, useGitBranches } from '../../../hooks/useGitBranches'
 import { useToast } from '../Toast/Toast'
 import GitGraph from '../GitGraph/GitGraph'
 import './GitTools.css'
@@ -58,11 +61,6 @@ interface RepoSummary {
   untracked: number
   error?: string
   notARepo?: boolean
-}
-
-interface BranchItem {
-  name: string
-  current?: boolean
 }
 
 interface LiveTodoItem {
@@ -124,7 +122,21 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
   /** true/false — знаем точно; null — ещё не проверяли. Вне git-репо панель не рисуем. */
   const [isRepo, setIsRepo] = useState<boolean | null>(null)
 
-  const [branches, setBranches] = useState<BranchItem[]>([])
+  // Ветки — НЕ локальный стейт: единый стор (useGitBranches). Здесь только
+  // UI-состояние списка (поиск, создание, спиннер переключения).
+  const {
+    branches,
+    current: currentBranch,
+    loading: branchesLoading,
+    error: branchesError,
+    remoteError: branchesRemoteError,
+    lastLoadedAt: branchesLastLoadedAt,
+    refresh: refreshBranchList,
+    refreshRemote: refreshRemoteBranches,
+    checkout: checkoutBranch,
+    createBranch: createBranchInStore,
+  } = useGitBranches(workdir, open)
+
   const [branchQuery, setBranchQuery] = useState('')
   const [newBranch, setNewBranch] = useState<string | null>(null)
   /** Ветка, на которую сейчас переключаемся — спиннер на её строке. */
@@ -188,34 +200,16 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
     }
   }, [workdir, lang])
 
-  // Список для переключения — ТОЛЬКО локальные ветки: git:branchList без all
-  // отдаёт именно их (удалённые не переключаются напрямую — отсюда detached HEAD).
-  // Порядок оставляем git-овский: список не пересобирается после переключения,
-  // поэтому строки не «прыгают» под курсором.
-  const loadBranches = useCallback(async (): Promise<void> => {
-    if (!workdir) return
-    try {
-      const res = await window.syntee.git.branchList(workdir)
-      const list = (res?.branches ?? []) as Array<BranchItem | string>
-      const current = (res?.current ?? null) as string | null
-      setBranches(
-        list.map(b => {
-          if (typeof b === 'string') return { name: b, current: b === current }
-          return { name: b.name, current: b.current ?? b.name === current }
-        }),
-      )
-    } catch {
-      setBranches([])
-    }
-  }, [workdir])
-
+  // Список веток читает общий стор (useGitBranches): он сам опрашивает его
+  // пока панель открыта (active=open), дедуплицирует чтения и обновляет всех
+  // подписчиков после checkout/create. Локального fetch здесь больше нет.
   const openPanel = useCallback((): void => {
     setOpen(true)
     setView('panel')
     setFormError(null)
     void refresh()
-    void loadBranches()
-  }, [refresh, loadBranches, setView])
+    void refreshBranchList({ force: false })
+  }, [refresh, refreshBranchList, setView])
 
   const close = useCallback((): void => {
     setOpen(false)
@@ -319,14 +313,14 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
         setDraft('')
         setView('panel')
         await refresh()
-        await loadBranches()
+        await refreshBranchList({ force: false })
       } catch (e) {
         setFormError(String((e as Error)?.message ?? e))
       } finally {
         setBusy(false)
       }
     },
-    [workdir, busy, draft, includeUnstaged, generate, refresh, loadBranches, lang, setView],
+    [workdir, busy, draft, includeUnstaged, generate, refresh, refreshBranchList, lang, setView],
   )
 
   const doPush = useCallback(async (): Promise<void> => {
@@ -348,21 +342,44 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
     }
   }, [workdir, busy, refresh, lang])
 
+  /**
+   * Переключение ветки — через общий стор (тот же checkout, что в GitPanel).
+   * Локальная ветка переключается молча (как в VS Code). Удалённая — сначала
+   * явное подтверждение: `git checkout origin/x` увёл бы в detached HEAD, поэтому
+   * main создаёт локальную tracking-ветку, и это стоит проговорить до клика.
+   */
   const switchBranch = useCallback(
-    async (branch: string): Promise<void> => {
+    async (branch: string, remote = false): Promise<void> => {
       if (!workdir || busy) return
+      if (remote) {
+        const local = localNameForRemote(branches, branch)
+        // Подтверждение должно говорить правду: если локальная ветка уже есть,
+        // main НЕ создаёт новую, а просто переключается на существующую.
+        const exists = branches.some(b => !b.remote && b.name === local)
+        const ok = exists
+          ? window.confirm(
+              t(
+                `Локальная ветка «${local}» уже есть — переключиться на неё без изменений?`,
+                `Local branch “${local}” already exists — switch to it without changing it?`,
+              ),
+            )
+          : window.confirm(
+              t(
+                `Создать локальную ветку «${local}» из «${branch}» и переключиться на неё?`,
+                `Create local branch “${local}” from “${branch}” and switch to it?`,
+              ),
+            )
+        if (!ok) return
+      }
       setBusy(true)
       setSwitching(branch)
       try {
         // Обычный checkout, как в VS Code. Никаких stash-манипуляций и тостов
         // на успех: переключение должно быть тихим и мгновенным. Остаёмся в
-        // списке веток — галка просто переезжает на новую строку.
-        const res = await window.syntee.git.checkout({ workdir, branch })
-        if (!res?.success) {
-          useToast.getState().add(res?.error ?? t('Не удалось переключить ветку', 'Failed to switch branch'), 'error')
-          return
-        }
-        await Promise.all([refresh(), loadBranches()])
+        // списке веток — галка просто переезжает на новую строку (её двигает
+        // стор: optimistic current + перечитывание после мутации).
+        await checkoutBranch({ branch, remote })
+        await refresh()
       } catch (e) {
         useToast.getState().add(String((e as Error)?.message ?? e), 'error')
       } finally {
@@ -370,29 +387,27 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
         setBusy(false)
       }
     },
-    [workdir, busy, refresh, loadBranches, lang, t],
+    [workdir, busy, branches, refresh, checkoutBranch, lang, t],
   )
 
   const createBranch = useCallback(
     async (name: string): Promise<void> => {
-      if (!workdir || busy || !name.trim()) return
+      const branch = name.trim()
+      if (!workdir || busy || !branch) return
       setBusy(true)
       try {
-        const res = await window.syntee.git.branchCreate({ workdir, branch: name.trim(), checkout: true })
-        if (!res?.success) {
-          useToast.getState().add(res?.error ?? t('Не удалось создать ветку', 'Failed to create branch'), 'error')
-          return
-        }
+        await createBranchInStore(branch, { checkout: true })
         setNewBranch(null)
         setBranchQuery('')
         await refresh()
-        await loadBranches()
         setView('panel')
+      } catch (e) {
+        useToast.getState().add(String((e as Error)?.message ?? e), 'error')
       } finally {
         setBusy(false)
       }
     },
-    [workdir, busy, refresh, loadBranches, lang, setView, t],
+    [workdir, busy, createBranchInStore, refresh, setView],
   )
 
   if (!workdir) return null
@@ -401,11 +416,17 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
 
   const dirty = summary ? summary.files : 0
   const canCommit = dirty > 0
-  const filteredBranches = branchQuery.trim()
-    ? branches.filter(b => b.name.toLowerCase().includes(branchQuery.trim().toLowerCase()))
-    : branches
-  // branches уже без remote (см. loadBranches) — здесь только поиск по имени.
-  const localBranches = filteredBranches
+  // Ветку показываем из стора, как только он хоть раз успешно прочитался
+  // (lastLoadedAt): стор свежее сводки — он обновляется после любого checkout в
+  // любой панели. Пока стор пуст, fallback — repoSummary. Признак «прочитан»
+  // именно lastLoadedAt, а не непустой current: current=null — это detached HEAD,
+  // и подставлять туда старую ветку из сводки нельзя.
+  const activeBranch = branchesLastLoadedAt !== null ? currentBranch : (summary?.branch ?? null)
+  const query = branchQuery.trim().toLowerCase()
+  const matchesQuery = (name: string): boolean => !query || name.toLowerCase().includes(query)
+  const localBranches = branches.filter(b => !b.remote && matchesQuery(b.name))
+  const remoteBranches = branches.filter(b => b.remote && matchesQuery(b.name))
+  const branchesEmpty = localBranches.length === 0 && remoteBranches.length === 0
   const requestAdded = lastTurnChanges?.totalAdded ?? 0
   const requestDeleted = lastTurnChanges?.totalDeleted ?? 0
   const requestFiles = lastTurnChanges?.files.length ?? 0
@@ -451,7 +472,7 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
               <header className="git-tools-header">
                 <FileDiff size={15} className="git-tools-header-icon" />
                 <span className="git-tools-title">{t('Обзор', 'Overview')}</span>
-                {summary?.branch && <span className="git-tools-header-branch">{summary.branch}</span>}
+                {activeBranch && <span className="git-tools-header-branch">{activeBranch}</span>}
                 <div className="git-tools-header-actions">
                   <button
                     type="button"
@@ -563,13 +584,13 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
                     <button
                       type="button"
                       className="git-tools-row"
-                      onClick={() => { setView('branches'); void loadBranches() }}
+                      onClick={() => { setView('branches'); void refreshBranchList({ force: false }) }}
                       title={t('Сменить ветку', 'Switch branch')}
                     >
                       <GitBranch size={14} className="git-tools-row-icon" />
                       <span className="git-tools-row-label">{t('Ветка', 'Branch')}</span>
                       <span className="git-tools-row-value">
-                        <span className="git-tools-branch">{summary?.branch ?? '—'}</span>
+                        <span className="git-tools-branch">{activeBranch ?? '—'}</span>
                         <ChevronDown size={12} />
                       </span>
                     </button>
@@ -650,6 +671,14 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
                       <ChevronLeft size={15} />
                     </button>
                     <span className="git-tools-subview-title">{t('Ветки', 'Branches')}</span>
+                    <button
+                      type="button"
+                      className="git-tools-icon-btn git-tools-subview-refresh"
+                      onClick={() => { void refreshBranchList(); void refreshRemoteBranches() }}
+                      title={t('Обновить ветки и удалённые', 'Refresh branches and remotes')}
+                    >
+                      <RefreshCw size={13} className={branchesLoading ? 'is-spinning' : undefined} />
+                    </button>
                   </div>
 
                   <div className="git-tools-search">
@@ -663,6 +692,27 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
                   </div>
 
                   <div className="git-tools-branch-list">
+                    {/* Тихий статус строкой, а не красной плашкой: ошибка чтения
+                        или remote-fetch не должна занимать пол-панели, и данные
+                        при этом не пропадают (стор хранит последний список). */}
+                    {(branchesLoading || branchesError || branchesRemoteError) && (
+                      <div className="git-tools-branch-status">
+                        {branchesLoading && <Loader2 size={11} className="is-spinning" />}
+                        <span>
+                          {branchesLoading
+                            ? t('Обновляем список веток…', 'Refreshing branches…')
+                            : branchesError ??
+                              t(
+                                `Удалённые не обновились: ${branchesRemoteError}`,
+                                `Remote branches not refreshed: ${branchesRemoteError}`,
+                              )}
+                        </span>
+                      </div>
+                    )}
+
+                    {localBranches.length > 0 && (
+                      <div className="git-tools-branch-group">{t('Локальные', 'Local')}</div>
+                    )}
                     {localBranches.map(b => (
                       <button
                         key={b.name}
@@ -691,8 +741,42 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
                         </span>
                       </button>
                     ))}
-                    {filteredBranches.length === 0 && (
-                      <div className="git-tools-empty">{t('Ничего не найдено', 'Nothing found')}</div>
+
+                    {/* Удалённые ветки: переключаемся не «в них», а на локальную
+                        копию с tracking — поэтому клик спрашивает подтверждение. */}
+                    {remoteBranches.length > 0 && (
+                      <div className="git-tools-branch-group">{t('Удалённые', 'Remote')}</div>
+                    )}
+                    {remoteBranches.map(b => (
+                      <button
+                        key={b.name}
+                        type="button"
+                        className={`git-tools-branch-item is-remote${switching === b.name ? ' is-switching' : ''}`}
+                        disabled={switching !== null}
+                        title={t(
+                          `Создать локальную ветку из ${b.name} и переключиться`,
+                          `Create a local branch from ${b.name} and switch to it`,
+                        )}
+                        onClick={() => void switchBranch(b.name, true)}
+                      >
+                        <span className="git-tools-branch-check">
+                          {switching === b.name ? (
+                            <Loader2 size={12} className="is-spinning" />
+                          ) : (
+                            <GitBranch size={12} />
+                          )}
+                        </span>
+                        <span className="git-tools-branch-body">
+                          <span className="git-tools-branch-name">{b.name}</span>
+                          <span className="git-tools-branch-note">{t('удалённая', 'remote')}</span>
+                        </span>
+                      </button>
+                    ))}
+
+                    {branchesEmpty && (
+                      <div className="git-tools-empty">
+                        {branchesLoading ? t('Загрузка…', 'Loading…') : t('Ничего не найдено', 'Nothing found')}
+                      </div>
                     )}
                   </div>
 
@@ -742,7 +826,7 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
                     <button type="button" className="git-tools-icon-btn" onClick={() => setView('panel')} title={t('Назад', 'Back')}>
                       <ChevronLeft size={15} />
                     </button>
-                    <span className="git-tools-subview-title">{summary?.branch ?? t('Ветка', 'Branch')}</span>
+                    <span className="git-tools-subview-title">{activeBranch ?? t('Ветка', 'Branch')}</span>
                     <span className="git-tools-subview-stats">
                       <span className="git-tools-add">+{summary?.added ?? 0}</span>
                       <span className="git-tools-del">−{summary?.deleted ?? 0}</span>

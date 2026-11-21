@@ -249,6 +249,133 @@
   cursor: default;
 }
 
+/* ── Локальные/удалённые ветки: строки, ошибки, подтверждения ─────── */
+.git-panel__branch-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  border-radius: var(--radius-sm);
+}
+
+.git-panel__branch-row .git-panel__branch-item {
+  flex: 1;
+  min-width: 0;
+}
+
+.git-panel__branch-item-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-panel__branch-item--remote {
+  color: var(--text-secondary);
+}
+
+.git-panel__branch-section-label {
+  padding: 6px 8px 2px;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-tertiary, #777);
+}
+
+.git-panel__branch-note {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  font-size: 11px;
+  color: var(--text-tertiary, #777);
+  min-width: 0;
+}
+
+.git-panel__branch-note span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-panel__branch-note--error {
+  color: #f5b041;
+}
+
+.git-panel__branch-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 2px 4px 4px;
+  padding: 6px 8px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+.git-panel__branch-confirm b {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.git-panel__branch-confirm-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.git-panel__branch-confirm-actions button {
+  flex: 1;
+  padding: 3px 6px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.git-panel__branch-confirm-actions button:hover:not(:disabled) {
+  background: var(--overlay-3);
+  color: var(--text-primary);
+}
+
+.git-panel__branch-confirm-ok {
+  background: var(--accent-bg) !important;
+  border-color: transparent !important;
+  color: var(--accent) !important;
+}
+
+.git-panel__branch-confirm-actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.git-panel__branch-refresh {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  margin-top: 4px;
+  padding: 4px 8px;
+  background: transparent;
+  border: none;
+  border-top: 1px solid var(--border);
+  color: var(--text-tertiary, #777);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.git-panel__branch-refresh:hover:not(:disabled) {
+  color: var(--accent);
+}
+
+.git-panel__branch-refresh:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .git-panel__sync-btn {
   display: flex;
   align-items: center;
