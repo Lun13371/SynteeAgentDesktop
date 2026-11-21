@@ -28,6 +28,7 @@ import { getSubagentRole, buildSubagentSystemPrompt } from '../../shared/subagen
 import { AIClient } from '../../core/ai/AIClient'
 import { getAccessToken } from '../services/tokenStore'
 import { getGatewayAuthToken, forceRefreshGatewayToken } from '../services/gatewayClient'
+import { getCodexAccessToken, getCodexAccountId, forceRefreshCodexToken } from '../services/codexAuth'
 import { getToolSchemas, GET_MAIN_CHAT_MESSAGES_SCHEMA, savePlanToFileSync } from '../../core/tools'
 import { projectMapQuery } from '../../core/tools/projectMap'
 import { extractFinalPlan } from '../../shared/planParser'
@@ -1001,6 +1002,11 @@ async function runChatSendScoped(
         // Свежий токен с авто-refresh: воркер не может рефрешить сам
         // (electron-store/tokenStore в worker_threads недоступны).
         gatewayToken: await getGatewayAuthToken().catch(() => getAccessToken()),
+        // ChatGPT-подписка (Codex): worker не умеет читать codexAuth
+        // (electron-store + safeStorage живут в main), поэтому передаём токен
+        // и account id снапшотом; refresh идёт round-trip'ом 'codex_token_refresh'.
+        codexToken: await getCodexAccessToken().catch(() => null),
+        codexAccountId: getCodexAccountId(),
         fileCacheSnapshot: getFileCacheSnapshot(params.chatId),
         workdir: chatWorkdir,
         // userData path — для fallback-поиска картинок-вложений в
@@ -1180,6 +1186,15 @@ async function runChatSendScoped(
         case 'gateway_token_refresh': {
           const replyId = msg.replyId as string
           forceRefreshGatewayToken()
+            .then((token) => worker.postMessage({ replyId, token }))
+            .catch(() => worker.postMessage({ replyId, token: null }))
+          break
+        }
+
+        // Worker поймал 401 от бэкенда ChatGPT — просит свежий Codex-токен.
+        case 'codex_token_refresh': {
+          const replyId = msg.replyId as string
+          forceRefreshCodexToken()
             .then((token) => worker.postMessage({ replyId, token }))
             .catch(() => worker.postMessage({ replyId, token: null }))
           break

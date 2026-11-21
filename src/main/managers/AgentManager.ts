@@ -10,6 +10,7 @@ import { projectMapQuery } from '../../core/tools/projectMap'
 import { getFileCacheSnapshot, mergeFileCache } from '../../core/context/fileReadCache'
 import { getAccessToken } from '../services/tokenStore'
 import { getGatewayAuthToken, forceRefreshGatewayToken } from '../services/gatewayClient'
+import { getCodexAccessToken, getCodexAccountId, forceRefreshCodexToken } from '../services/codexAuth'
 import { getGatewayModelsCache } from '../../core/tokens/gatewayModelsCache'
 import { exportCalibration } from '../../core/tokens/usageTracker'
 import { acceptAIUsage } from '../services/usageLedger'
@@ -627,6 +628,10 @@ class AgentManager {
     // Токен для воркера — с авто-refresh (сам воркер рефрешить не может:
     // electron-store/tokenStore в worker_threads недоступны).
     const gatewayToken = await getGatewayAuthToken().catch(() => getAccessToken())
+    // ChatGPT-подписка (Codex): воркер не умеет читать codexAuth — кладём снапшот,
+    // обновление идёт round-trip'ом 'codex_token_refresh'.
+    const codexToken = await getCodexAccessToken().catch(() => null)
+    const codexAccountId = getCodexAccountId()
     if (record.status === 'cancelled') return { summary: '', error: 'Суб-агент отменен пользователем' }
 
     return new Promise((resolvePromise) => {
@@ -677,6 +682,10 @@ class AgentManager {
             contextCalibration: exportCalibration(),
             catalogCachePath: join(app.getPath('userData'), 'modelsCatalog.json'),
             gatewayToken,
+            // ChatGPT-подписка (Codex): токен и account id — снапшотом из main,
+            // refresh идёт round-trip'ом 'codex_token_refresh' (см. обработчик ниже).
+            codexToken,
+            codexAccountId,
             fileCacheSnapshot: getFileCacheSnapshot(record.chatId),
             workdir: effectiveWorkdir,
             // §worktree — маппинг путей projectRoot → worktreePath (Agent.worktreeMap)
@@ -810,6 +819,14 @@ class AgentManager {
           case 'gateway_token_refresh': {
             const replyId = msg.replyId as string
             forceRefreshGatewayToken()
+              .then((token) => worker.postMessage({ replyId, token }))
+              .catch(() => worker.postMessage({ replyId, token: null }))
+            break
+          }
+          // Суб-агент поймал 401 от бэкенда ChatGPT — просит свежий Codex-токен.
+          case 'codex_token_refresh': {
+            const replyId = msg.replyId as string
+            forceRefreshCodexToken()
               .then((token) => worker.postMessage({ replyId, token }))
               .catch(() => worker.postMessage({ replyId, token: null }))
             break

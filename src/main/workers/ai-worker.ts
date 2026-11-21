@@ -4,7 +4,7 @@
  * Сохранение происходит в main thread через сообщение 'done'.
  */
 import { parentPort, workerData } from 'worker_threads'
-import { AIClient, setGatewayToken, setGatewayTokenRefresher } from '../../core/ai/AIClient'
+import { AIClient, setGatewayToken, setGatewayTokenRefresher, setCodexToken, setCodexTokenRefresher } from '../../core/ai/AIClient'
 import { Agent } from '../../core/agent/Agent'
 import { classifyTool } from '../../core/agent/commandSafety'
 import { writeFile, editFile } from '../../core/tools/index'
@@ -117,6 +117,27 @@ setGatewayTokenRefresher(() => new Promise<string | null>((resolve) => {
   })
   send({ type: 'gateway_token_refresh', replyId })
 }))
+
+// Refresher Codex-токена (ChatGPT-подписка): та же схема round-trip в main,
+// потому что codexAuth живёт в main-процессе (electron-store + safeStorage).
+setCodexTokenRefresher(() => new Promise<string | null>((resolve) => {
+  const replyId = `cx-refresh-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+  const timer = setTimeout(() => {
+    replyHandlers.delete(replyId)
+    resolve(null)
+  }, 15000)
+  replyHandlers.set(replyId, (reply) => {
+    clearTimeout(timer)
+    const token = (reply.token as string | null) ?? null
+    if (token) setCodexToken(token)
+    resolve(token)
+  })
+  send({ type: 'codex_token_refresh', replyId })
+}))
+
+// Стартовый Codex-токен из main (в worker нет доступа к codexAuth).
+const codexTokenAtStart = (workerData as Record<string, unknown>).codexToken as string | null | undefined
+if (codexTokenAtStart) setCodexToken(codexTokenAtStart)
 
 // Native analyze_image lifecycle (см. shared/types ToolStep.visualAnalysis).
 // Основная модель получает пиксели напрямую; исходный tool_result помечается

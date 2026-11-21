@@ -20,6 +20,7 @@ import { computeContextSnapshot, getModelPriceInfo } from '../tokens/usageTracke
 import type { ContextCountedInfo } from '../agent/types'
 import { resolveMediaTransport, requestMediaAnalysis, type AuxiliaryMediaInput, type MediaKind } from './mediaSupport'
 import { observeAIRequest, type AIUsageContext } from './requestUsage'
+import { randomUUID } from 'node:crypto'
 
 // ── Gateway token holder + refresher (ретрай на 401) ────────────────────────
 // Worker thread не может импортировать gatewayClient/tokenStore (electron-store
@@ -72,6 +73,74 @@ async function refreshGatewayTokenAfter401(): Promise<string | null> {
   } catch {
     return null
   }
+}
+
+// ── ChatGPT-подписка (Codex) ───────────────────────────────────────────────
+// API-ключа нет: авторизация идёт OAuth-токеном, который обновляется по exp.
+// В main-процессе токен берётся из codexAuth (с авто-refresh), в worker —
+// из workerData.codexToken (обновлённый override приоритетнее).
+let codexTokenOverride: string | null = null
+let codexTokenRefresher: (() => Promise<string | null>) | null = null
+
+/** Обновить Codex-токен в текущем процессе (после refresh или входа). */
+export function setCodexToken(token: string | null): void {
+  codexTokenOverride = token
+}
+
+/** Зарегистрировать refresher для worker thread (из ai-worker.ts). */
+export function setCodexTokenRefresher(fn: (() => Promise<string | null>) | null): void {
+  codexTokenRefresher = fn
+}
+
+function getWorkerCodexToken(): string | null {
+  return codexTokenOverride
+    ?? ((workerData as Record<string, unknown> | undefined)?.codexToken as string | null)
+}
+
+function getCodexAccountIdFromWorker(): string | null {
+  return (workerData as Record<string, unknown> | undefined)?.codexAccountId as string | null ?? null
+}
+
+/**
+ * Форс-refresh Codex-токена после 401. Main thread — напрямую через codexAuth
+ * (там singleton refreshPromise), worker — round-trip в main через refresher.
+ */
+async function refreshCodexTokenAfter401(): Promise<string | null> {
+  if (!isMainThread) {
+    try {
+      const fresh = (await codexTokenRefresher?.()) ?? null
+      if (fresh) codexTokenOverride = fresh
+      return fresh
+    } catch {
+      return null
+    }
+  }
+  try {
+    const { forceRefreshCodexToken } = await import('../../main/services/codexAuth')
+    const fresh = await forceRefreshCodexToken()
+    if (fresh) codexTokenOverride = fresh
+    return fresh
+  } catch {
+    return null
+  }
+}
+
+/** Маркер в apiKey провайдера: «токен берётся из ChatGPT-авторизации». */
+const CODEX_KEY_MARKER = '__CODEX__'
+
+/**
+ * Заголовки бэкенда ChatGPT для Codex-запросов (всё, кроме Authorization —
+ * его SDK ставит из apiKey). Дублирует codexAuth.getCodexHeaders, но без
+ * зависимостей от electron — чтобы работать и в worker-потоке.
+ */
+function codexHeaders(accountId: string | null): Record<string, string> {
+  const headers: Record<string, string> = {
+    originator: 'codex_cli_rs',
+    'OpenAI-Beta': 'responses=experimental',
+    'session_id': randomUUID().replace(/-/g, ''),
+  }
+  if (accountId) headers['chatgpt-account-id'] = accountId
+  return headers
 }
 
 export interface StreamCallbacks {
@@ -247,6 +316,12 @@ export class AIClient {
       return { provider, apiKey: '__JWT__' }
     }
 
+    // ChatGPT-подписка (Codex): ключа нет — авторизация OAuth-токеном.
+    // Маркер подставится в getClientForRoleAsync вместе с codex-заголовками.
+    if (provider.type === 'openai-codex') {
+      return { provider, apiKey: CODEX_KEY_MARKER }
+    }
+
     // Round-robin: выбираем следующий ключ из списка
     const { key, updatedProviders } = getNextApiKey(providers || [], assignment.providerId)
     if (!key) return null
@@ -272,6 +347,13 @@ export class AIClient {
     if (!providerId) return null
     if (providerId === 'syntee-gateway') {
       return getGatewayModelsCache().find(m => m.id === model) ?? null
+    }
+    // ChatGPT-подписка: уровни reasoning берём из живого каталога бэкенда
+    // (supported_reasoning_levels), который сохранён в cachedModels при фетче.
+    if (providerId === 'openai-codex') {
+      const cached = this.store.get('cachedModels', []) as ModelMeta[] | undefined
+      const found = cached?.find(m => m.id === model && m.providerId === providerId)
+      return found?.reasoningOptions ? { reasoningOptions: found.reasoningOptions } : null
     }
     const cat = getCatalogModel(providerId, model)
     return cat?.reasoningOptions ? { reasoningOptions: cat.reasoningOptions } : null
@@ -311,7 +393,67 @@ export class AIClient {
       }
       return this.observeClient(new OpenAI({ apiKey: token, baseURL: info.provider.baseUrl, defaultHeaders: this.identityHeaders() }), info.provider.id, type)
     }
+    if (info.apiKey === CODEX_KEY_MARKER) {
+      // ChatGPT-подписка: apiKey = access_token (SDK сам поставит Bearer),
+      // плюс заголовки бэкенда Codex. accountId нужен для chatgpt-account-id.
+      let token: string | null = null
+      let accountId: string | null = null
+      if (!isMainThread) {
+        token = getWorkerCodexToken()
+        accountId = getCodexAccountIdFromWorker()
+      } else {
+        const { getCodexAccessToken, getCodexAccountId } = await import('../../main/services/codexAuth')
+        token = await getCodexAccessToken()
+        accountId = getCodexAccountId()
+      }
+      if (!token) {
+        throw new Error('ChatGPT не подключён — войдите по подписке в Настройках → ИИ и модели.')
+      }
+      return this.observeClient(new OpenAI({
+        apiKey: token,
+        baseURL: info.provider.baseUrl,
+        defaultHeaders: { ...this.identityHeaders(), ...codexHeaders(accountId) },
+      }), info.provider.id, type)
+    }
     return this.observeClient(new OpenAI({ apiKey: info.apiKey, baseURL: info.provider.baseUrl, defaultHeaders: this.providerHeaders(info.provider) }), info.provider.id, type)
+  }
+
+  /**
+   * Codex access-токен: в worker — из workerData (main обновляет его при
+   * входе/refresh), в main-процессе — напрямую из codexAuth (с авто-refresh).
+   */
+  private async resolveCodexToken(): Promise<string | null> {
+    if (!isMainThread) return getWorkerCodexToken()
+    try {
+      const { getCodexAccessToken } = await import('../../main/services/codexAuth')
+      return await getCodexAccessToken()
+    } catch {
+      return null
+    }
+  }
+
+  /** account id подписки (заголовок chatgpt-account-id). */
+  private async resolveCodexAccountId(): Promise<string | null> {
+    if (!isMainThread) return getCodexAccountIdFromWorker()
+    try {
+      const { getCodexAccountId } = await import('../../main/services/codexAuth')
+      return getCodexAccountId()
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * Быстрая проверка «роль назначена на открытый ChatGPT-провайдер» БЕЗ
+   * round-robin ротации ключей. Для выбора API-пути: Codex отвечает только
+   * через Responses API, а body требует store:false и не терпит max_output_tokens.
+   */
+  private isCodexRole(type: string): boolean {
+    const assignments = this.store.get('modelAssignments') as Array<{ role: string; providerId: string }> | undefined
+    const assignment = assignments?.find(a => a.role === type)
+    if (!assignment?.providerId) return false
+    const providers = this.store.get('providers') as Provider[] | undefined
+    return providers?.find(p => p.id === assignment.providerId)?.type === 'openai-codex'
   }
 
   /**
@@ -340,6 +482,8 @@ export class AIClient {
    */
   private usesResponsesApi(model: string, modelType: string): boolean {
     if (this.responsesOnlyModels.has(model)) return true
+    // ChatGPT-подписка (Codex): chat/completions на этом бэкенде нет вообще.
+    if (this.isCodexRole(modelType)) return true
     return model.startsWith('muse-spark') && this.isOpencodeRole(modelType)
   }
 
@@ -363,6 +507,7 @@ export class AIClient {
     signal?: AbortSignal,
     maxOutputTokens?: number,
     reasoningExtra: Record<string, unknown> = {},
+    codex = false,
   ): Promise<string> {
     const systemMsg = messages[0]?.role === 'system' ? messages[0] : undefined
     const input = (systemMsg ? messages.slice(1) : messages).map(m => ({
@@ -374,7 +519,9 @@ export class AIClient {
       instructions: typeof systemMsg?.content === 'string' ? systemMsg.content : undefined,
       input,
       stream: true,
-      ...(maxOutputTokens ? { max_output_tokens: maxOutputTokens } : {}),
+      // Бэкенд Codex не принимает max_output_tokens и требует store:false.
+      ...(codex ? { store: false, include: ['reasoning.encrypted_content'] } : {}),
+      ...(maxOutputTokens && !codex ? { max_output_tokens: maxOutputTokens } : {}),
       // reasoning_effort → reasoning:{effort} (формат Responses API)
       ...responsesReasoningParam(reasoningExtra),
     }, { signal })
@@ -465,16 +612,34 @@ export class AIClient {
     // Responses → запоминаем в responsesOnlyModels).
     if (this.usesResponsesApi(model, modelType)) {
       callbacks.onWaiting?.()
+      const isCodex = this.isCodexRole(modelType)
       try {
-        const text = await this.streamViaResponses(client, model, allMessages, callbacks, signal, DEFAULT_MAX_TOKENS, reasoningExtra)
+        const text = await this.streamViaResponses(client, model, allMessages, callbacks, signal, DEFAULT_MAX_TOKENS, reasoningExtra, isCodex)
         callbacks.onDone(text)
       } catch (err: unknown) {
-        const error = err as { name?: string; message?: string }
+        const error = err as { status?: number; name?: string; message?: string }
         if (error?.name === 'AbortError' || signal?.aborted) {
           callbacks.onDone('')
-        } else {
-          callbacks.onError(new Error(error?.message || String(err)))
+          return
         }
+        // 401 на Codex-бэкенде = access-токен протух: форс-рефреш и один ретрай.
+        if (isCodex && error?.status === 401) {
+          const fresh = await refreshCodexTokenAfter401()
+          if (fresh) {
+            try {
+              client = await this.getClientForRoleAsync(modelType)
+              const text = await this.streamViaResponses(client, model, allMessages, callbacks, signal, DEFAULT_MAX_TOKENS, reasoningExtra, true)
+              callbacks.onDone(text)
+              return
+            } catch (retryErr: unknown) {
+              callbacks.onError(new Error((retryErr as { message?: string })?.message || String(retryErr)))
+              return
+            }
+          }
+          callbacks.onError(new Error('ChatGPT-сессия истекла — подключите подписку заново (Настройки → ИИ и модели).'))
+          return
+        }
+        callbacks.onError(new Error(error?.message || String(err)))
       }
       return
     }
@@ -718,14 +883,18 @@ export class AIClient {
     systemPrompt?: string,
     maxTokens?: number,
     reasoningExtra: Record<string, unknown> = {},
+    codex = false,
   ): Promise<string> {
     const res = await client.responses.create({
       model,
       instructions: systemPrompt,
       input: messages.map(m => ({ role: m.role, content: m.content })),
-      // Reasoning-модели (muse-spark) сжигают бюджет на скрытые рассуждения —
-      // 1024 не хватает даже на короткий ответ → минимум 4096.
-      max_output_tokens: Math.max(maxTokens ?? 1024, 4096),
+      ...(codex
+        // Бэкенд Codex: store:false обязателен, max_output_tokens не принимается.
+        ? { store: false, include: ['reasoning.encrypted_content'] }
+        // Reasoning-модели (muse-spark) сжигают бюджет на скрытые рассуждения —
+        // 1024 не хватает даже на короткий ответ → минимум 4096.
+        : { max_output_tokens: Math.max(maxTokens ?? 1024, 4096) }),
       // reasoning_effort → reasoning:{effort} (формат Responses API)
       ...responsesReasoningParam(reasoningExtra),
     })
@@ -751,7 +920,20 @@ export class AIClient {
 
     // ── Модели только с Responses API (muse-spark и runtime-выявленные) ─────
     if (this.usesResponsesApi(model, modelType)) {
-      return this.completeViaResponses(client, model, messages, systemPrompt, opts?.maxTokens, reasoningExtra)
+      const isCodex = this.isCodexRole(modelType)
+      try {
+        return await this.completeViaResponses(client, model, messages, systemPrompt, opts?.maxTokens, reasoningExtra, isCodex)
+      } catch (err: unknown) {
+        // 401 на Codex-бэкенде = access-токен протух: форс-рефреш и один ретрай.
+        const error = err as { status?: number }
+        if (isCodex && error?.status === 401) {
+          const fresh = await refreshCodexTokenAfter401()
+          if (!fresh) throw new Error('ChatGPT-сессия истекла — подключите подписку заново (Настройки → ИИ и модели).')
+          client = await this.getClientForRoleAsync(modelType)
+          return this.completeViaResponses(client, model, messages, systemPrompt, opts?.maxTokens, reasoningExtra, true)
+        }
+        throw err
+      }
     }
 
     let attempt = 0
@@ -898,6 +1080,7 @@ export class AIClient {
     signal: AbortSignal | undefined,
     maxTokens: number,
     reasoningExtra: Record<string, unknown>,
+    codex: boolean,
     cb: {
       onToken?: (token: string) => void
       onUsage?: (promptTokens: number, completionTokens: number, cacheReadTokens?: number, cacheWriteTokens?: number) => void
@@ -976,7 +1159,10 @@ export class AIClient {
       tool_choice: 'auto',
       stream: true,
       // Reasoning-модели сжигают бюджет на скрытые рассуждения → запас.
-      max_output_tokens: Math.max(maxTokens, 4096),
+      // Бэкенд Codex не принимает max_output_tokens и требует store:false.
+      ...(codex
+        ? { store: false, include: ['reasoning.encrypted_content'] }
+        : { max_output_tokens: Math.max(maxTokens, 4096) }),
       // reasoning_effort → reasoning:{effort} (формат Responses API)
       ...responsesReasoningParam(reasoningExtra),
     }, { signal })
@@ -1088,6 +1274,8 @@ export class AIClient {
     const providerInfo = this.getProviderInfoForRole(resolvedRole)
     // Для syntee-gateway apiKey === '__JWT__' — реальный JWT получаем ниже.
     const isGateway = providerInfo?.apiKey === '__JWT__'
+    // ChatGPT-подписка: ключа нет, токен и accountId резолвим отдельно.
+    const isCodex = providerInfo?.apiKey === CODEX_KEY_MARKER
     let gatewayToken: string | null = null
     if (isGateway) {
       // Worker thread не имеет доступа к electron-store/tokenStore.
@@ -1185,12 +1373,23 @@ export class AIClient {
       format: 'user/image_url', ...routedVisualPayload,
     })
 
-    // OpenAI-совместимый путь (включая syntee-gateway через JWT)
+    // OpenAI-совместимый путь (включая syntee-gateway через JWT и Codex-подписку)
+    let codexToken: string | null = null
+    let codexHeaderExtras: Record<string, string> = {}
+    if (isCodex) {
+      codexToken = getWorkerCodexToken() ?? await this.resolveCodexToken()
+      if (!codexToken) {
+        throw new Error('ChatGPT не подключён — войдите по подписке в Настройках → ИИ и модели.')
+      }
+      codexHeaderExtras = codexHeaders(getCodexAccountIdFromWorker() ?? await this.resolveCodexAccountId())
+    }
     let client = providerInfo
       ? this.observeClient(new OpenAI({
-          apiKey: isGateway ? gatewayToken! : providerInfo.apiKey,
+          apiKey: isGateway ? gatewayToken! : isCodex ? codexToken! : providerInfo.apiKey,
           baseURL: providerInfo.provider.baseUrl,
-          defaultHeaders: this.providerHeaders(providerInfo.provider),
+          defaultHeaders: isCodex
+            ? { ...this.identityHeaders(), ...codexHeaderExtras }
+            : this.providerHeaders(providerInfo.provider),
         }), providerInfo.provider.id, resolvedRole)
       : this.client
 
@@ -1198,9 +1397,25 @@ export class AIClient {
     // Известные модели идут в /responses сразу; остальные — авто-фоллбэком
     // в catch ниже (completions упал → пробуем Responses → запоминаем).
     if (this.usesResponsesApi(model, resolvedRole)) {
-      return this.chatWithToolsViaResponses(client, model, messages, tools, signal, maxTokens, reasoningExtra, {
+      const viaResponses = () => this.chatWithToolsViaResponses(client, model, messages, tools, signal, maxTokens, reasoningExtra, isCodex, {
         onToken, onUsage, onThinkingToken, onThinkingDone, onToolCallStarted,
       })
+      if (!isCodex) return viaResponses()
+      try {
+        return await viaResponses()
+      } catch (err: unknown) {
+        // 401 на Codex-бэкенде = access-токен протух: форс-рефреш и один ретрай.
+        if ((err as { status?: number })?.status !== 401) throw err
+        const fresh = await refreshCodexTokenAfter401()
+        if (!fresh) throw new Error('ChatGPT-сессия истекла — подключите подписку заново (Настройки → ИИ и модели).')
+        setCodexToken(fresh)
+        client = new OpenAI({
+          apiKey: fresh,
+          baseURL: providerInfo!.provider.baseUrl,
+          defaultHeaders: { ...this.identityHeaders(), ...codexHeaderExtras },
+        })
+        return viaResponses()
+      }
     }
 
     let attempt = 0
@@ -1369,7 +1584,7 @@ export class AIClient {
           && this.isCompletionsUnsupported({ status: realStatus || undefined, message: errMsg })) {
           try {
             log('[AIClient] completions не поддерживается (model=%s) — авто-фоллбэк на Responses API', model)
-            const result = await this.chatWithToolsViaResponses(client, model, messages, tools, signal, maxTokens, reasoningExtra, {
+            const result = await this.chatWithToolsViaResponses(client, model, messages, tools, signal, maxTokens, reasoningExtra, isCodex, {
               onToken, onUsage, onThinkingToken, onThinkingDone, onToolCallStarted,
             })
             this.responsesOnlyModels.add(model)

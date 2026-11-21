@@ -9,6 +9,8 @@ export type ProviderType =
   | 'opencode' | 'opencode-free' | 'opencode-go'
   | 'openrouter'
   | 'syntee-gateway'
+  /** ChatGPT-подписка (Codex OAuth): токен вместо ключа, Responses API на chatgpt.com */
+  | 'openai-codex'
 
 export interface Provider {
   id: string               // уникальный slug: 'openai', 'my-custom-1'
@@ -30,6 +32,18 @@ export interface Provider {
 }
 
 export type ModelCapability = 'vision' | 'video' | 'audio_input' | 'audio_output' | 'tools' | 'reasoning' | 'code' | 'embedding' | 'tts' | 'stt' | 'image_gen'
+
+/** Состояние входа по ChatGPT-подписке (Codex OAuth). */
+export interface CodexAuthState {
+  connected: boolean
+  source: 'oauth' | 'import' | null
+  email: string | null
+  plan: string | null
+  accountId: string | null
+  /** ms epoch истечения access-токена (по exp из JWT). */
+  expiresAt: number | null
+  lastLoginAt: string | null
+}
 
 /**
  * Спека режима мышления из каталога models.dev (поле reasoning_options).

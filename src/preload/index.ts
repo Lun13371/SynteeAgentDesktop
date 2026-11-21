@@ -832,6 +832,23 @@ const synteeAPI = {
     delete: (id: string) => ipcRenderer.invoke('protectedVars:delete', id) as Promise<boolean>,
   },
 
+  // ChatGPT-подписка (Codex OAuth): вход, импорт логина Codex CLI, статус, каталог моделей
+  codex: {
+    status: () => ipcRenderer.invoke('codex:status'),
+    login: () => ipcRenderer.invoke('codex:login'),
+    loginManual: (input: string) => ipcRenderer.invoke('codex:loginManual', input),
+    cancelLogin: () => ipcRenderer.invoke('codex:cancelLogin'),
+    import: () => ipcRenderer.invoke('codex:import'),
+    logout: () => ipcRenderer.invoke('codex:logout'),
+    refresh: () => ipcRenderer.invoke('codex:refresh'),
+    models: () => ipcRenderer.invoke('codex:models'),
+    onAuthChanged: (cb: (state: unknown) => void) => {
+      const handler = (_: unknown, state: unknown) => cb(state)
+      ipcRenderer.on('codex:auth-changed', handler)
+      return () => ipcRenderer.removeListener('codex:auth-changed', handler)
+    },
+  },
+
   // Провайдеры и модели
   providers: {
     getAll: () => ipcRenderer.invoke('providers:getAll'),

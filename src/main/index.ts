@@ -77,6 +77,7 @@ import { registerCommandsIPC } from './ipc/commands.ipc'
 import { registerMentionsIPC, shutdownMentions } from './ipc/mentions.ipc'
 import { registerProtectedVarsIPC } from './ipc/protectedVars.ipc'
 import { registerAuthIPC, registerDeepLinks } from './ipc/auth.ipc'
+import { registerCodexAuthIPC } from './ipc/codexAuth.ipc'
 import { registerGatewayIPC } from './ipc/gateway.ipc'
 import { registerBillingIPC } from './ipc/billing.ipc'
 import { registerStatsIPC } from './ipc/stats.ipc'
@@ -415,6 +416,7 @@ app.whenReady().then(async () => {
     .catch(err => console.warn('[browser:ext] boot load failed:', err))
   registerMemoryIPC(store)
   registerProviderIPC(store)
+  registerCodexAuthIPC()
   registerDebugIPC(store)
   registerImageIPC(store, mainWindow)
   registerFsIPC()

@@ -770,6 +770,17 @@ declare const synteeAPI: {
         }>;
         delete: (id: string) => Promise<boolean>;
     };
+    codex: {
+        status: () => Promise<any>;
+        login: () => Promise<any>;
+        loginManual: (input: string) => Promise<any>;
+        cancelLogin: () => Promise<any>;
+        import: () => Promise<any>;
+        logout: () => Promise<any>;
+        refresh: () => Promise<any>;
+        models: () => Promise<any>;
+        onAuthChanged: (cb: (state: unknown) => void) => () => Electron.IpcRenderer;
+    };
     providers: {
         getAll: () => Promise<any>;
         save: (provider: unknown) => Promise<any>;
@@ -1025,7 +1036,7 @@ declare const synteeAPI: {
             enabled?: boolean;
             scope?: unknown;
             toolTimeoutSeconds?: number;
-        }) => Promise<{ ok: boolean; error?: string }>;
+        }) => Promise<any>;
         setServersEnabled: (params: {
             serverIds: string[];
             projectId?: string;
