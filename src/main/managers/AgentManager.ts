@@ -26,7 +26,8 @@ import {
   type WorktreeInfo,
 } from './WorktreeIsolation'
 import { sweepStaleWorktrees } from './WorktreeGC'
-import { saveSubagent, loadAllSubagents, deleteSubagentsByChat, type SubagentRow } from '../../core/db/subagents'
+import { saveSubagent, loadAllSubagents, loadSubagentOverview, deleteSubagentsByChat, type SubagentRow } from '../../core/db/subagents'
+import type { SubagentOverviewItem } from '../../shared/types/subagentOverview'
 import { getChatBrowserMode } from '../../core/db/chats'
 import { getSubagentRole, buildSubagentSystemPrompt } from '../../shared/subagent-roles'
 import { stripFinalMarkers } from '../../shared/finalAnswer'
@@ -381,6 +382,14 @@ class AgentManager {
 
   getAll(): AgentRecord[] {
     return Array.from(this.agents.values()).sort((a, b) => a.createdAt - b.createdAt)
+  }
+
+  getOverview(chatId: string): SubagentOverviewItem[] {
+    const items = new Map(loadSubagentOverview(chatId).map(item => [item.id, item]))
+    for (const { id, chatId: owner, task, status, createdAt, finishedAt, role } of this.agents.values()) {
+      if (owner === chatId) items.set(id, { id, task, status, createdAt, finishedAt, role })
+    }
+    return [...items.values()]
   }
 
   get(id: string): AgentRecord | undefined {
@@ -1354,6 +1363,26 @@ resolve({ summary: '', error: e.message })
     }
   }
 
+  /**
+   * Останавливает все живые агенты чата, НЕ удаляя записи: они остаются в
+   * истории со статусом 'cancelled' и фиксированным временем.
+   *
+   * Зачем отдельно от terminate() воркера чата: суб-агенты крутятся в
+   * собственных worker_threads AgentManager'а, поэтому убийство воркера
+   * родительского рана их не останавливает — они догорали в фоне после
+   * «Стоп» и попадали в список завершённых как успешно выполненные.
+   */
+  cancelRunningInChat(chatId: string): number {
+    let cancelled = 0
+    for (const [id, record] of [...this.agents]) {
+      if (record.chatId !== chatId) continue
+      if (record.status !== 'running' && record.status !== 'pending') continue
+      this.cancel(id)
+      cancelled++
+    }
+    return cancelled
+  }
+
   clearChat(chatId: string) {
     Array.from(this.agents.entries()).forEach(([id, record]) => {
       if (record.chatId === chatId) {
@@ -1364,6 +1393,7 @@ resolve({ summary: '', error: e.message })
     // FK ON DELETE CASCADE обычно срабатывает при удалении чата, но clearChat
     // может вызываться без удаления чата — подчищаем явно.
     try { deleteSubagentsByChat(chatId) } catch { /* noop */ }
+    this.broadcast('agent:overviewCleared', { chatId })
   }
 }
 

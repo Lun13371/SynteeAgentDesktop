@@ -385,6 +385,9 @@ class AnthropicSdkAdapter:
         tool_counter = 0
         input_tokens = 0
         output_tokens = 0
+        # Cache-hit tokens reported separately so the client can see the saving
+        # (OpenAI-shaped clients read usage.prompt_tokens_details.cached_tokens).
+        cache_read_tokens = 0
         stop_reason = "stop"
 
         try:
@@ -397,7 +400,8 @@ class AnthropicSdkAdapter:
                     u = getattr(msg, "usage", None)
                     if u is not None:
                         input_tokens = getattr(u, "input_tokens", 0) or 0
-                        input_tokens += getattr(u, "cache_read_input_tokens", 0) or 0
+                        cache_read_tokens = getattr(u, "cache_read_input_tokens", 0) or 0
+                        input_tokens += cache_read_tokens
                         input_tokens += getattr(u, "cache_creation_input_tokens", 0) or 0
 
                 elif event_type == "content_block_start":
@@ -493,6 +497,10 @@ class AnthropicSdkAdapter:
                 "prompt_tokens": input_tokens,
                 "completion_tokens": output_tokens,
                 "total_tokens": input_tokens + output_tokens,
+                # Cached prefix tokens ride inside prompt_tokens (Anthropic
+                # semantics) but must be reported separately, otherwise every
+                # cache hit is billed/shown as a full-price input token.
+                "prompt_tokens_details": {"cached_tokens": cache_read_tokens},
             },
         }
 
@@ -531,7 +539,8 @@ class AnthropicSdkAdapter:
         usage = response.usage
         prompt_tokens = getattr(usage, "input_tokens", 0) or 0
         # Include cached tokens (Anthropic caches system prompt + tools).
-        prompt_tokens += getattr(usage, "cache_read_input_tokens", 0) or 0
+        cache_read_tokens = getattr(usage, "cache_read_input_tokens", 0) or 0
+        prompt_tokens += cache_read_tokens
         prompt_tokens += getattr(usage, "cache_creation_input_tokens", 0) or 0
         completion_tokens = getattr(usage, "output_tokens", 0) or 0
         # Vercel doesn't return input_tokens — use our estimate as fallback.
@@ -564,6 +573,9 @@ class AnthropicSdkAdapter:
                 "prompt_tokens": prompt_tokens,
                 "completion_tokens": completion_tokens,
                 "total_tokens": prompt_tokens + completion_tokens,
+                # Cache hits ride inside prompt_tokens; expose them so the
+                # client accounting can bill/show them at the cache rate.
+                "prompt_tokens_details": {"cached_tokens": cache_read_tokens},
             },
         }
 
@@ -589,6 +601,7 @@ class AnthropicSdkAdapter:
         tool_counter = 0
         input_tokens = 0
         output_tokens = 0
+        cache_read_tokens = 0
         finish_reason = "stop"
         sent_role = False
         # Accumulate content for output-token estimation fallback (Vercel
@@ -617,7 +630,8 @@ class AnthropicSdkAdapter:
                     u = getattr(msg, "usage", None)
                     if u is not None:
                         input_tokens = getattr(u, "input_tokens", 0) or 0
-                        input_tokens += getattr(u, "cache_read_input_tokens", 0) or 0
+                        cache_read_tokens = getattr(u, "cache_read_input_tokens", 0) or 0
+                        input_tokens += cache_read_tokens
                         input_tokens += getattr(u, "cache_creation_input_tokens", 0) or 0
                     if not sent_role:
                         yield _chunk({"role": "assistant", "content": ""})
@@ -720,6 +734,7 @@ class AnthropicSdkAdapter:
             "prompt_tokens": input_tokens,
             "completion_tokens": output_tokens,
             "total_tokens": input_tokens + output_tokens,
+            "prompt_tokens_details": {"cached_tokens": cache_read_tokens},
         }
         yield final
 

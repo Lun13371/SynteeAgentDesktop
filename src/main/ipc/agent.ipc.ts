@@ -17,6 +17,7 @@ export function registerAgentIPC(store: Store, getWindow: () => BrowserWindow | 
 
   // Получить список всех агентов
   ipcMain.handle('agent:list', () => agentManager.getAll())
+  ipcMain.handle('agent:overview', (_e, chatId: string) => agentManager.getOverview(chatId))
 
   // Получить конкретного агента
   ipcMain.handle('agent:get', (_e, id: string) => agentManager.get(id) ?? null)

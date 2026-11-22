@@ -167,7 +167,11 @@ const { Agent } = load('src/core/agent/Agent.ts', {
   '../logger': { log() {} }, './utils': { FALLBACK_SYSTEM_PROMPT: 'test', normalizeToolName: x => x, isSequentialTool: () => true, dropOldestRoundsIfOverflow: x => x },
   './validateArgs': empty, './toolDispatcher': { ToolDispatcher: class { maskSecretValuesInText(text) { return text } } }, jsonrepair: { jsonrepair: x => x },
   '../../shared/toolSettings': { getToolSettings: () => ({}), filterToolSchemas: x => x, isToolDisabled: () => false },
-  '../prompts/buildSystemPrompt': { sanitizeToolInstructions: x => x },
+  '../prompts/buildSystemPrompt': {
+    sanitizeToolInstructions: x => x,
+    // Реальный сплиттер: без него Agent не соберёт сообщения (§prompt-cache).
+    splitSystemPromptForCache: p => ({ staticPart: p || '', dynamicPart: '' }),
+  },
   './goalRuntime': { GoalRuntime },
   './goalEvaluator': goalEvaluatorMock,
 }, anyStub())

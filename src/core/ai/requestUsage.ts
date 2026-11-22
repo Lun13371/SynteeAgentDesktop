@@ -33,6 +33,27 @@ function tokens(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.floor(value) : undefined
 }
 
+/**
+ * Кеш-чтения из usage. Поле у каждого провайдера своё, и раньше читалось
+ * только одно (prompt_tokens_details.cached_tokens) — из-за этого экономия
+ * DeepSeek и gateway-прокси не доезжала до учёта вовсе.
+ *   OpenAI / OpenRouter / большинство прокси: prompt_tokens_details.cached_tokens
+ *   Responses API:                              input_tokens_details.cached_tokens
+ *   DeepSeek:                                   prompt_cache_hit_tokens
+ *   прочие OpenAI-совместимые:                  cached_tokens / cache_hit_tokens
+ * Anthropic сюда не ходит — у него отдельная ветвь (cache_read_input_tokens).
+ */
+export function cacheReadTokensOf(usage: unknown): number | undefined {
+  if (!usage || typeof usage !== 'object') return undefined
+  const u = usage as Usage
+  const details = (u.prompt_tokens_details ?? u.input_tokens_details) as Usage | undefined
+  return tokens(details?.cached_tokens)
+    ?? tokens(u.prompt_cache_hit_tokens)
+    ?? tokens(u.cached_tokens)
+    ?? tokens(u.cache_hit_tokens)
+    ?? tokens(u.cache_read_input_tokens)
+}
+
 /** Observe the SDK boundary, so fallbacks and non-stream/auxiliary calls count too.
  * Each invocation has one ID; Anthropic's cumulative updates replace one ledger row.
  * No prompts, response bodies, credentials or tool arguments enter the ledger.
@@ -71,8 +92,9 @@ export async function observeAIRequest<T>(
     } else {
       inputTokens = tokens(usage.prompt_tokens ?? usage.input_tokens)
       outputTokens = api === 'embedding' ? 0 : tokens(usage.completion_tokens ?? usage.output_tokens)
-      const details = (usage.prompt_tokens_details ?? usage.input_tokens_details) as Usage | undefined
-      cacheReadTokens = tokens(details?.cached_tokens)
+      // Не сбрасываем ранее пойманное значение: провайдер может прислать
+      // кеш-поля не в каждом пакете usage, а суммарные — один раз.
+      cacheReadTokens = cacheReadTokensOf(usage) ?? cacheReadTokens
     }
   }
   // A rejected HTTP request has no confirmed usage. Accepted streams are tracked

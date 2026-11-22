@@ -633,6 +633,11 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       // Прерываем agent PTY: Ctrl+C + очистка pending. Без этого сессия
       // остаётся в '[shell busy]' и следующий run_command зависает.
       ptyManager.interruptByChat(run.chatId)
+      // Суб-агенты работают в отдельных worker_threads AgentManager'а, поэтому
+      // terminate() воркера чата их не трогает: без явной отмены они догорали
+      // в фоне после «Стоп» и попадали в «Завершённые» с галочкой, хотя
+      // запрос остановлен. Отменяем их первыми — пока запись родителя жива.
+      agentManager.cancelRunningInChat(run.chatId)
       // Висящие ask_user этого запуска больше некому отвечать — снимаем их с
       // панели до флеша (иначе пользователь отвечал бы в убитый воркер).
       dismissPendingQuestions(win, run)

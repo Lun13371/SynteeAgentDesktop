@@ -45,7 +45,11 @@ const { Agent } = load('src/core/agent/Agent.ts', {
   './utils': { FALLBACK_SYSTEM_PROMPT: 'test' },
   './toolDispatcher': { ToolDispatcher: class { maskSecretValuesInText(text) { return text } } },
   '../../shared/toolSettings': { getToolSettings: () => ({}), filterToolSchemas: schemas => schemas, isToolDisabled: () => false },
-  '../prompts/buildSystemPrompt': { sanitizeToolInstructions: text => text },
+  '../prompts/buildSystemPrompt': {
+    sanitizeToolInstructions: text => text,
+    // Реальный сплиттер: без него Agent не соберёт сообщения (§prompt-cache).
+    splitSystemPromptForCache: p => ({ staticPart: p || '', dynamicPart: '' }),
+  },
 }, anyStub())
 
 test('new Agent.run worker restores persisted summaries before its first provider request, with recall available when minis are disabled', async () => {

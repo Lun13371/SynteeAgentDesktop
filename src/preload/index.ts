@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { SkillFolderUpdate } from '../shared/types'
+import type { SubagentOverviewItem } from '../shared/types/subagentOverview'
 
 // Типизированный API bridge для renderer
 const synteeAPI = {
@@ -774,6 +775,7 @@ const synteeAPI = {
     run: (query: string) => ipcRenderer.invoke('agent:run', query),
     cancel: (id?: string) => ipcRenderer.invoke('agent:cancel', id),
     list: () => ipcRenderer.invoke('agent:list'),
+    overview: (chatId: string) => ipcRenderer.invoke('agent:overview', chatId) as Promise<SubagentOverviewItem[]>,
     get: (id: string) => ipcRenderer.invoke('agent:get', id),
     children: (parentId: string) => ipcRenderer.invoke('agent:children', parentId),
     clearChat: (chatId: string) => ipcRenderer.invoke('agent:clearChat', chatId),

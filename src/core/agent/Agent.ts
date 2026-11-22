@@ -46,7 +46,7 @@ import { GoalRuntime } from './goalRuntime'
 import { formatTranscript, makeGoalJudge } from './goalEvaluator'
 import type { ChatGoal } from '../../shared/types/goal'
 import { filterToolSchemas, getToolSettings, isToolDisabled } from '../../shared/toolSettings'
-import { sanitizeToolInstructions } from '../prompts/buildSystemPrompt'
+import { sanitizeToolInstructions, splitSystemPromptForCache } from '../prompts/buildSystemPrompt'
 import { executeCode, EphemeralArtifactStore } from '../codeMode'
 import type { CodeTraceEntry } from '../codeMode'
 import { Janitor } from '../context/janitor'
@@ -340,7 +340,14 @@ export class Agent {
     })
   }
 
-  /** J2: якорь кэша на последнем сообщении эпохи; между компакциями не двигается. */
+  /**
+   * J2 + §prompt-cache: якорь кеша на ПОСЛЕДНЕМ сообщении текущего запроса.
+   * Вызывается перед каждым раундом (и после janitor/overflow-сжатия): новый
+   * кадр данных дописывается в конец, префикс предыдущего раунда остаётся
+   * неизменным и читается из кеша Anthropic. Все остальные якоря снимаются —
+   * Anthropic разрешает 4 breakpoint'а на запрос, а лишние пустые записи
+   * стоят премии 1.25×.
+   */
   private markCacheAnchor(messages: AgentMessage[]): void {
     for (const m of messages) {
       if ((m as { cacheAnchor?: boolean }).cacheAnchor) (m as { cacheAnchor?: boolean }).cacheAnchor = false
@@ -607,6 +614,12 @@ export class Agent {
     const supportsVision = agentModelSupportsVision(this.store, this.role)
     const toolSettings = getToolSettings(this.store)
     const sanitizedSystemPrompt = sanitizeToolInstructions(systemPrompt || FALLBACK_SYSTEM_PROMPT, toolSettings)
+    // §prompt-cache: в system едет ТОЛЬКО кешируемый статичный префикс, а
+    // динамический хвост (дата-время, память, project map, working memory)
+    // уходит отдельным session_context-сообщением перед текущей репликой.
+    // Иначе меняющаяся первая строка хвоста ломает префикс и история диалога
+    // не попадает в prompt cache провайдера ни на одном эндпоинте.
+    const { staticPart: staticSystemPrompt, dynamicPart: sessionContext } = splitSystemPromptForCache(sanitizedSystemPrompt)
     // Пиксели из истории переподставляются в КАЖДЫЙ запрос, поэтому чат из
     // десяти скриншотов отправлял десятки мегабайт на каждом ходу — и чем
     // длиннее диалог, тем «случайнее» падал запрос (413 / request too large).
@@ -624,8 +637,13 @@ export class Agent {
       }
     }
     const historyContents = hydrateHistoryContents(historyList, supportsVision, imageBudget)
+    // Префикс «system-статика + история» обязан быть побайтово одинаковым
+    // между ходами, иначе кеш провайдера не даёт ни одного попадания.
+    const sessionContextBlock = sessionContext.trim()
+      ? { role: 'user' as const, content: `<session_context>\n${sessionContext.trim()}\n</session_context>` }
+      : null
     const messages: AgentMessage[] = [
-      { role: 'system', content: sanitizedSystemPrompt },
+      { role: 'system', content: staticSystemPrompt },
       ...historyList.map((m, index) => ({
         role: m.role,
         content: historyContents[index],
@@ -635,6 +653,7 @@ export class Agent {
         ...(m.thinking_blocks ? { thinking_blocks: m.thinking_blocks } : {}),
         ...(m.reasoning_content ? { reasoning_content: m.reasoning_content } : {}),
       })),
+      ...(sessionContextBlock ? [sessionContextBlock] : []),
       {
         role: 'user',
         // Если есть imageParts (основная модель поддерживает vision) —
@@ -1081,6 +1100,13 @@ export class Agent {
           if (goalRuntime) goalRuntime.addTokens(promptTokens + completionTokens)
           callbacks.onUsage?.(promptTokens, completionTokens, cacheRead, cacheWrite)
         }
+        // §prompt-cache: конец ТЕКУЩЕГО запроса = breakpoint Anthropic.
+        // Двигаем его каждый раунд (предыдущий снимается внутри метода) —
+        // тогда «tools + system-статика + вся история до прошлого раунда»
+        // читается из кеша, и по полной цене идёт только новый tool-результат.
+        // Раньше якорь ставился лишь после janitor/overflow, поэтому обычный
+        // ран платил полную цену за историю на каждом раунде.
+        this.markCacheAnchor(messages)
         let response!: Awaited<ReturnType<typeof this.client.chatWithTools>>
         try {
           response = await goalWait(Promise.race([

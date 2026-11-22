@@ -43,6 +43,8 @@ import { useUIStore } from '../../../store/ui.store'
 import { localNameForRemote, useGitBranches } from '../../../hooks/useGitBranches'
 import { useToast } from '../Toast/Toast'
 import GitGraph from '../GitGraph/GitGraph'
+import { useSubagentOverview } from '../../../hooks/useSubagentOverview'
+import SubagentOverview from './SubagentOverview'
 import './GitTools.css'
 
 type View = 'panel' | 'branches' | 'commit'
@@ -96,6 +98,7 @@ const VIEW_VARIANTS = {
 
 export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTurnChanges }: GitToolsProps) {
   const t = (ru: string, en: string): string => (lang === 'en' ? en : ru)
+  const subagents = useSubagentOverview(chatId)
 
   // Панель по стандарту раскрыта — прятать её каждый раз бессмысленно,
   // это основной рабочий инструмент, а не редкий поповер.
@@ -410,9 +413,8 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
     [workdir, busy, createBranchInStore, refresh, setView],
   )
 
-  if (!workdir) return null
-  // Вне git-репозитория панель не нужна — не занимаем угол.
-  if (isRepo === false) return null
+  const showGit = Boolean(workdir) && isRepo !== false
+  if (!showGit && subagents.length === 0) return null
 
   const dirty = summary ? summary.files : 0
   const canCommit = dirty > 0
@@ -437,7 +439,7 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
         type="button"
         className={`git-tools-chip${open ? ' is-open' : ''}`}
         onClick={() => (open ? close() : openPanel())}
-        title={t('Репозиторий и план задачи', 'Repository and task plan')}
+        title={t('Обзор чата', 'Chat overview')}
         aria-expanded={open}
       >
         <FileDiff size={13} className="git-tools-chip-icon" />
@@ -445,12 +447,12 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
         {/* План есть → бейдж показывает прогресс; плана нет → изменения. */}
         {progress ? (
           <span className="git-tools-chip-progress">{progress.done}/{progress.total}</span>
-        ) : summary && dirty > 0 ? (
+        ) : showGit && summary && dirty > 0 ? (
           <span className="git-tools-chip-stats">
             <span className="git-tools-add">+{summary.added}</span>
             <span className="git-tools-del">−{summary.deleted}</span>
           </span>
-        ) : summary ? (
+        ) : showGit && summary ? (
           <span className="git-tools-chip-clean">{t('чисто', 'clean')}</span>
         ) : null}
         <ChevronDown size={12} className={`git-tools-chip-chevron${open ? ' is-open' : ''}`} />
@@ -472,16 +474,18 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
               <header className="git-tools-header">
                 <FileDiff size={15} className="git-tools-header-icon" />
                 <span className="git-tools-title">{t('Обзор', 'Overview')}</span>
-                {activeBranch && <span className="git-tools-header-branch">{activeBranch}</span>}
+                {showGit && activeBranch && <span className="git-tools-header-branch">{activeBranch}</span>}
                 <div className="git-tools-header-actions">
-                  <button
-                    type="button"
-                    className={`git-tools-icon-btn${menuOpen ? ' is-active' : ''}`}
-                    onClick={() => setMenuOpen(m => !m)}
-                    title={t('Ещё', 'More')}
-                  >
-                    <span className="git-tools-dots">···</span>
-                  </button>
+                  {showGit && (
+                    <button
+                      type="button"
+                      className={`git-tools-icon-btn${menuOpen ? ' is-active' : ''}`}
+                      onClick={() => setMenuOpen(m => !m)}
+                      title={t('Ещё', 'More')}
+                    >
+                      <span className="git-tools-dots">···</span>
+                    </button>
+                  )}
                   <button type="button" className="git-tools-icon-btn" onClick={close} title={t('Свернуть', 'Collapse')}>
                     <X size={14} />
                   </button>
@@ -489,7 +493,7 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
               </header>
 
               <AnimatePresence initial={false}>
-              {menuOpen && (
+              {showGit && menuOpen && (
                 <motion.div
                   className="git-tools-menu"
                   initial={{ height: 0, opacity: 0 }}
@@ -528,7 +532,7 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
               </AnimatePresence>
 
               <AnimatePresence mode="wait" initial={false} custom={viewDir}>
-              {view === 'panel' && (
+              {(!showGit || view === 'panel') && (
                 <motion.div
                   key="panel"
                   className="git-tools-body"
@@ -539,9 +543,9 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
                   exit="exit"
                   transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
                 >
-                  {summaryError && <div className="git-tools-error">{summaryError}</div>}
+                  {showGit && summaryError && <div className="git-tools-error">{summaryError}</div>}
 
-                  <div className="git-tools-rows">
+                  {showGit && <div className="git-tools-rows">
                     <button
                       type="button"
                       className="git-tools-row"
@@ -600,7 +604,9 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
                       <span className="git-tools-row-label">{t('Коммит или push', 'Commit or push')}</span>
                       <ChevronDown size={12} className="git-tools-row-chevron-right" style={{ transform: 'rotate(-90deg)' }} />
                     </button>
-                  </div>
+                  </div>}
+
+                  <SubagentOverview key={chatId} items={subagents} lang={lang} />
 
                   {/* ── План задачи — внизу панели, компактно ── */}
                   {progress && (
@@ -655,7 +661,7 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
                 </motion.div>
               )}
 
-              {view === 'branches' && (
+              {showGit && view === 'branches' && (
                 <motion.div
                   key="branches"
                   className="git-tools-subview"
@@ -811,7 +817,7 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
                 </motion.div>
               )}
 
-              {view === 'commit' && (
+              {showGit && view === 'commit' && (
                 <motion.div
                   key="commit"
                   className="git-tools-subview"
@@ -905,7 +911,7 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
 
       {/* Окно графа — с анимацией открытия и закрытия. */}
       <AnimatePresence>
-        {graphOpen && <GitGraph key="git-graph" workdir={workdir} lang={lang} onClose={() => setGraphOpen(false)} />}
+        {showGit && workdir && graphOpen && <GitGraph key="git-graph" workdir={workdir} lang={lang} onClose={() => setGraphOpen(false)} />}
       </AnimatePresence>
     </>
   )

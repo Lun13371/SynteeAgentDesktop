@@ -132,6 +132,7 @@ if (!window.syntee) {
       search: () => Promise.resolve([]),
     },
     agent: {
+      overview: () => Promise.resolve([]),
       run: () => Promise.resolve({ started: true }),
       cancel: () => Promise.resolve({ cancelled: true }),
     },

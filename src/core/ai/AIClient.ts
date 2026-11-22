@@ -19,7 +19,7 @@ import { repairToolCallHistory } from './toolCallHistory'
 import { computeContextSnapshot, getModelPriceInfo } from '../tokens/usageTracker'
 import type { ContextCountedInfo } from '../agent/types'
 import { resolveMediaTransport, requestMediaAnalysis, type AuxiliaryMediaInput, type MediaKind } from './mediaSupport'
-import { observeAIRequest, type AIUsageContext } from './requestUsage'
+import { observeAIRequest, cacheReadTokensOf, type AIUsageContext } from './requestUsage'
 import { randomUUID } from 'node:crypto'
 
 // ── Gateway token holder + refresher (ретрай на 401) ────────────────────────
@@ -480,6 +480,21 @@ export class AIClient {
    * Известные заранее (muse-spark*) идут туда сразу; остальные определяются
    * автоматически: первая ошибка completions → пробуем /responses → запоминаем.
    */
+  /**
+   * prompt_cache_key — «липкий» роутинг OpenAI: запросы с одинаковым ключом
+   * попадают на тот же инстанс модели, что заметно повышает долю попаданий в
+   * prompt cache (у OpenAI кеш живёт на машине, а не в общем хранилище).
+   * Отправляется ТОЛЬКО официальному OpenAI и только моделям, которые этот
+   * параметр знают (gpt-5+/gpt-6): прочие OpenAI-совместимые эндпоинты
+   * отвечают 400 на незнакомое поле запроса, а нам нужен нулевой риск.
+   */
+  private promptCacheKeyParam(provider: Provider | undefined, model: string): Record<string, string> {
+    if (!provider || provider.type !== 'openai') return {}
+    if (!/^gpt-(5|6)/i.test(model)) return {}
+    const chatId = this.usageContext?.chatId
+    return chatId ? { prompt_cache_key: `syntee-${chatId}` } : {}
+  }
+
   private usesResponsesApi(model: string, modelType: string): boolean {
     if (this.responsesOnlyModels.has(model)) return true
     // ChatGPT-подписка (Codex): chat/completions на этом бэкенде нет вообще.
@@ -1359,6 +1374,15 @@ export class AIClient {
       )
     }
 
+    // cacheAnchor — служебный маркер Anthropic-конвертера (cache_control на
+    // последнем блоке сообщения). Anthropic-ветка выше уже отработала и
+    // вернулась; OpenAI-совместимые эндпоинты отклоняют незнакомые поля
+    // сообщения (400 Unrecognized request argument), поэтому дальше маркер
+    // обязан быть снят с массива ДО отправки (в т.ч. через /responses).
+    for (const m of messages) {
+      if ((m as { cacheAnchor?: boolean }).cacheAnchor) delete (m as { cacheAnchor?: boolean }).cacheAnchor
+    }
+
     // Native Anthropic above supports images inside tool_result. OpenAI-compatible
     // endpoints require visual input in user messages; keep tool pairs intact.
     const originalVisualPayload = summarizeImagePayload(messages)
@@ -1439,6 +1463,7 @@ export class AIClient {
           tool_choice: 'auto',
           stream: true,
           stream_options: { include_usage: true },
+          ...this.promptCacheKeyParam(providerInfo?.provider, model),
           temperature,
           max_tokens: maxTokens,
           ...reasoningExtra,
@@ -1462,18 +1487,21 @@ export class AIClient {
               prompt_tokens_details?: { cached_tokens?: number }
             }
             if (usage.prompt_tokens != null) {
-              // [OI]/прокси может вернуть cached_tokens — передаём как cacheReadTokens.
-              // cacheWriteTokens для [OI] не применим (автокэширование без маркеров).
-              // Провайдер (gateway, DeepSeek через прокси) может прислать usage
-              // в НЕСКОЛЬКИХ чанках. Раньше onUsage звался на каждый пакет, а
-              // воркер складывал вызовы (accPromptTokens) → один prompt считался
-              // 2-3 раза: «Вход за ход» показывал 400k при реальных 225k, и
-              // цифра гуляла от хода к ходу. Запоминаем последний пакет и отдаём
-              // его один раз, после цикла.
+              // Кеш-чтения разбирает cacheReadTokensOf: OpenAI/OpenRouter —
+              // prompt_tokens_details.cached_tokens, DeepSeek — отдельные
+              // prompt_cache_hit_tokens (prompt_tokens у него уже total),
+              // прочие совместимые — cached_tokens/cache_hit_tokens.
+              // cacheWriteTokens для [OI] не применим (автокеширование без
+              // маркеров). Провайдер (gateway, DeepSeek через прокси) может
+              // прислать usage в НЕСКОЛЬКИХ чанках. Раньше onUsage звался на
+              // каждый пакет, а воркер складывал вызовы (accPromptTokens) →
+              // один prompt считался 2-3 раза: «Вход за ход» показывал 400k при
+              // реальных 225k, и цифра гуляла от хода к ходу. Запоминаем
+              // последний пакет и отдаём его один раз, после цикла.
               usageOfRequest = {
                 promptTokens: usage.prompt_tokens,
                 completionTokens: usage.completion_tokens ?? 0,
-                cacheReadTokens: usage.prompt_tokens_details?.cached_tokens,
+                cacheReadTokens: cacheReadTokensOf(usage),
               }
             }
           }

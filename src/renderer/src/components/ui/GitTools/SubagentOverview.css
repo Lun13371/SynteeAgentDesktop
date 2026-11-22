@@ -1,0 +1,165 @@
+.overview-agents {
+  flex-shrink: 0;
+  padding: 2px 6px 4px;
+  border-top: 1px solid var(--border);
+}
+
+.overview-agents-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.14s;
+}
+
+.overview-agents-toggle:hover {
+  background: color-mix(in srgb, var(--text-primary) 7%, transparent);
+}
+
+.overview-agents-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted, rgba(255, 255, 255, 0.45));
+  white-space: nowrap;
+}
+
+/* Счётчик прижат к заголовку: читается как «Саб-агенты 7», без разрыва
+   на всю ширину панели (раньше уводила margin-left: auto из плана задачи). */
+.overview-agents-count {
+  min-width: 17px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  color: color-mix(in srgb, var(--accent) 88%, white);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.overview-agents-archive-count {
+  padding: 0 4px;
+  color: var(--text-muted, rgba(255, 255, 255, 0.45));
+  font-size: 10.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.overview-agents-chevron {
+  margin-left: auto;
+  flex: none;
+  opacity: 0.55;
+  transition: transform 0.2s ease;
+}
+
+.overview-agents-toggle[aria-expanded='true'] .overview-agents-chevron,
+.overview-agents-archive-toggle[aria-expanded='true'] .overview-agents-chevron {
+  transform: rotate(180deg);
+}
+
+/* Обёртка анимации раскрытия: height анимируется от 0 до auto, поэтому
+   содержимое должно быть обрезано (прокрутка живёт внутри). */
+.overview-agents-collapse {
+  overflow: hidden;
+}
+
+/* Скроллбар не переопределяем: в globals.css общий стиль (4px, без стрелок
+   и кнопок), как у остальных списков панели. `scrollbar-width`/`scrollbar-color`
+   здесь задавать НЕЛЬЗЯ — в современном Chromium они отключают
+   ::-webkit-scrollbar и возвращают толстый системный скроллбар со стрелками. */
+.overview-agents-scroll {
+  max-height: min(180px, 32vh);
+  overflow-y: auto;
+  /* Явно: если задать только overflow-y, браузер делает overflow-x тоже auto
+     и любая выступающая строка добавляет горизонтальный скролл. */
+  overflow-x: hidden;
+  overscroll-behavior-y: contain;
+}
+
+.overview-agents-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.overview-agent {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 26px;
+  padding: 1px 6px;
+  border-radius: 6px;
+  font-size: 11.5px;
+}
+
+.overview-agent:hover {
+  background: color-mix(in srgb, var(--text-primary) 5%, transparent);
+}
+
+.overview-agent-task {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.overview-agent-time {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+  flex: none;
+  min-width: 46px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.overview-agent-time s {
+  opacity: 0.75;
+  text-decoration-thickness: 1px;
+}
+
+.overview-agent-check {
+  color: #4ade80;
+}
+
+.overview-agents-archive-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  margin: 4px 0 2px;
+  padding: 5px 6px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--text-primary) 4%, transparent);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.14s, border-color 0.14s;
+}
+
+.overview-agents-archive-toggle:hover {
+  background: color-mix(in srgb, var(--text-primary) 8%, transparent);
+  border-color: color-mix(in srgb, var(--text-primary) 18%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .overview-agents-chevron { transition: none; }
+}
