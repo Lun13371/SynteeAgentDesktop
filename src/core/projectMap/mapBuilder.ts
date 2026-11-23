@@ -29,6 +29,7 @@ import * as store from './mapStore'
 import {
   ProjectIndex, definitionsToNodes, markExported, containsEdges, resolveFileImports,
   resolveFileCalls, ensurePackages, loadTsconfigAliases, markdownNodes, docReferenceEdges,
+  fileLookupKeys,
 } from './mapResolver'
 import {
   syncFileDocs, removeFileDocs, pruneProjectDocs, semanticWorker,
@@ -80,6 +81,15 @@ const MAX_FILE_BYTES = 1_000_000
  * ограничена и проверяет отмену/приоритет активного проекта.
  */
 const FOREGROUND_WAIT_MS = 5_000
+/**
+ * Границы точечного восстановления неразрешённых ссылок: кандидаты берутся
+ * обратным lookup'ом по durable-следу (не сканом проекта), число импортёров и
+ * принудительных разборов на проход ограничено — иначе одна правка могла бы
+ * стоить перерезолва всего проекта.
+ */
+const RECOVERY_MAX_CANDIDATES = 200
+const RECOVERY_MAX_IMPORTERS = 40
+const RECOVERY_MAX_PARSES = 8
 
 /**
  * `partial` — карта построена по неполному инвентарю (скан не завершён,
@@ -99,8 +109,11 @@ const PHASE_PARTIAL: CodeMapProgress['phase'] = 'partial'
  *  4 — exported для языков с публичностью по умолчанию (Kotlin/Swift/Scala/
  *      Dart/Ruby/Elixir/Lua/PHP). Документы НЕ пересоздаются с нуля: textHash
  *      не меняется → векторы сохраняются (hash-гейт), пересчитывается только tier.
+ *  5 — durable-след неразрешённых ссылок (code_map_unresolved) заполняется при
+ *      резолвинге файла. Без пересборки у старой карты следа нет, и точечное
+ *      восстановление «висящих» импортов/вызовов не сработало бы для них.
  */
-const MAP_SCHEMA_VERSION = '4'
+const MAP_SCHEMA_VERSION = '5'
 
 interface RawFile {
   meta: CodeMapFile
@@ -734,13 +747,101 @@ class ProjectMapManager {
     if (!nodes || nodes.length === 0) return false
     const cached = this.cachedSymbols(projectId, relPath, prev.hash)
     if (!cached) return false
-    const importRes = resolveFileImports(index, relPath, cached.importDetails, cached.language)
-    ensurePackages(projectId, importRes.packages)
-    const callEdges = resolveFileCalls(index, relPath, cached.callSites, cached.importDetails, cached.language)
-    const contains = containsEdges(projectId, relPath, nodes)
-    const edges: CodeMapEdge[] = [...importRes.edges, ...callEdges, ...contains]
-    store.replaceFileEdges(projectId, relPath, edges)
+    this.writeFileEdges(index, relPath, nodes, cached.importDetails, cached.callSites, cached.language)
     return true
+  }
+
+  /**
+   * Записать рёбра файла и durable-след его неразрешённых ссылок ОДНИМ
+   * проходом резолвинга: у неразрешённой ссылки ребра нет, поэтому без следа
+   * её не найти, когда цель появится (см. recoverUnresolved).
+   */
+  private writeFileEdges(
+    index: ProjectIndex,
+    relPath: string,
+    nodes: CodeMapNode[],
+    importDetails: CachedSymbols['importDetails'],
+    callSites: CachedSymbols['callSites'],
+    language: string | null,
+  ): void {
+    const projectId = index.projectId
+    const importRes = resolveFileImports(index, relPath, importDetails, language)
+    ensurePackages(projectId, importRes.packages)
+    const callRes = resolveFileCalls(index, relPath, callSites, importDetails, language)
+    const contains = containsEdges(projectId, relPath, nodes)
+    store.replaceFileEdges(projectId, relPath, [...importRes.edges, ...callRes.edges, ...contains])
+    store.replaceUnresolved(projectId, relPath, [...importRes.unresolved, ...callRes.unresolved])
+  }
+
+  /**
+   * Кандидаты на точечное восстановление ранее неразрешённых ссылок.
+   *
+   * У «висящего» импорта/вызова ребра нет, поэтому по входящим рёбрам такой
+   * импортёр не находится. Ищем его обратным lookup'ом по durable-следу
+   * code_map_unresolved (индекс (project_id, kind, key)): ключи — имена
+   * новых/изменённых файлов и их символов, т.е. ровно то, чем правка могла
+   * закрыть чужую ссылку. Без полного скана проекта и без чтения файлов.
+   */
+  private recoveryCandidates(
+    projectId: string, index: ProjectIndex, arrived: string[], skip: Set<string>,
+  ): string[] {
+    if (arrived.length === 0) return []
+    const fileKeys = new Set<string>()
+    const symbolKeys = new Set<string>()
+    for (const relPath of arrived) {
+      if (isDocFile(relPath)) continue
+      for (const k of fileLookupKeys(relPath)) fileKeys.add(k)
+      for (const n of index.defsByFile.get(relPath) ?? []) {
+        if (n.kind === 'file' || n.kind === 'package' || !n.name) continue
+        symbolKeys.add(n.name.toLowerCase())
+      }
+    }
+    const out = new Set<string>()
+    const add = (filePath: string): void => {
+      if (!filePath || skip.has(filePath) || out.has(filePath)) return
+      if (out.size >= RECOVERY_MAX_CANDIDATES) return
+      out.add(filePath)
+    }
+    for (const hit of store.findUnresolvedByKeys(projectId, 'import', [...fileKeys], RECOVERY_MAX_CANDIDATES)) {
+      add(hit.filePath)
+    }
+    for (const hit of store.findUnresolvedByKeys(projectId, 'call', [...symbolKeys], RECOVERY_MAX_CANDIDATES)) {
+      add(hit.filePath)
+    }
+    return [...out]
+  }
+
+  /**
+   * Пересчитать рёбра импортёра без переразбора узлов и БЕЗ переэмбеддинга:
+   * importDetails/callSites из кэша, при промахе — один принудительный разбор
+   * (не больше RECOVERY_MAX_PARSES на проход), запись только через
+   * replaceFileEdges. Документы семантики не трогаются.
+   */
+  private async refreshFileEdges(
+    projectId: string, index: ProjectIndex, workdir: string, relPath: string,
+    prev: CodeMapFile | null | undefined, budget: { parses: number },
+  ): Promise<void> {
+    if (isDocFile(relPath)) {
+      const nodes = index.defsByFile.get(relPath)
+      if (nodes) store.replaceFileEdges(projectId, relPath, [
+        ...containsEdges(projectId, relPath, nodes),
+        ...docReferenceEdges(index, relPath, nodes),
+      ])
+      return
+    }
+    if (this.reResolveFromCache(projectId, index, relPath, prev)) return
+    // Промах кэша: processFile без force вернул бы 'unchanged' и рёбра никогда
+    // бы не пересчитались. Разбор ограничен бюджетом прохода.
+    if (budget.parses <= 0) return
+    budget.parses--
+    const outcome = await this.processFile(projectId, relPath, path.join(workdir, relPath), prev ?? undefined, { force: true })
+    if (outcome.kind !== 'ok') return
+    if (prev && outcome.raw.meta.hash !== prev.hash) {
+      // Содержимое поменялось, пока шёл проход — обычный путь (переразбор файла).
+      this.onFileChanges(workdir, [relPath])
+      return
+    }
+    this.writeEdgesOnly(index, outcome.raw)
   }
 
   /** Запись markdown-файла: contains от файла к секциям + references на символы. */
@@ -801,10 +902,13 @@ class ProjectMapManager {
     const { meta, symbols, nodes } = raw
     const importRes = resolveFileImports(index, meta.path, symbols.importDetails, meta.language)
     ensurePackages(index.projectId, importRes.packages)
-    const callEdges = resolveFileCalls(index, meta.path, symbols.callSites, symbols.importDetails, meta.language)
+    const callRes = resolveFileCalls(index, meta.path, symbols.callSites, symbols.importDetails, meta.language)
     const contains = containsEdges(index.projectId, meta.path, nodes)
-    const edges: CodeMapEdge[] = [...importRes.edges, ...callEdges, ...contains]
+    const edges: CodeMapEdge[] = [...importRes.edges, ...callRes.edges, ...contains]
     store.replaceFile(index.projectId, meta, nodes, edges)
+    // След неразрешённых ссылок пишем В ТОЙ ЖЕ точке, что и рёбра: позже по
+    // нему точечно восстановим ребро, когда цель появится в проекте.
+    store.replaceUnresolved(index.projectId, meta.path, [...importRes.unresolved, ...callRes.unresolved])
     // Семантика — производное карты: документы пересчитываются из узлов здесь же
     // (полная сборка и инкрементал проходят через эту точку). Хэш-гейт в store
     // сохраняет векторы неизменённых текстов, worker доэмбеддит только новое.
@@ -1140,11 +1244,7 @@ class ProjectMapManager {
    */
   private writeEdgesOnly(index: ProjectIndex, raw: RawFile): void {
     const { meta, symbols, nodes } = raw
-    const importRes = resolveFileImports(index, meta.path, symbols.importDetails, meta.language)
-    ensurePackages(index.projectId, importRes.packages)
-    const callEdges = resolveFileCalls(index, meta.path, symbols.callSites, symbols.importDetails, meta.language)
-    const contains = containsEdges(index.projectId, meta.path, nodes)
-    store.replaceFileEdges(index.projectId, meta.path, [...importRes.edges, ...callEdges, ...contains])
+    this.writeFileEdges(index, meta.path, nodes, symbols.importDetails, symbols.callSites, meta.language)
   }
 
   private async flushChanges(workdir: string): Promise<void> {
@@ -1288,41 +1388,43 @@ class ProjectMapManager {
       // Узлы и документы семантики не менялись → не перечитываем и не
       // переэмбеддим: importDetails/callSites из кэша (или один разбор при
       // промахе), replaceFileEdges вместо полного replaceFile.
+      const dependentBudget = { parses: Number.MAX_SAFE_INTEGER }
       for (const relPath of dependents) {
         if (this.stopRequested) return
         const prev = store.getFile(projectId, relPath) ?? prevMap.get(relPath)
         if (!prev) continue
-        if (isDocFile(relPath)) {
-          const nodes = index.defsByFile.get(relPath)
-          if (nodes) store.replaceFileEdges(projectId, relPath, [
-            ...containsEdges(projectId, relPath, nodes),
-            ...docReferenceEdges(index, relPath, nodes),
-          ])
-          await yieldNow()
-          continue
-        }
-        if (this.reResolveFromCache(projectId, index, relPath, prev)) {
-          await yieldNow()
-          continue
-        }
-        // Промах кэша: processFile без force вернул бы 'unchanged' и рёбра
-        // никогда бы не пересчитались. Разбираем ОДИН раз принудительно, а
-        // пишем только рёбра — узлы и векторы уже актуальны.
-        const outcome = await this.processFile(projectId, relPath, path.join(workdir, relPath), prev, { force: true })
-        if (outcome.kind !== 'ok') continue
-        if (outcome.raw.meta.hash !== prev.hash) {
-          this.onFileChanges(workdir, [relPath])
-          continue
-        }
-        this.writeEdgesOnly(index, outcome.raw)
+        await this.refreshFileEdges(projectId, index, workdir, relPath, prev, dependentBudget)
         await yieldNow()
       }
 
-      // Новые/изменённые файлы: их собственные импорты разрешаются в фазе 2,
-      // потому что узлы ВСЕХ файлов уже в индексе. Отдельного «восстановления
-      // неразрешённых импортов» не нужно: по входящим рёбрам такого файла
-      // неразрешённые импорты не найти (ребра нет — строки нет), а полный
-      // перерезолв проекта стоил бы чтения всех файлов.
+      // ── Точечное восстановление ранее неразрешённых ссылок ──
+      // Новый/изменённый файл мог закрыть чужой «висящий» импорт или вызов.
+      // Такой импортёр не находится по входящим рёбрам (ребра нет — ссылка не
+      // разрешилась), поэтому ищем кандидатов обратным lookup'ом по
+      // durable-следу неразрешённых ссылок и пересчитываем ТОЛЬКО их рёбра.
+      const arrived = [
+        ...toResolve.map(r => r.meta.path),
+        ...edgeOnly.map(r => r.meta.path),
+      ]
+      if (arrived.length > 0) {
+        const skip = new Set<string>([...touched, ...dependents])
+        const candidates = this.recoveryCandidates(projectId, index, arrived, skip)
+        if (candidates.length > 0) {
+          const budget = { parses: RECOVERY_MAX_PARSES }
+          let refreshed = 0
+          for (const relPath of candidates.slice(0, RECOVERY_MAX_IMPORTERS)) {
+            if (this.stopRequested) break
+            // Строка файла могла исчезнуть (удалён, prune ещё не прошёл) —
+            // тогда следу верить нельзя: перерезолв писал бы рёбра в никуда.
+            const prev = store.getFile(projectId, relPath)
+            if (!prev) continue
+            await this.refreshFileEdges(projectId, index, workdir, relPath, prev, budget)
+            refreshed++
+            await yieldNow()
+          }
+          log('[mapBuilder] %s: восстановление неразрешённых ссылок — %d импортёр(ов) перерезолвлено', project.name, refreshed)
+        }
+      }
 
       if (gonePaths.length > 0 || excludedPaths.length > 0) store.pruneDanglingEdges(projectId)
       store.refreshCounts(projectId)

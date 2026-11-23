@@ -62,6 +62,7 @@ import { clearFileCache } from '../../core/context/fileReadCache'
 import {} from '../../core/context/historyCompressor'
 import { ptyManager } from '../managers/PtyManager'
 import { log } from '../../core/logger'
+import { onChatDeleted } from '../assistants/bridge'
 import {} from '../../core/skills/skillManager'
 import {} from '../../core/skills/skillInstructions'
 import {} from '../../core/mcp/McpManager'
@@ -239,6 +240,9 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
     chatQueues.delete(chatId)
     autoRecallInjectedKeys.delete(chatId)
     cancelIdleExtraction(chatId)
+    // Archivist может дописывать факты уже после удаления чата — отменяем и
+    // ставим томбстон, чтобы строки памяти не «воскресли» для мёртвого чата.
+    onChatDeleted(chatId)
     deleteChat(chatId)
     clearFileCache(chatId)
     agentManager.clearChat(chatId)

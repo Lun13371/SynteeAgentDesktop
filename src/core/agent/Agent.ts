@@ -20,12 +20,11 @@ import {
   getHardLimitTokens, getHardLimitTargetTokens,
 } from '../context/contextManager'
 import type { ChatMessage } from '../context/contextManager'
-import { computeRequestContextSnapshot, estimateTokens } from '../tokens/usageTracker'
+import { computeRequestContextSnapshot, type UsageSnapshot } from '../tokens/usageTracker'
 import { MAX_TOOL_TIMEOUT_MS } from '../ai/shared'
 import { getSubagentRole } from '../../shared/subagent-roles'
 import type { FileCacheEntry } from '../context/fileCacheTypes'
 import { resolve } from 'path'
-import { execFile } from 'child_process'
 import { log } from '../logger'
 import type {
   AgentCallbacks, AgentSummaryDetails, AgentMessage, ContentPart,
@@ -50,7 +49,7 @@ import { sanitizeToolInstructions, splitSystemPromptForCache } from '../prompts/
 import { executeCode, EphemeralArtifactStore } from '../codeMode'
 import type { CodeTraceEntry } from '../codeMode'
 import { Janitor } from '../context/janitor'
-import { loadAssistantState, saveAssistantState } from '../context/assistantState'
+import { loadAssistantState, saveAssistantState, ASSISTANT_STATE_VERSION } from '../context/assistantState'
 import { Constitution } from '../context/constitution'
 import { consumeHintBudget, MAX_PENDING_HINTS } from '../context/hintBudget'
 import { getSkillManager } from '../skills/skillManager'
@@ -87,12 +86,6 @@ const NON_DESTRUCTIVE_TOOLS = new Set([
 // (~50k токенов) с запасом покрывает самый большой легитимный вывод
 // (fetch_page ~50k симв, plugin_docs ~40k) — легитимные тулы его не замечают.
 const TOOL_RESULT_HARD_CEILING = 200_000
-
-// Разговорные формулировки правил, которые детерминированные паттерны
-// конституции (CONSTRAINT_PATTERNS) не ловят: «нам нравится pnpm»,
-// «у нас принято…», «мы используем…». Повод запустить LLM-экстракцию
-// даже там, где regex промахнулся.
-const RULEISH_RE = /(?:нам (?:нравится|нужно|принято)|у нас (?:принято|используется)|мы (?:используем|работаем|не используем)|(?:в|на) проекте (?:принято|используется)|prefer|we (?:use|'re using|always)|our (?:convention|rule|policy)|make sure|keep in mind)/i
 
 // §steer — реплики пользователя, внедрённые в контекст посреди рана: маркер
 // живёт в shared/steer.ts (он же используется при пересборке истории в
@@ -211,19 +204,28 @@ export class Agent {
    *  с целью и ограничениями раньше обычного интервала (см. блок Navigator). */
   private navigatorProbe = false
   private navigatorLastStep = -100
+  /** Последний раунд, в котором подсказка navigator'а реально попала в промпт:
+   *  повторный совет сразу после сработавшего — шум, мост это учитывает. */
+  private navigatorLastUsefulStep = -100
+  /** Ревизия задачи: инкремент на каждом внедрённом steer. События navigator'а
+   *  несут её вместе с номером раунда — мост отбрасывает вердикты по старой
+   *  постановке, не обрывая при этом живые вызовы каждый раунд. */
+  private taskRevision = 0
+  /** Edge-сигнатура повторов тулов: watcher/navigator реагируют только на
+   *  ПЕРЕХОД в зацикливание (и на смену набора повторов), а не на каждый
+   *  раунд, пока повторы продолжаются. */
+  private lastRepeatSignature = ''
   private briefingDone = false
-  private continuityStarted = false
   /** Персист мини-агентов (конституция + recall-архив per chat).
    *  Ставится ai-worker'ом: main-чат и не инкогнито. */
   persistAssistantState = false
   private assistantStateLoaded = false
-  private lastConstitutionExtractAt = 0
   /** Актуальный todo-лист (из update_todo) — navigator сверяет «уход от плана». */
   private currentTodo: Array<{ text: string; status: string }> = []
   /** Ссылка на messages текущего рана — для J3 guard и J4 refine из worker-хендлеров. */
   private liveMessages: AgentMessage[] | null = null
-  /** Канал worker→main для LLM-зависимых мини-агентов (navigator/
-   *  archivist/constitution/janitor_refine). Ставится ai-worker'ом. */
+  /** Канал worker→main для LLM-зависимых мини-агентов (navigator/archivist).
+   *  Ставится ai-worker'ом. */
   onAssistantEvent?: (evt: Record<string, unknown>) => void
 
   /**
@@ -280,18 +282,8 @@ export class Agent {
       case 'briefing': return s.briefingEnabled
       case 'navigator': return s.navigatorEnabled
       case 'archivist': return s.archivistEnabled
-      case 'economist': return s.economistEnabled
       case 'constitution': return true
       default: return true
-    }
-  }
-
-  /** LLM-экстрактор конституции прислал пункты из main — мержим и ре-инжектим. */
-  mergeConstitution(items: string[]): void {
-    const added = this.constitution.merge(items)
-    if (added.length > 0) {
-      log('[Agent] constitution merged %d items (total=%d)', added.length, this.constitution.size)
-      this.persistStateNow()
     }
   }
 
@@ -316,29 +308,32 @@ export class Agent {
     if (block) messages.push({ role: 'user', content: block })
   }
 
-  /** Continuity для Briefing: git асинхронно, не блокируя старт рана. */
-  private computeContinuity(): Promise<string> {
-    const workdir = this.workdir
-    if (!workdir) return Promise.resolve('')
-    const run = (args: string[]): Promise<string> => new Promise(resolve => {
-      execFile('git', args, { cwd: workdir, timeout: 3000, windowsHide: true, maxBuffer: 64 * 1024 }, (err, stdout) => {
-        resolve(err ? '' : String(stdout).trim())
-      })
-    })
-    return Promise.all([
-      run(['log', '-3', '--pretty=format:%h %s']),
-      run(['status', '--porcelain']),
-    ]).then(([logOut, status]) => {
-      const parts: string[] = []
-      if (logOut) parts.push(`Последние коммиты: ${logOut.split('\n').join('; ').slice(0, 220)}`)
-      if (status) {
-        const lines = status.split('\n')
-        const files = lines.slice(0, 8).map(l => l.slice(3).trim()).join(', ')
-        parts.push(`Не закоммичено (${lines.length}): ${files.slice(0, 180)}`)
-      }
-      return parts.join('\n')
+  /** Archivist: финальный транскрипт уходит в main на дистилляцию.
+   *  Один путь для обычного финала и для успешно закрытой цели — раньше
+   *  goal-ветка завершалась молча и факты рана терялись. */
+  private emitArchivist(messages: AgentMessage[], modifiedFiles: Set<string>): void {
+    if (!this.assistantsSettings.enabled || !this.assistantsSettings.archivistEnabled) return
+    if (!this.onAssistantEvent || this.role !== 'main') return
+    this.onAssistantEvent({
+      kind: 'archivist',
+      transcript: formatTranscript(messages.slice(-16) as ChatMessage[]).slice(0, 2000),
+      modifiedFiles: Array.from(modifiedFiles),
+      projectId: this.projectId,
+      chatId: this.chatId,
     })
   }
+
+  /**
+   * Continuity для Briefing (git log/status). Считается в main-процессе
+   * (src/main/assistants/gitBriefingCache.ts: кеш на проект + коалесинг) и
+   * приходит снапшотом в workerData — воркер больше НЕ запускает git сам,
+   * иначе каждый чат/суб-агент спавнил по два процесса.
+   *
+   * Снапшот попадает прямо в стартовый briefing-блок (см. run), без
+   * отдельной асинхронной подсказки: continuity — статика начала сессии,
+   * а hint-пайплайн инжектил её уже посреди рана, дублируя briefing.
+   */
+  continuitySnapshot = ''
 
   /**
    * J2 + §prompt-cache: якорь кеша на ПОСЛЕДНЕМ сообщении текущего запроса.
@@ -355,9 +350,10 @@ export class Agent {
     if (messages.length > 0) (messages[messages.length - 1] as { cacheAnchor?: boolean }).cacheAnchor = true
   }
 
-  /** Применяет отчёт janitor + пост-обработка (конституция, якорь, refine-запросы). */
-  private applyJanitorReport(messages: AgentMessage[], report: import('../../shared/assistants').JanitorReport, callbacks: AgentCallbacks, toolSchemas: unknown[], contextWindow: number): void {
-    const before = computeRequestContextSnapshot(messages, contextWindow, toolSchemas)
+  /** Применяет отчёт janitor + пост-обработка (конституция, якорь).
+   *  `before` — снапшот контекста, посчитанный ДО скана в этом же раунде:
+   *  второй расчёт того же массива был чистой работой впустую. */
+  private applyJanitorReport(messages: AgentMessage[], report: import('../../shared/assistants').JanitorReport, callbacks: AgentCallbacks, toolSchemas: unknown[], contextWindow: number, before: UsageSnapshot): void {
     const optimized = this.janitor.apply(messages as ChatMessage[], report)
     messages.length = 0
     messages.push(...(optimized as AgentMessage[]))
@@ -372,17 +368,6 @@ export class Agent {
       janitorActions: report.actions.map(a => ({ kind: a.kind, description: a.description, tokensSaved: a.tokensSaved, archiveId: a.archiveId })),
     })
     callbacks.onContextUpdate?.({ promptTokens: after.estimated, breakdown: after.breakdown })
-    // J4: просим локальную модель улучшить структурные резюме (async, не блокирует).
-    if (this.onAssistantEvent) {
-      for (const a of report.actions) {
-        if (a.kind === 'summarize_stale' && a.archiveId) {
-          const orig = this.janitor.recall(a.archiveId)?.[0]
-          if (orig && typeof orig.content === 'string') {
-            this.onAssistantEvent({ kind: 'janitor_refine', archiveId: a.archiveId, toolName: orig.name ?? 'tool', content: orig.content.slice(0, 1500) })
-          }
-        }
-      }
-    }
     // Архив вырос — сливаем на диск, чтобы [recall:id] пережил смену воркера.
     if (report.actions.some(a => a.kind === 'summarize_stale')) this.persistStateNow()
     log('[Agent] janitor: %d actions, %d tokens saved (%dms)', report.actions.length, report.totalTokensSaved, report.durationMs)
@@ -414,22 +399,6 @@ export class Agent {
       if (m.content.includes(absPath) || (base && m.content.includes(base))) return true
     }
     return false
-  }
-
-  /** J4: локальная модель улучшила резюме — заменяем текст в messages по archiveId. */
-  refineJanitorSummary(archiveId: string, summary: string): void {
-    if (!this.liveMessages || !summary) return
-    const tag = `[recall:${archiveId}]`
-    for (const m of this.liveMessages) {
-      if (m.role === 'tool' && typeof m.content === 'string' && m.content.includes(tag)) {
-        const replacement = `${JANITOR_MARKER} ${summary} ${tag}`
-        if (estimateTokens(replacement) <= estimateTokens(m.content)) {
-          m.content = replacement
-          this.janitor.updateSummary(archiveId, replacement)
-          this.persistStateNow()
-        }
-      }
-    }
   }
 
   /** Watcher v2: каталог возможностей, доступных в этом ране (тулы/MCP/plugin/скиллы). */
@@ -676,28 +645,30 @@ export class Agent {
       if (st) {
         this.constitution.hydrate(st.constitution ?? [])
         this.janitor.hydrateArchive(st.janitorArchive ?? [])
+        // Миграция схемы: старые авто-пункты вычищены — фиксируем на диск,
+        // чтобы они не вернулись и не разбирались заново.
+        if (st.migrated) {
+          this.persistStateNow()
+          log('[Agent] assistants-state migrated to v%d (auto constitution cleared)', ASSISTANT_STATE_VERSION)
+        }
       }
     }
     this.janitor.restoreSummaries(messages as ChatMessage[])
-    // J1: детерминированное извлечение ограничений из нового user-сообщения.
+    // Конституция: только ЯВНЫЕ правила (/rule … или «запомни правило: …»).
+    // Авто-извлечение (regex по любому тексту + LLM-экстрактор в main) удалено:
+    // правила попадали в контекст дважды и не отзывались. Старые авто-пункты
+    // из персиста не применяются (см. clearLegacyAutoConstitution).
     if (this.assistantsSettings.enabled && typeof userMessage === 'string') {
-      const added = this.constitution.addFromUserText(userMessage)
+      const added = this.constitution.addExplicit(userMessage)
       if (added.length > 0) {
-        callbacks.onStep({ type: 'hint', hintSource: 'constitution', content: `Запомнил ограничения: ${added.join('; ')}` })
+        callbacks.onStep({ type: 'hint', hintSource: 'constitution', content: `Запомнил правило: ${added.join('; ')}` })
         this.persistStateNow()
-      }
-      // LLM-экстракция шире regex: формулировки правил вне CONSTRAINT_PATTERNS
-      // («нам нравится pnpm») иначе не попадут в конституцию никогда.
-      // Троттлинг раз в минуту — advisory, но очередь локальной модели
-      // не нужно звать на каждый длинный вопрос.
-      const ruleish = userMessage.length >= 80 && RULEISH_RE.test(userMessage)
-      if ((added.length > 0 || ruleish) && Date.now() - this.lastConstitutionExtractAt >= 60_000) {
-        this.lastConstitutionExtractAt = Date.now()
-        this.onAssistantEvent?.({ kind: 'constitution_extract', text: userMessage.slice(0, 800) })
       }
       this.reinjectConstitution(messages)
     }
     // Briefing: компактное состояние проекта на старте сессии (детерминированно).
+    // Git-снапшот (main считает один раз на проект) идёт прямо в стартовый
+    // блок — отдельной асинхронной подсказки посреди рана больше нет.
     if (this.assistantsSettings.enabled && this.assistantsSettings.briefingEnabled && !this.briefingDone && this.role === 'main') {
       this.briefingDone = true
       const wm = this.onGetWorkingMemory?.(this.chatId ?? '') ?? ''
@@ -705,20 +676,12 @@ export class Agent {
       if (wm) parts.push(wm.slice(0, 600))
       const constit = this.constitution.serialize()
       if (constit) parts.push(constit)
+      if (this.continuitySnapshot) parts.push(this.continuitySnapshot.slice(0, 1200))
       if (parts.length > 0) {
         const brief = `${BRIEFING_MARKER}\n${parts.join('\n')}`
         messages.push({ role: 'user', content: brief })
         callbacks.onStep({ type: 'hint', hintSource: 'briefing', content: brief.slice(0, 300) })
         this.onAssistantEvent?.({ kind: 'briefing' })
-      }
-      // Continuity (git) — в фоне: не тормозим старт запроса. Результат
-      // вкидывается обычным hint-пайплайном на следующей границе раунда.
-      if (!this.continuityStarted) {
-        this.continuityStarted = true
-        void this.computeContinuity().then(text => {
-          if (!text) return
-          this.pushHint({ id: `continuity-${Date.now()}`, source: 'briefing', content: text, score: 1, title: 'continuity' })
-        }).catch(() => {})
       }
     }
     this.liveMessages = messages
@@ -953,6 +916,9 @@ export class Agent {
           })
           log('[Agent] steer applied (round %s): %s', step, steer.text.slice(0, 120))
         }
+        // §navigator-protocol — постановка задачи изменилась: вердикты,
+        // посчитанные по старой ревизии, не инжектятся (мост сравнивает).
+        this.taskRevision++
         callbacks.onStatus?.('Учтено сообщение пользователя')
       }
 
@@ -968,6 +934,11 @@ export class Agent {
             if (first) this.recentHintIds.delete(first)
           }
           callbacks.onStep({ type: 'hint', content: text, hintSource: hint.source, hintId: hint.id })
+          // hint_applied — детерминированный сигнал полезности для весов
+          // источников/возможностей в main (без LLM-судьи): подсказка реально
+          // попала в промпт этого рана.
+          this.onAssistantEvent?.({ kind: 'hint_applied', hintId: hint.id })
+          if (hint.source === 'navigator') this.navigatorLastUsefulStep = step
           log('[Agent] hint injected (round %s): %s', step, text.slice(0, 100))
         }
         this.hintCooldown = this.assistantsSettings.hintCooldownRounds
@@ -975,53 +946,57 @@ export class Agent {
       if (this.hintCooldown > 0) this.hintCooldown--
 
       this.janitorRoundCounter++
-      // Economist + умный триггер Janitor: не спамим компакцией на ранних
-      // ходах. Сжимаем только когда ран созрел (>25 шагов), есть реальные
-      // повторы тулов, или контекст подбирается к лимиту.
+      // Умное расписание Janitor (Economist влит сюда): не спамим компакцией
+      // на ранних ходах. Сжимаем только когда ран созрел (>25 шагов), есть
+      // реальные повторы тулов, или контекст подбирается к порогу окна.
       // Оценка уже откалибрована в usageTracker (единый EWMA-коэффициент на
       // пару provider:model) — второй множитель здесь давал двойное сжатие.
       const requestContext = computeRequestContextSnapshot(messages, realContextWindow, activeSchemas)
       const calibratedTokens = requestContext.estimated
-      // Economist: порог относительно окна контекста модели.
-      // 1M → 30%, 500k → 60%, 256k → 70%, <256k → 80%.
+      // Порог относительно окна модели: 1M → 30%, 500k → 60%, 256k → 70%,
+      // <256k → 80%. Ступень 1 (порог) — лёгкий дедуп, ступень 2 (+15%) —
+      // глубокое сжатие с резюме. Отдельного «Economist» больше нет: это
+      // ровно решение Janitor'а «когда и насколько глубоко сжимать».
       const ecoFrac = realContextWindow >= 1_000_000 ? 0.3 : realContextWindow >= 500_000 ? 0.6 : realContextWindow >= 256_000 ? 0.7 : 0.8
       const ecoThreshold = realContextWindow * ecoFrac
       const contextPressure = calibratedTokens > ecoThreshold
-      if (this.assistantsSettings.enabled && this.assistantsSettings.economistEnabled) {
-        // Ступени: порог → лёгкий дедуп; порог+15% → глубокое сжатие.
-        const stage = calibratedTokens > ecoThreshold * 1.15 ? 2 : contextPressure ? 1 : 0
-        if (stage > this.ecoStage) {
-          this.ecoStage = stage
-          this.forceJanitorMode = stage === 2 ? 'deep' : 'light'
-          const pct = Math.round(calibratedTokens / realContextWindow * 100)
-          callbacks.onStep({
-            type: 'hint', hintSource: 'economist',
-            content: stage === 2
-              ? `Контекст ~${Math.round(calibratedTokens)} токенов (${pct}% окна ${Math.round(realContextWindow / 1000)}k) — глубокое сжатие: порог +15% превышен.`
-              : `Контекст ~${Math.round(calibratedTokens)} токенов (${pct}% окна ${Math.round(realContextWindow / 1000)}k) — лёгкая оптимизация: дедуп и перечитывания.`,
-          })
-          this.onAssistantEvent?.({ kind: 'economist', stage })
-        } else if (stage === 0) {
-          this.ecoStage = 0
-        }
-      }
+      const stage = calibratedTokens > ecoThreshold * 1.15 ? 2 : contextPressure ? 1 : 0
+      if (stage > this.ecoStage) this.forceJanitorMode = stage === 2 ? 'deep' : 'light'
+      this.ecoStage = stage
       const fpCounts = new Map<string, number>()
       for (const f of this.recentToolFingerprints) {
         const k = `${f.toolName}|${f.argsKey}`
         fpCounts.set(k, (fpCounts.get(k) ?? 0) + 1)
       }
-      const heavyRepeats = [...fpCounts.values()].some(c => c >= 3)
-      // Зацикливание — тоже повод для navigator'а свериться с целью раньше интервала.
-      if (heavyRepeats) this.navigatorProbe = true
+      // Edge-триггер: сигнал «зациклился» нужен на ПЕРЕХОДЕ в повторы (или на
+      // смене набора повторяемых вызовов), а не на каждом раунде, пока они
+      // продолжаются, — иначе watcher/navigator получают одинаковый текст
+      // каждые несколько шагов и просто шумят.
+      const repeatSignature = [...fpCounts.entries()]
+        .filter(([, count]) => count >= 3)
+        .map(([key]) => key)
+        .sort()
+        .join(',')
+      const repeatsEdge = repeatSignature !== this.lastRepeatSignature
+      this.lastRepeatSignature = repeatSignature
+      const heavyRepeats = repeatSignature.length > 0
       const matureRun = step >= 25
+      // Navigator-ветка ниже владеет повторами эксклюзивно, когда он включён и
+      // есть что сверять (цель/ограничения); иначе повторы уходят watcher'у.
+      const navConstraints = this.constitution.list()
+      const navigatorEligible = this.assistantsSettings.enabled
+        && this.assistantsSettings.navigatorEnabled
+        && (!!this.goal || navConstraints.length > 0)
+        && !!this.onAssistantEvent
+      if (heavyRepeats && repeatsEdge && navigatorEligible) this.navigatorProbe = true
       const janitorDue = typeof this.janitor?.shouldScan === 'function'
         && this.janitor.shouldScan(this.janitorRoundCounter)
         && (matureRun || heavyRepeats || contextPressure)
       if (this.assistantsSettings.enabled && this.assistantsSettings.janitorEnabled && (janitorDue || this.forceJanitorMode)) {
         const scanMode = this.forceJanitorMode ?? 'deep'
         this.forceJanitorMode = null
-        // Emergency (economist stage 2 — ecoStage ещё активен): активный хвост
-        // режется вдвое — свежесть последних 10 ходов дешевле переполнения окна.
+        // Emergency (ступень 2): активный хвост режется вдвое — свежесть
+        // последних 10 ходов дешевле переполнения окна.
         const tailOverride = this.ecoStage >= 2
           ? Math.max(4, Math.floor((this.assistantsSettings.janitorTailSteps ?? 10) / 2))
           : undefined
@@ -1029,14 +1004,17 @@ export class Agent {
         log('[Agent] janitor scan round=%s mode=%s actions=%d saved=%d enabled=%s', this.janitorRoundCounter, scanMode, report.actions.length, report.totalTokensSaved, this.assistantsSettings.enabled)
         // J2: не применяем микро-компакции — они инвалидируют кэш чаще, чем экономят.
         if (report.actions.length > 0 && report.totalTokensSaved >= this.assistantsSettings.janitorMinSavingsTokens) {
-          this.applyJanitorReport(messages, report, callbacks, activeSchemas, realContextWindow)
+          // Снапшот ДО скана уже посчитан в этом раунде — второй раз не считаем.
+          this.applyJanitorReport(messages, report, callbacks, activeSchemas, realContextWindow, requestContext)
         } else {
           this.onAssistantEvent?.({ kind: 'janitor_skip' })
         }
       }
-      // Navigator: mid-run drift-судья при активной цели ИЛИ активных ограничениях (LLM в main).
-      const navConstraints = this.constitution.list()
-      if (this.assistantsSettings.enabled && this.assistantsSettings.navigatorEnabled && (this.goal || navConstraints.length > 0) && this.onAssistantEvent) {
+      // Navigator: mid-run drift-судья при активной цели ИЛИ активных ограничениях
+      // (LLM в main). Протокол события несёт ревизию задачи и последний раунд,
+      // в котором подсказка реально пригодилась: мост не судит по старой
+      // постановке и не повторяет совет, который только что дали.
+      if (navigatorEligible && this.onAssistantEvent) {
         this.navigatorRoundCounter++
         // Обычный ритм — раз в navigatorInterval раундов. Probe — раньше:
         // свежая ошибка или зацикливание уводят от цели, ждать 6 раундов
@@ -1049,16 +1027,26 @@ export class Agent {
           const todoPart = this.currentTodo.length > 0
             ? this.currentTodo.slice(0, 8).map(t => `[${t.status}] ${t.text}`).join(' | ')
             : ''
-          this.onAssistantEvent({ kind: 'navigator', objective: this.goal?.objective ?? '', constraints: navConstraints, transcript: formatTranscript(messages.slice(-12) as ChatMessage[]).slice(0, 1500), todo: todoPart })
+          this.onAssistantEvent({
+            kind: 'navigator',
+            round: step,
+            taskRevision: this.taskRevision,
+            lastUsefulRound: this.navigatorLastUsefulStep,
+            objective: this.goal?.objective ?? '',
+            constraints: navConstraints,
+            transcript: formatTranscript(messages.slice(-12) as ChatMessage[]).slice(0, 1500),
+            todo: todoPart,
+          })
         }
       }
-      // Watcher v2: периодический само-подход раз в 15 раундов + stuck-сигнал.
+      // Watcher v2: периодический само-подход раз в 15 раундов + stuck-сигнал
+      // (только если navigator не забрал повторы себе).
       if (this.assistantsSettings.enabled && this.assistantsSettings.watcherEnabled && this.onAssistantEvent) {
         if (step > 0 && step % 15 === 0) {
           this.onAssistantEvent({ kind: 'capabilities', capabilities: this.buildCapabilities() })
           this.onAssistantEvent({ kind: 'watcher_trigger', trigger: { kind: 'periodic', text: formatTranscript(messages.slice(-8) as ChatMessage[]).slice(0, 600) } })
         }
-        if (heavyRepeats) {
+        if (heavyRepeats && repeatsEdge && !navigatorEligible) {
           this.onAssistantEvent({ kind: 'watcher_trigger', trigger: { kind: 'stuck', text: `agent repeating tools: ${formatTranscript(messages.slice(-4) as ChatMessage[]).slice(0, 300)}` } })
         }
       }
@@ -1305,6 +1293,10 @@ export class Agent {
                 ? goalRuntime.goal.blocker || 'Цель невыполнима.'
                 : 'Готово.')
             callbacks.onStep({ type: 'answer', content: finalText })
+            // Успешная цель — такой же полноценный ран, как обычный финал:
+            // Archivist получает тот же финальный транскрипт (раньше здесь
+            // факты просто не дистиллировались).
+            if (goalRuntime.goal.status === 'completed') this.emitArchivist(messages, modifiedFiles)
             callbacks.onDone(finalText, this.buildSummaryDetails(modifiedFiles))
             return
           }
@@ -1330,9 +1322,7 @@ export class Agent {
           }
           // §goal больше не подменяет финальный ответ синтетикой — цель
           // закрывается в блоке выше и отдаёт реальный ответ модели.
-          if (this.assistantsSettings.enabled && this.assistantsSettings.archivistEnabled && this.onAssistantEvent && this.role === 'main') {
-            this.onAssistantEvent({ kind: 'archivist', transcript: formatTranscript(messages.slice(-16) as ChatMessage[]).slice(0, 2000), modifiedFiles: Array.from(modifiedFiles), projectId: this.projectId, chatId: this.chatId })
-          }
+          this.emitArchivist(messages, modifiedFiles)
           callbacks.onDone(answer, this.buildSummaryDetails(modifiedFiles))
 
           if (this.chatId && this.onUpdateWorkingMemory && this.role === 'main') {

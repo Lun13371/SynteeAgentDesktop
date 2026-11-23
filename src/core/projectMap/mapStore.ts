@@ -147,6 +147,56 @@ export function replaceFileEdges(
   tx()
 }
 
+/**
+ * Заменить durable-след неразрешённых ссылок файла (code_map_unresolved).
+ * Пишется вместе с рёбрами файла: у неразрешённой ссылки ребра нет, и без
+ * этой записи её нечем найти, когда цель появится.
+ */
+export function replaceUnresolved(
+  projectId: string,
+  filePath: string,
+  refs: { kind: string; key: string; ref: string; line: number }[],
+): void {
+  const db = getDB()
+  const del = db.prepare(`DELETE FROM code_map_unresolved WHERE project_id = ? AND file_path = ?`)
+  const ins = db.prepare(
+    `INSERT OR REPLACE INTO code_map_unresolved (project_id, file_path, kind, key, ref, line)
+     VALUES (?, ?, ?, ?, ?, ?)`
+  )
+  const tx = db.transaction(() => {
+    del.run(projectId, filePath)
+    for (const r of refs) ins.run(projectId, filePath, r.kind, r.key, r.ref, r.line)
+  })
+  tx()
+}
+
+/**
+ * Обратный поиск импортёров с неразрешённой ссылкой по ключам (kind+key).
+ * Bounded: только индекс idx_cmu_project_key и жёсткий LIMIT, без сканов.
+ */
+export function findUnresolvedByKeys(
+  projectId: string,
+  kind: string,
+  keys: string[],
+  limit = 200,
+): { filePath: string; ref: string; line: number }[] {
+  if (keys.length === 0) return []
+  const uniq = [...new Set(keys)].slice(0, 64)
+  const ph = uniq.map(() => '?').join(',')
+  const rows = getDB().prepare(
+    `SELECT file_path, ref, line FROM code_map_unresolved
+     WHERE project_id = ? AND kind = ? AND key IN (${ph}) LIMIT ?`
+  ).all(projectId, kind, ...uniq, limit) as { file_path: string; ref: string; line: number }[]
+  return rows.map(r => ({ filePath: r.file_path, ref: r.ref, line: r.line }))
+}
+
+/** Сколько неразрешённых ссылок записано (диагностика/тесты). */
+export function countUnresolved(projectId: string): number {
+  return (getDB().prepare(
+    `SELECT COUNT(*) c FROM code_map_unresolved WHERE project_id = ?`
+  ).get(projectId) as { c: number }).c
+}
+
 /** Внешний пакет — глобальный узел проекта, не привязан к файлу. */
 export function ensurePackageNode(projectId: string, name: string): string {
   const id = packageNodeId(name)
@@ -163,18 +213,29 @@ export function removeFile(projectId: string, path: string): void {
     db.prepare(`DELETE FROM code_map_nodes WHERE project_id = ? AND file_path = ?`).run(projectId, path)
     db.prepare(`DELETE FROM code_map_edges WHERE project_id = ? AND file_path = ?`).run(projectId, path)
     db.prepare(`DELETE FROM code_map_files WHERE project_id = ? AND path = ?`).run(projectId, path)
+    // Неразрешённые ссылки удалённого файла не должны воскрешать его в
+    // обратном поиске (иначе восстановление дёргало бы несуществующий файл).
+    db.prepare(`DELETE FROM code_map_unresolved WHERE project_id = ? AND file_path = ?`).run(projectId, path)
   })
   tx()
 }
 
 /** Удалить рёбра, чьи узлы больше не существуют (после инкрементальных правок). */
 export function pruneDanglingEdges(projectId: string): number {
-  const res = getDB().prepare(
+  const db = getDB()
+  const res = db.prepare(
     `DELETE FROM code_map_edges
      WHERE project_id = ?
        AND (from_node NOT IN (SELECT id FROM code_map_nodes WHERE project_id = ?)
         OR to_node NOT IN (SELECT id FROM code_map_nodes WHERE project_id = ?))`
   ).run(projectId, projectId, projectId)
+  // Следы неразрешённых ссылок удалённых файлов (строки code_map_files нет —
+  // файл убран) снимаем здесь же: они ведут в никуда.
+  db.prepare(
+    `DELETE FROM code_map_unresolved
+     WHERE project_id = ?
+       AND file_path NOT IN (SELECT path FROM code_map_files WHERE project_id = ?)`
+  ).run(projectId, projectId)
   return res.changes
 }
 
@@ -184,6 +245,7 @@ export function clearProject(projectId: string): void {
     db.prepare(`DELETE FROM code_map_nodes WHERE project_id = ?`).run(projectId)
     db.prepare(`DELETE FROM code_map_edges WHERE project_id = ?`).run(projectId)
     db.prepare(`DELETE FROM code_map_files WHERE project_id = ?`).run(projectId)
+    db.prepare(`DELETE FROM code_map_unresolved WHERE project_id = ?`).run(projectId)
   })
   tx()
 }

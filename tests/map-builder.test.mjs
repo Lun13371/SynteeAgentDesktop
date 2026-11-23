@@ -66,6 +66,7 @@ function createStore() {
   const files = new Map() // path -> CodeMapFile
   const nodes = new Map() // id -> node
   const edges = new Map() // id -> edge
+  const unresolved = new Map() // `${filePath}|${kind}|${key}|${line}` -> ref
   const meta = new Map()
   const status = new Map()
   /** filePath -> Map(nodeId -> {textHash, tier}) — эмуляция code_map_docs. */
@@ -73,12 +74,13 @@ function createStore() {
   const calls = {
     replaceFile: [], replaceFileEdges: [], removeFile: [], clearProject: 0,
     setMeta: [], setStatus: [], pruneDanglingEdges: 0, updateFileStat: [],
+    replaceUnresolved: [],
   }
   const edgeId = (e) => `${e.fromNode}->${e.toNode}:${e.type}:${e.id ?? ''}`
   const putEdges = (list) => { for (const e of list) edges.set(edgeId(e), e) }
 
   return {
-    calls, files, nodes, edges, docsByFile,
+    calls, files, nodes, edges, unresolved, docsByFile,
     fileNodeId: (p) => p,
     replaceFile(projectId, file, fileNodes, fileEdges) {
       calls.replaceFile.push(file.path)
@@ -97,10 +99,11 @@ function createStore() {
       calls.removeFile.push(p)
       files.delete(p)
       docsByFile.delete(p)
+      for (const k of [...unresolved.keys()]) if (k.startsWith(p + '|')) unresolved.delete(k)
       for (const [id, n] of nodes) if (n.filePath === p) nodes.delete(id)
       for (const [id, e] of edges) if (e.filePath === p) edges.delete(id)
     },
-    clearProject() { calls.clearProject++ ; files.clear(); nodes.clear(); edges.clear(); docsByFile.clear() },
+    clearProject() { calls.clearProject++ ; files.clear(); nodes.clear(); edges.clear(); docsByFile.clear(); unresolved.clear() },
     listFiles() { return [...files.values()] },
     getFile(projectId, p) { return files.get(p) ?? null },
     listNodes(projectId, limit, offset) {
@@ -144,7 +147,30 @@ function createStore() {
       s.indexedFiles = files.size
       status.set(projectId, s)
     },
-    pruneDanglingEdges() { calls.pruneDanglingEdges++; return 0 },
+    pruneDanglingEdges() {
+      calls.pruneDanglingEdges++
+      for (const k of [...unresolved.keys()]) {
+        const filePath = k.slice(0, k.indexOf('|'))
+        if (!files.has(filePath)) unresolved.delete(k)
+      }
+      return 0
+    },
+    /** Durable-след неразрешённых ссылок (эмуляция code_map_unresolved). */
+    replaceUnresolved(projectId, filePath, refs) {
+      calls.replaceUnresolved.push(filePath)
+      for (const k of [...unresolved.keys()]) if (k.startsWith(filePath + '|')) unresolved.delete(k)
+      for (const r of refs) unresolved.set(`${filePath}|${r.kind}|${r.key}|${r.line}`, r)
+    },
+    findUnresolvedByKeys(projectId, kind, keys, limit = 200) {
+      const wanted = new Set(keys)
+      const out = []
+      for (const [k, r] of unresolved) {
+        const [filePath, refKind] = k.split('|')
+        if (refKind !== kind || !wanted.has(r.key)) continue
+        out.push({ filePath, ref: r.ref, line: r.line })
+      }
+      return out.slice(0, limit)
+    },
     // ── Документы семантики (эмуляция code_map_docs) ──
     markDocs(projectId, filePath) {
       docsByFile.set(filePath, new Map([[`${filePath}#doc`, { textHash: 'h', tier: 0 }]]))
@@ -245,6 +271,15 @@ function createSidecar() {
 }
 
 /** Резолвер-шим: минимум, нужный mapBuilder (реальные правила не проверяем). */
+/** Lookup-ключ импорта (зеркало mapResolver.importLookupKey для шима). */
+function fileLookupKey(source) {
+  const clean = source.trim().replace(/[\\/]+$/, '')
+  const parts = clean.split('/').filter(Boolean)
+  let last = parts[parts.length - 1] ?? ''
+  last = last.replace(/\.(ts|tsx|js|jsx|mjs|cjs|py)$/, '')
+  return last ? last.toLowerCase() : null
+}
+
 const resolverShim = {
   ProjectIndex: class ProjectIndex {
     constructor(projectId, workdir) {
@@ -286,22 +321,35 @@ const resolverShim = {
   resolveFileImports(index, fromFile, importDetails, _language) {
     const edges = []
     const packages = []
+    const unresolved = []
     const posix = path.posix
     for (const imp of importDetails) {
       if (!imp.source.startsWith('.')) { packages.push(imp.source); continue }
       const base = posix.join(posix.dirname(fromFile), imp.source)
       const candidates = [base, base + '.ts', base + '.tsx', base + '/index.ts']
       const found = candidates.find(c => index.files.has(posix.normalize(c)))
-      if (!found) continue
+      if (!found) {
+        // Как и настоящий резолвер: цель не найдена → durable-след для восстановления.
+        const key = fileLookupKey(imp.source)
+        if (key) unresolved.push({ kind: 'import', key, ref: imp.source, line: imp.line })
+        continue
+      }
       const to = posix.normalize(found)
       edges.push({
         id: `${fromFile}=>${to}`, projectId: index.projectId, fromNode: fromFile, toNode: to,
         type: 'imports', precision: 'resolved', filePath: fromFile, line: 1,
       })
     }
-    return { edges, packages }
+    return { edges, packages, unresolved }
   },
-  resolveFileCalls() { return [] },
+  resolveFileCalls() { return { edges: [], unresolved: [] } },
+  /** Ключи файла-цели (зеркало настоящего резолвера). */
+  fileLookupKeys(filePath) {
+    const parts = String(filePath).split(/[\\/]/).filter(Boolean)
+    const last = parts[parts.length - 1] ?? ''
+    const stem = last.replace(/\.[^.]+$/, '')
+    return stem ? [stem.toLowerCase()] : []
+  },
   ensurePackages() {},
   loadTsconfigAliases() { return new Map() },
   markdownNodes(projectId, relPath) {
@@ -440,7 +488,7 @@ test('replay: завершение скана запускает финальн�
   assert.ok(ok, 'сверка довела карту до ready')
   assert.ok(!store.files.has('gone.ts'), 'исчезнувший файл удалён только после авторитетного прохода')
   assert.ok(store.files.has('b.ts'), 'досканированный файл добавлен')
-  assert.equal(store.getMeta(projectId, 'schemaVersion'), '4', 'schemaVersion фиксируется успешным авторитетным проходом')
+  assert.equal(store.getMeta(projectId, 'schemaVersion'), '5', 'schemaVersion фиксируется успешным авторитетным проходом')
   assert.equal(semantic.calls.pruneProjectDocs, 1, 'документы чистит prune (не clear) после успеха')
 })
 
@@ -463,7 +511,7 @@ test('force: старый граф и векторы сохраняются, sch
   assert.ok(ok, 'force-сборка завершилась')
   assert.equal(store.calls.clearProject, 0, 'старый граф не очищался и во время сборки')
   assert.equal(semantic.calls.clearProjectDocs, 0, 'документы не чистились')
-  assert.equal(store.getMeta(projectId, 'schemaVersion'), '4', 'schemaVersion записан успешным проходом')
+  assert.equal(store.getMeta(projectId, 'schemaVersion'), '5', 'schemaVersion записан успешным проходом')
 })
 
 test('same-batch linkage: импорт на файл, разобранный позже, разрешается', async () => {
@@ -784,4 +832,88 @@ test('loop: проект с идущим инкременталом не бер�
   } finally {
     manager.stop()
   }
+})
+
+// ─── Восстановление ранее неразрешённых ссылок ───────────────────────────────
+
+test('recovery: цель, появившаяся после первичного индекса, восстанавливает импорт', async () => {
+  const workdir = makeWorkdir({
+    'a.ts': "import { m } from './missing'\nexport function a() {}\n",
+    'unrelated.ts': "import { n } from './alsoMissing'\nexport function u() {}\n",
+  })
+  const store = createStore()
+  const semantic = createSemantic()
+  const sidecar = createSidecar()
+  const projectId = 'p1'
+  const indexer = createIndexer(workdir, { files: ['a.ts', 'unrelated.ts'], status: inventoryStatus({ files: 2, workdir }) })
+  const mod = loadMapBuilder({ store, indexer, sidecar, semantic, projects: { [projectId]: { id: projectId, name: 'P1', workdir } } })
+  const manager = bootManager(mod)
+
+  await manager.buildProject(projectId, true)
+  assert.ok(![...store.edges.values()].some(e => e.fromNode === 'a.ts' && e.type === 'imports'),
+    'импорт на отсутствующий файл ребра не даёт')
+  assert.ok([...store.unresolved.keys()].some(k => k.startsWith('a.ts|import|missing|')),
+    'неразрешённый импорт оставил durable-след')
+
+  const aSidecarCalls = sidecar.calls.filter(c => /[\\/]a\.ts$/.test(c)).length
+  const rewritesBefore = store.calls.replaceFileEdges.length
+
+  // Цель появляется позже: карта должна закрыть «висящий» импорт.
+  fs.writeFileSync(path.join(workdir, 'missing.ts'), 'export function m() {}\n', 'utf8')
+  manager.pendingChanges.set(workdir, new Set(['missing.ts']))
+  await manager.flushChanges(workdir)
+
+  const restored = [...store.edges.values()].find(e => e.fromNode === 'a.ts' && e.toNode === 'missing.ts' && e.type === 'imports')
+  assert.ok(restored, 'ребро a.ts → missing.ts восстановлено без пересборки карты')
+  assert.equal(restored.precision, 'resolved')
+  assert.ok(![...store.unresolved.keys()].some(k => k.startsWith('a.ts|import|missing|')),
+    'след снят: ссылка разрешилась')
+  assert.equal(sidecar.calls.filter(c => /[\\/]a\.ts$/.test(c)).length, aSidecarCalls,
+    'импортёр не перечитывался и не переразбирался (кэш importDetails)')
+  assert.ok(store.calls.replaceFileEdges.length > rewritesBefore)
+
+  // Несвязанный файл с другой неразрешённой ссылкой не тронут.
+  assert.ok(!store.calls.replaceFileEdges.slice(rewritesBefore).includes('unrelated.ts'),
+    'файл с другим неразрешённым импортом не перерезолвливался')
+  assert.ok([...store.unresolved.keys()].some(k => k.startsWith('unrelated.ts|import|alsomissing|')),
+    'его след сохранён — цель так и не появилась')
+  assert.ok(![...store.edges.values()].some(e => e.fromNode === 'unrelated.ts' && e.type === 'imports'),
+    'ложного ребра у несвязанного файла нет')
+})
+
+test('recovery: удаление цели пересоздаёт след, повторное появление — ребро', async () => {
+  const workdir = makeWorkdir({
+    'a.ts': "import { b } from './b'\nexport function a() {}\n",
+    'b.ts': 'export function b() {}\n',
+  })
+  const store = createStore()
+  const semantic = createSemantic()
+  const sidecar = createSidecar()
+  const projectId = 'p1'
+  const indexer = createIndexer(workdir, { files: ['a.ts', 'b.ts'], status: inventoryStatus({ files: 2, workdir }) })
+  const mod = loadMapBuilder({ store, indexer, sidecar, semantic, projects: { [projectId]: { id: projectId, name: 'P1', workdir } } })
+  const manager = bootManager(mod)
+
+  await manager.buildProject(projectId, true)
+  assert.ok([...store.edges.values()].some(e => e.fromNode === 'a.ts' && e.toNode === 'b.ts'))
+
+  // Удаление цели: импортёр перерезолвливается, ребро уходит, след появляется.
+  fs.rmSync(path.join(workdir, 'b.ts'))
+  manager.pendingChanges.set(workdir, new Set(['b.ts']))
+  await manager.flushChanges(workdir)
+
+  assert.ok(!store.files.has('b.ts'), 'удалённый файл убран из графа')
+  assert.ok(![...store.edges.values()].some(e => e.fromNode === 'a.ts' && e.toNode === 'b.ts'),
+    'ребро на удалённый файл снято')
+  assert.ok([...store.unresolved.keys()].some(k => k.startsWith('a.ts|import|b|')),
+    'след восстановлен: цель снова неразрешена')
+
+  // Цель вернулась (git checkout) — ребро восстанавливается точечно.
+  fs.writeFileSync(path.join(workdir, 'b.ts'), 'export function b() {}\n', 'utf8')
+  manager.pendingChanges.set(workdir, new Set(['b.ts']))
+  await manager.flushChanges(workdir)
+
+  assert.ok([...store.edges.values()].some(e => e.fromNode === 'a.ts' && e.toNode === 'b.ts'),
+    'ребро a.ts → b.ts вернулось после повторного появления файла')
+  assert.ok(![...store.unresolved.keys()].some(k => k.startsWith('a.ts|import|b|')))
 })

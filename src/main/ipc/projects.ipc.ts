@@ -5,6 +5,7 @@ import {
   setProjectVerificationCommand, setProjectContextFiles, setProjectAppearance,
 } from '../../core/db'
 import { log } from '../../core/logger'
+import { onProjectDeleted } from '../assistants/bridge'
 import { PROJECT_COLORS, PROJECT_ICONS } from '../../shared/projectAppearance'
 
 export interface ProjectsIPCWindow {
@@ -80,6 +81,7 @@ export function registerProjectsIPC(mainWindow: ProjectsIPCWindow): void {
   ipcMain.handle('projects:getAll', () => getAllProjects())
   ipcMain.handle('projects:rename', (_, id: string, name: string) => renameProject(id, name))
   ipcMain.handle('projects:delete', async (_, id: string, deleteChats: boolean) => {
+    onProjectDeleted(id)
     deleteProject(id, deleteChats)
   })
   ipcMain.handle('projects:getById', (_, id: string) => getProjectById(id))

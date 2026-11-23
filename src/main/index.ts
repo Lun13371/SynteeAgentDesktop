@@ -45,6 +45,7 @@ import { TrayManager } from './tray/TrayManager'
 import { HotkeyManager } from './hotkeys/HotkeyManager'
 import { registerAllIPC } from './ipc'
 import { initAssistants } from './assistants/bridge'
+import { getDB } from '../core/db/handle'
 import { localModels } from './localModels/LocalModelManager'
 import { registerChatIPC, flushAllActiveRuns } from './ipc/chat.ipc'
 import { registerOverlayIPC } from './ipc/overlay.ipc'
@@ -394,6 +395,15 @@ app.whenReady().then(async () => {
     persistStats: (s) => store.set('assistantsStats', s),
     loadWeights: () => store.get('assistantsWeights') as import('../shared/assistants').AssistantsWeights | undefined,
     persistWeights: (w) => store.set('assistantsWeights', w),
+    // Archivist пишет память уже после завершения рана и после удаления чата:
+    // существование строки chat — единственный надёжный признак «не воскрешать».
+    chatAlive: (chatId: string): boolean | undefined => {
+      try {
+        return !!getDB().prepare('SELECT 1 AS ok FROM chats WHERE id = ?').get(chatId)
+      } catch {
+        return undefined
+      }
+    },
   })
   registerChatIPC(store, mainWindow)
   registerOverlayIPC(store, overlayWindow)

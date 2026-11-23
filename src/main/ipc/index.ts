@@ -13,6 +13,7 @@ import type { SpotlightWindow } from '../windows/SpotlightWindow'
 import type { TrayMenuWindow } from '../windows/TrayMenuWindow'
 import type { HotkeyManager } from '../hotkeys/HotkeyManager'
 import { registerAssistantsIPC } from './assistants.ipc'
+import { onMemorySettingsChanged } from '../assistants/bridge'
 import { registerProjectMapIPC } from './projectMap.ipc'
 import { projectMapManager } from '../../core/projectMap/mapBuilder'
 import { DEFAULT_PROJECT_MAP_SPEED, type ProjectMapSpeedSettings } from '../../shared/projectMap'
@@ -123,6 +124,11 @@ function registerSettingsIPC({ store, hotkeyManager }: IPCContext): void {
     // Без этого старые шорткаты остаются зарегистрированными до перезапуска.
     if (key === 'hotkeys') {
       hotkeyManager?.reload()
+    }
+    // Archivist дописывает память уже после рана: выключение памяти должно
+    // отменять фоновые дистилляции, иначе факты запишутся «после выключения».
+    if (key === 'memoryEnabled' || key === 'autoMemoryEnabled') {
+      onMemorySettingsChanged()
     }
   })
   ipcMain.handle('settings:getAll', () => ({ ...DEFAULT_TOOL_SETTINGS, ...store.store }))

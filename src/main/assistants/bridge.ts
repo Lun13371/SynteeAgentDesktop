@@ -1,9 +1,10 @@
 import { Watcher, type WatcherTrigger, type Capability, prefilterCapabilities, scoreCapabilitiesSemantic, hashContext } from '../../core/agent/watcher'
 import { DEFAULT_ASSISTANTS_SETTINGS, type AssistantsSettings, type AssistantsWeights, type HintCandidate, type AssistantLogEntry, type AgentStatsMap, ASSISTANTS_LOG_MAX_ENTRIES, ASSISTANTS_LOG_RETENTION_MS } from '../../shared/assistants'
 import { log } from '../../core/logger'
-import { judgeRelevance, judgeDrift, distillSession, extractConstraints, summarizeTool, judgeCapability } from './llmClient'
+import { judgeDrift, distillSession, judgeCapability } from './llmClient'
 import { getServerState } from './llmServer'
 import { saveMemoryItem, decayAutoFacts } from '../../core/memory/MemoryStore'
+import { getMemorySettings } from '../../core/memory/globalMemorySettings'
 import { sidecarSemanticSearch, resolveSemanticModelPaths } from '../../core/sidecar/sidecarClient'
 import { existsSync, readFileSync } from 'fs'
 import { join } from 'path'
@@ -18,20 +19,101 @@ interface ActiveAssistant {
   settings: AssistantsSettings
   capabilities: Capability[]
   projectWorkdir?: string
+  projectId?: string
   lastHash: string
   lastErrorHash: string
   controller: AbortController
+  /** Последний известный круг рана и ревизия задачи (steer). События с
+   *  меньшим round / чужой ревизией — устаревшие, их не судим.
+   *  `lastNavigatorRound` — раунд, который уже судили (не судим дважды),
+   *  `lastUsefulRound` — раунд, где совет navigator'а реально попал в промпт
+   *  (сразу после него повторный совет — шум). */
+  round: number
+  taskRevision: number
+  lastNavigatorRound: number
+  lastUsefulRound: number
 }
 
 const active = new Map<string, ActiveAssistant>()
 function isCurrent(a: ActiveAssistant): boolean {
   return active.get(a.chatId) === a && !a.controller.signal.aborted && a.settings.enabled
 }
+
+// Singleflight по роли: одного судью на чат+роль за раз достаточно. Раньше
+// каждый триггер запускал свой вызов локальной модели, и очередь забивалась
+// одинаковыми промптами, пока первый ещё считался.
+const inflightRoles = new Map<string, Promise<void>>()
+function singleflight(key: string, job: () => Promise<void>): Promise<void> {
+  const running = inflightRoles.get(key)
+  if (running) return running
+  const p = job().catch((err) => {
+    log('[Assistants] advisory job failed %s: %s', key, (err as Error).message)
+  }).finally(() => {
+    if (inflightRoles.get(key) === p) inflightRoles.delete(key)
+  })
+  inflightRoles.set(key, p)
+  return p
+}
+
+// Фоновые задачи Archivist живут дольше своего воркера (факты рождаются на
+// самом последнем событии рана). Держим их отдельно: detachAssistants() по
+// exit их не трогает, а удаление чата / выключение памяти — отменяет.
+interface ArchivistJob { controller: AbortController; chatId: string; projectId?: string; existedAtStart: boolean }
+const archivistJobs = new Map<string, ArchivistJob>()
+// Томбстоны удалённых чатов: дистилляция может финишировать уже после
+// deleteChat — писать строку памяти «ожившему» чату нельзя.
+const deletedChats = new Set<string>()
+/** Существует ли строка chats: true/false — знаем, undefined — резолвер не
+ *  задан. Само по себе отсутствие строки НЕ означает удаление (у side-чатов
+ *  её нет изначально), поэтому в задаче фиксируется состояние на старте. */
+let chatAliveResolver: ((chatId: string) => boolean | undefined) | null = null
+function rowExists(chatId: string): boolean | undefined {
+  try { return chatAliveResolver?.(chatId) } catch { return undefined }
+}
+/** Задача стартовала при живой строке — значит её исчезновение = удаление. */
+function chatStillAlive(chatId: string, existedAtStart = false): boolean {
+  if (deletedChats.has(chatId)) return false
+  if (!existedAtStart) return true
+  return rowExists(chatId) !== false
+}
+/** Удаление чата: отменяем фон Archivist и ставим томбстон. */
+export function onChatDeleted(chatId: string): void {
+  deletedChats.add(chatId)
+  if (deletedChats.size > 256) {
+    const oldest = deletedChats.values().next().value
+    if (oldest) deletedChats.delete(oldest)
+  }
+  cancelArchivistJob(chatId, 'чат удалён')
+  detachAssistants(chatId)
+}
+export function cancelArchivistJob(chatId: string, reason = 'отмена'): void {
+  const job = archivistJobs.get(chatId)
+  if (!job) return
+  archivistJobs.delete(chatId)
+  job.controller.abort()
+  appendLog({ ts: Date.now(), role: 'archivist', kind: 'cancel', detail: `фоновая дистилляция отменена (${reason})` })
+}
+/** Удаление проекта (вместе с чатами): отменяем дистилляции его чатов. */
+export function onProjectDeleted(projectId: string): void {
+  for (const [chatId, job] of [...archivistJobs]) {
+    if (job.projectId === projectId) cancelArchivistJob(chatId, 'проект удалён')
+  }
+}
+/** Выключение памяти (или авто-записи) в настройках: фоновые дистилляции не
+ *  должны успеть записать — отменяем их сразу, а не после генерации. */
+export function onMemorySettingsChanged(): void {
+  const mem = getMemorySettings()
+  if (mem.enabled && mem.auto) return
+  for (const chatId of [...archivistJobs.keys()]) cancelArchivistJob(chatId, 'память выключена')
+}
 const assistantLog: AssistantLogEntry[] = []
 // W1 feedback: веса источников и последние инжектированные хинты per chat.
 const sourceWeights = new Map<string, number>()
 const capabilityWeights = new Map<string, number>()
 const injectedHints = new Map<string, Array<{ id: string; source: string; capId?: string; content: string }>>()
+// hint_applied приходит от worker'а: id хинтов, реально вставленных в промпт.
+// Держим отдельно от active — событие может прийти позже detach.
+const appliedHints = new Map<string, Set<string>>()
 
 // Дедуп хинтов по тексту per chat: navigator/capability шлют одно и то же
 // («Возвращайся к цели: X») каждые N раундов — для модели шум, для контекста
@@ -93,11 +175,12 @@ function bumpSaved(role: string, tokens: number): void {
 }
 export function getAgentStats(): AgentStatsMap { return agentStats }
 
-export function initAssistants(opts: { load: () => Partial<AssistantsSettings> | undefined; persist: (s: AssistantsSettings) => void; dbPath: () => string; loadStats?: () => AgentStatsMap | undefined; persistStats?: (s: AgentStatsMap) => void; loadWeights?: () => AssistantsWeights | undefined; persistWeights?: (w: AssistantsWeights) => void }): void {
+export function initAssistants(opts: { load: () => Partial<AssistantsSettings> | undefined; persist: (s: AssistantsSettings) => void; dbPath: () => string; loadStats?: () => AgentStatsMap | undefined; persistStats?: (s: AgentStatsMap) => void; loadWeights?: () => AssistantsWeights | undefined; persistWeights?: (w: AssistantsWeights) => void; chatAlive?: (chatId: string) => boolean | undefined }): void {
   const saved = opts.load()
   if (saved) globalSettings = { ...DEFAULT_ASSISTANTS_SETTINGS, ...saved }
   persistFn = opts.persist
   dbPathResolver = opts.dbPath
+  chatAliveResolver = opts.chatAlive ?? null
   const savedStats = opts.loadStats?.()
   if (savedStats) Object.assign(agentStats, savedStats)
   persistStatsFn = opts.persistStats ?? null
@@ -128,9 +211,15 @@ export function updateAssistantsSettings(patch: Partial<AssistantsSettings>): As
   const advisorySettingsChanged = previous.watcherEnabled !== globalSettings.watcherEnabled
     || previous.navigatorEnabled !== globalSettings.navigatorEnabled
     || previous.janitorEnabled !== globalSettings.janitorEnabled
+    || previous.archivistEnabled !== globalSettings.archivistEnabled
     || previous.sources?.memory !== globalSettings.sources?.memory
     || previous.sources?.skills !== globalSettings.sources?.skills
   persistFn?.(globalSettings)
+  // Archivist outlives the worker by design — выключение роли или всего
+  // модуля обязано отменить и его, иначе факты запишутся «после выключения».
+  if (!globalSettings.enabled || !globalSettings.archivistEnabled) {
+    for (const chatId of [...archivistJobs.keys()]) cancelArchivistJob(chatId, 'роль выключена')
+  }
   for (const a of active.values()) {
     a.settings = globalSettings
     if (!globalSettings.enabled || advisorySettingsChanged) a.controller.abort()
@@ -213,8 +302,14 @@ export function attachAssistants(chatId: string, worker: Worker, opts: { project
   // отбор memory-хинтов — «расстроенный» источник замолкает.
   watcher.setSourceWeightProvider((src) => sourceWeights.get(src) ?? 1)
   active.get(chatId)?.controller.abort()
-  const a: ActiveAssistant = { watcher, chatId, worker, settings: globalSettings, capabilities: [], projectWorkdir: opts.projectWorkdir, lastHash: '', lastErrorHash: '', controller: new AbortController() }
+  const a: ActiveAssistant = {
+    watcher, chatId, worker, settings: globalSettings, capabilities: [], projectWorkdir: opts.projectWorkdir,
+    projectId: opts.projectId, lastHash: '', lastErrorHash: '', controller: new AbortController(),
+    round: 0, taskRevision: 0, lastNavigatorRound: -1, lastUsefulRound: -100,
+  }
   active.set(chatId, a)
+  // Archivist больше не привязан к воркеру (см. agent_archivist): его фоновая
+  // задача продолжается после exit и пишет факты в доверенный контекст.
   worker.once('exit', () => { if (active.get(chatId) === a) detachAssistants(chatId, true) })
   worker.postMessage({ type: 'assistants_settings', settings: globalSettings })
   log('[Assistants] attached to chat %s (watcher=%s janitor=%s)', chatId, globalSettings.watcherEnabled, globalSettings.janitorEnabled)
@@ -225,8 +320,13 @@ export function detachAssistants(chatId: string, preserveHintHistory = false): v
   a?.controller.abort()
   if (a) a.worker = null
   active.delete(chatId)
-  if (!preserveHintHistory) recentHintTexts.delete(chatId)
+  if (!preserveHintHistory) {
+    recentHintTexts.delete(chatId)
+    appliedHints.delete(chatId)
+  }
   injectedHints.delete(chatId)
+  // Фоновые задачи Archivist намеренно НЕ отменяются: они переживают воркер.
+  // Отмена — только onChatDeleted / выключение роли / выключение памяти.
 }
 
 export async function onAgentEvent(chatId: string, trigger: WatcherTrigger): Promise<void> {
@@ -248,62 +348,80 @@ export async function onAgentEvent(chatId: string, trigger: WatcherTrigger): Pro
       a.lastErrorHash = eh
     }
     appendLog({ ts: Date.now(), role: 'watcher', kind: 'trigger', detail: `${trigger.kind}: оценка возможностей` })
+
+    // 1) E5-память и keyword-скиллы считаются ДО пробуждения модели и не
+    //    зависят от него: дешёвый локальный retrieval полезен и без LLM.
+    //    Один проход на триггер (collect) — иначе minIntervalMs съедал второй.
+    const local = await a.watcher.collect(trigger)
+    if (signal.aborted || !isCurrent(a) || !a.settings.watcherEnabled) return
+    const memoryInjected = injectHint(a, local.memory[0], 'watcher')
+
+    // 2) Каталог возможностей гейтится ДО wake/LLM. Пустой каталог после
+    //    prefilter+семантики = нет кандидатов = судье нечего решать, и
+    //    локальную модель мы вообще не трогаем.
+    let caps = prefilterCapabilities(a.capabilities, ctx, 10)
+    if (caps.length === 0 && a.capabilities.length > 0) {
+      // Keyword-overlap пуст (RU-запрос против EN-имён скиллов). Семантический
+      // скоринг вместо «первых 10 по порядку» — порядок кандидатов для судьи.
+      const semantic = await scoreCapabilitiesSemantic(a.capabilities, ctx, signal)
+      caps = semantic.filter(s => s.score >= 0.1).slice(0, 10).map(s => s.cap)
+    }
+    if (signal.aborted || !isCurrent(a) || !a.settings.watcherEnabled) return
+    caps = caps.sort((x, y) => (capabilityWeights.get(y.id) ?? 1) - (capabilityWeights.get(x.id) ?? 1))
+
+    if (caps.length === 0) {
+      appendLog({ ts: Date.now(), role: 'watcher', kind: 'skip', detail: 'нет кандидатов в каталоге — судья не вызывался' })
+      // Не более одного хинта на триггер: скилл — только если память молчала.
+      if (!memoryInjected) injectHint(a, local.skills[0], 'watcher')
+      bump('watcher', 'skipped')
+      return
+    }
+
     const ready = await serverReadyOrWake(signal)
     if (signal.aborted || !isCurrent(a) || !a.settings.watcherEnabled) return
-    if (ready) {
-      // Local memory retrieval also runs with the LLM router online. It uses
-      // E5 only (no extra generation) and shares the normal novelty gate.
-      const memoryHints = await a.watcher.onTrigger(trigger, [], true)
+    if (!ready) {
+      // Fallback без LLM: скиллы (память уже отдана выше), не более одной подсказки.
+      if (!memoryInjected) injectHint(a, local.skills[0], 'watcher')
+      if (!memoryInjected && local.skills.length === 0) bump('watcher', 'skipped')
+      return
+    }
+
+    // Singleflight по чату: пока судья считает, следующие триггеры не плодят
+    // одинаковые запросы в очередь локальной модели.
+    await singleflight(`watcher:${chatId}`, async () => {
+      const verdict = await judgeCapability(ctx, caps, signal)
       if (signal.aborted || !isCurrent(a) || !a.settings.watcherEnabled) return
-      for (const hint of memoryHints.slice(0, 1)) {
-        if (!markHintText(chatId, hint.content)) continue
-        a.worker?.postMessage({ type: 'hint', hint })
-        appendLog({ ts: Date.now(), role: 'watcher', kind: 'hint_injected', detail: `[memory] ${hint.content.slice(0, 80)}` })
-        bump('watcher', 'fired')
-      }
-      // Capability router: prefilter каталога → точный структурный вердикт.
-      let caps = prefilterCapabilities(a.capabilities, ctx, 10)
-      if (caps.length === 0 && a.capabilities.length > 0) {
-        // Keyword-overlap пуст (RU-запрос против EN-имён скиллов). Семантический
-        // скоринг вместо «первых 10 по порядку» — порядок кандидатов для судьи.
-        const semantic = await scoreCapabilitiesSemantic(a.capabilities, ctx, signal)
-        caps = semantic.filter(s => s.score >= 0.1).slice(0, 10).map(s => s.cap)
-      }
-      const verdict = await judgeCapability(ctx, caps.sort((x, y) => (capabilityWeights.get(y.id) ?? 1) - (capabilityWeights.get(x.id) ?? 1)), signal)
-      if (signal.aborted || !isCurrent(a) || !a.settings.watcherEnabled) return
-      if (verdict.helpful && verdict.confidence >= 0.6) {
-        const cap = a.capabilities.find(c => c.id === verdict.id)
-        const hint: HintCandidate = { id: `cap-${verdict.id}-${Date.now()}`, source: 'capability', content: verdict.action, score: verdict.confidence, title: cap?.name ?? verdict.id }
-        if (markHintText(chatId, hint.content)) {
-          a.worker?.postMessage({ type: 'hint', hint })
-          const inj = injectedHints.get(chatId) ?? []
-          inj.push({ id: hint.id, source: hint.source, capId: verdict.id, content: hint.content.slice(0, 400) })
-          injectedHints.set(chatId, inj.slice(-20))
-          appendLog({ ts: Date.now(), role: 'watcher', kind: 'hint_injected', detail: `[capability:${hint.title}] ${hint.content.slice(0, 80)}` })
-          bump('watcher', 'fired')
-        } else {
-          appendLog({ ts: Date.now(), role: 'watcher', kind: 'skip', detail: `дубль текста хинта — не инжектится: ${hint.content.slice(0, 60)}` })
-          bump('watcher', 'skipped')
-        }
-      } else {
+      if (!(verdict.helpful && verdict.confidence >= 0.6)) {
         appendLog({ ts: Date.now(), role: 'watcher', kind: 'skip', detail: 'нет уверенной рекомендации — пропуск' })
         bump('watcher', 'skipped')
+        return
       }
-    } else {
-      // Fallback без LLM: память/скиллы, не более одной подсказки.
-      const hints = await a.watcher.onTrigger(trigger)
-      if (signal.aborted || !isCurrent(a) || !a.settings.watcherEnabled) return
-      for (const hint of hints.slice(0, 1)) {
-        if (!markHintText(chatId, hint.content)) { bump('watcher', 'skipped'); continue }
-        a.worker?.postMessage({ type: 'hint', hint })
-        appendLog({ ts: Date.now(), role: 'watcher', kind: 'hint_injected', detail: `[${hint.source}] ${hint.title ?? hint.id}: ${hint.content.slice(0, 80)}` })
-        bump('watcher', 'fired')
-      }
-      if (hints.length === 0) bump('watcher', 'skipped')
-    }
+      const cap = a.capabilities.find(c => c.id === verdict.id)
+      const hint: HintCandidate = { id: `cap-${verdict.id}-${Date.now()}`, source: 'capability', content: verdict.action, score: verdict.confidence, title: cap?.name ?? verdict.id }
+      if (injectHint(a, hint, 'watcher', undefined, verdict.id)) return
+      appendLog({ ts: Date.now(), role: 'watcher', kind: 'skip', detail: `дубль текста хинта — не инжектится: ${hint.content.slice(0, 60)}` })
+      bump('watcher', 'skipped')
+    })
   } catch (err) {
     log('[Assistants] watcher error for chat %s: %s', chatId, (err as Error).message)
   }
+}
+
+/** Единая точка инжекта: дедуп текста → postMessage → лог → регистрация для
+ *  feedback (hint_applied/onRunDone). Возвращает false, если хинт отфильтрован
+ *  (нет хинта / отменено / выключено / дубль текста). */
+function injectHint(a: ActiveAssistant, hint: HintCandidate | undefined, role: AssistantLogEntry['role'], signal = a.controller.signal, capId?: string): boolean {
+  if (!hint) return false
+  if (signal.aborted || !isCurrent(a)) return false
+  if (hint.source === 'navigator' && !a.settings.navigatorEnabled) return false
+  if (!markHintText(a.chatId, hint.content)) return false
+  a.worker?.postMessage({ type: 'hint', hint })
+  const inj = injectedHints.get(a.chatId) ?? []
+  inj.push({ id: hint.id, source: hint.source, capId, content: hint.content.slice(0, 400) })
+  injectedHints.set(a.chatId, inj.slice(-20))
+  appendLog({ ts: Date.now(), role, kind: 'hint_injected', detail: `[${hint.source}] ${hint.content.slice(0, 80)}` })
+  bump(role, 'fired')
+  return true
 }
 
 const groundingCache = new Map<string, string>()
@@ -333,7 +451,7 @@ function buildTriggerContext(trigger: WatcherTrigger, workdir?: string): string 
   return g ? `${base}\nProject rules: ${g}` : base
 }
 
-export function onJanitorAction(chatId: string, kind: string, description: string, tokensSaved: number): void {
+export function onJanitorAction(_chatId: string, kind: string, description: string, tokensSaved: number): void {
   appendLog({ ts: Date.now(), role: 'janitor', kind, detail: description, tokensSaved })
   if (tokensSaved > 0) { bump('janitor', 'fired'); bumpSaved('janitor', tokensSaved) }
   else bump('janitor', 'skipped')
@@ -373,6 +491,17 @@ function maybeDecay(): void {
   } catch { /* decay не критичен */ }
 }
 
+// Archivist: минимум, ниже которого дистилляции нечего взять. Гейт стоит в
+// главном процессе и не зависит от того, что решил воркер.
+const MIN_ARCHIVIST_TRANSCRIPT_CHARS = 250
+
+// Navigator: сколько раундов «лага» допустимо вердикту. Судья на локальной
+// модели считается дольше раунда, поэтому жёсткое «round < current» выбрасывало
+// почти все вердикты (а abort на каждом раунде убивал их ещё раньше).
+const NAVIGATOR_STALE_ROUNDS = 3
+/** После сработавшего совета не судим сразу — модели нужно время его применить. */
+const NAVIGATOR_REPEAT_GUARD_ROUNDS = 2
+
 /** Диспетчер LLM-зависимых мини-агентов (события из worker). Все advisory. */
 export async function onAssistantEvent(chatId: string, evt: Record<string, unknown>): Promise<void> {
   const a = active.get(chatId)
@@ -387,124 +516,207 @@ export async function onAssistantEvent(chatId: string, evt: Record<string, unkno
       if (trigger) await onAgentEvent(chatId, trigger)
       return
     }
-    case 'economist': bump('economist', 'fired'); return
+    case 'hint_applied': applyHintFeedback(a, String(evt.hintId ?? '')); return
+    case 'task_revised': {
+      // steer: задача переписана — всё, что судилось по старой ревизии, устарело.
+      a.taskRevision++
+      a.lastHash = ''
+      a.controller.abort()
+      if (s.enabled) a.controller = new AbortController()
+      appendLog({ ts: Date.now(), role: 'navigator', kind: 'skip', detail: `задача переписана (rev ${a.taskRevision}) — старые вердикты отброшены` })
+      return
+    }
+    case 'round_advanced': {
+      // Только учёт прогресса: раньше здесь стоял abort контроллера на КАЖДОМ
+      // раунде, и судья navigator'а (он считается дольше раунда) не успевал
+      // дожить до вердикта — инжект не случался почти никогда. Устаревание
+      // теперь решается лагом по номеру раунда (см. NAVIGATOR_STALE_ROUNDS).
+      const round = Number(evt.round ?? 0)
+      if (Number.isFinite(round) && round > a.round) a.round = round
+      return
+    }
     case 'briefing': bump('briefing', 'fired'); return
     case 'janitor_skip': bump('janitor', 'skipped'); return
+    case 'archivist': {
+      // Фоновая задача: не блокирует воркер и переживает его exit.
+      startArchivistJob(a, evt)
+      return
+    }
   }
-  if ((kind === 'navigator' && !s.navigatorEnabled) || (kind === 'archivist' && !s.archivistEnabled) || (kind === 'janitor_refine' && !s.janitorEnabled)) return
-  if (!['navigator', 'archivist', 'constitution_extract', 'janitor_refine'].includes(kind)) return
-  // Archivist intentionally outlives the worker: it persists durable memory
-  // emitted just before the terminal event. Other advisory jobs are run-bound.
-  const signal = kind === 'archivist' ? undefined : a.controller.signal
+  if (kind === 'navigator' && !s.navigatorEnabled) return
+  if (kind !== 'navigator') return
+  // Устаревшее событие: ран ушёл дальше допустимого лага или задачу переписали.
+  const evtRound = Number(evt.round ?? NaN)
+  if (Number.isFinite(evtRound)) {
+    if (evtRound < a.round - NAVIGATOR_STALE_ROUNDS) return
+    // Этот раунд уже судили — второй вызов по тому же состоянию не нужен.
+    if (evtRound <= a.lastNavigatorRound) return
+  }
+  const evtRevision = Number(evt.taskRevision ?? NaN)
+  if (Number.isFinite(evtRevision) && evtRevision < a.taskRevision) return
+  const lastUseful = Number(evt.lastUsefulRound ?? NaN)
+  // Совет только что сработал: не повторяем его через раунд-два.
+  if (Number.isFinite(lastUseful) && Number.isFinite(evtRound) && evtRound - lastUseful < NAVIGATOR_REPEAT_GUARD_ROUNDS) return
+  if (Number.isFinite(evtRound)) a.lastNavigatorRound = evtRound
+  const signal = a.controller.signal
   const ready = await serverReadyOrWake(signal)
-  if (!ready || !globalSettings.enabled || (signal && (signal.aborted || !isCurrent(a)))) return
-  const post = (hint: HintCandidate): boolean => {
-    if (signal?.aborted || !isCurrent(a) || (hint.source === 'navigator' && !a.settings.navigatorEnabled)) return false
-    const role: AssistantLogEntry['role'] = (hint.source === 'memory' || hint.source === 'skill' || hint.source === 'constitution' || hint.source === 'capability') ? 'watcher' : (hint.source as AssistantLogEntry['role'])
-    if (!markHintText(chatId, hint.content)) {
-      appendLog({ ts: Date.now(), role, kind: 'skip', detail: `дубль текста хинта — не инжектится: ${hint.content.slice(0, 60)}` })
-      return false
-    }
-    a.worker?.postMessage({ type: 'hint', hint })
-    appendLog({ ts: Date.now(), role, kind: 'hint_injected', detail: `[${hint.source}] ${hint.content.slice(0, 80)}` })
-    return true
-  }
+  if (!ready || !globalSettings.enabled || signal.aborted || !isCurrent(a)) return
   try {
-    switch (kind) {
-      case 'navigator': {
-        if (!s.navigatorEnabled || !ready) return
-        const verdict = await judgeDrift(String(evt.objective ?? ''), String(evt.transcript ?? ''), Array.isArray(evt.constraints) ? evt.constraints as string[] : [], String(evt.todo ?? ''), signal)
-        if (verdict.drift || verdict.violation) {
-          const content = verdict.violation
-            ? `Нарушаешь ограничение: ${verdict.reason || 'соблюдай закреплённые правила.'}`
-            : `Возвращайся к цели: ${verdict.reason || 'текущие шаги уходят в сторону.'}`
-          if (post({ id: `nav-${Date.now()}`, source: 'navigator', content, score: 1 })) bump('navigator', 'fired')
-          else bump('navigator', 'skipped')
-        } else {
-          bump('navigator', 'skipped')
-        }
-        break
+    await singleflight(`navigator:${chatId}`, async () => {
+      if (!a.settings.navigatorEnabled) return
+      const verdict = await judgeDrift(String(evt.objective ?? ''), String(evt.transcript ?? ''), Array.isArray(evt.constraints) ? evt.constraints as string[] : [], String(evt.todo ?? ''), signal)
+      // Пока судья думал, задачу могли переписать (ревизия) или ран ушёл
+      // далеко вперёд (лаг). Обычный следующий раунд — НЕ повод выбрасывать
+      // вердикт: судья физически не успевает за раундами.
+      if (signal.aborted || !isCurrent(a) || !a.settings.navigatorEnabled) return
+      if (Number.isFinite(evtRound) && evtRound < a.round - NAVIGATOR_STALE_ROUNDS) return
+      if (Number.isFinite(evtRevision) && evtRevision < a.taskRevision) return
+      if (verdict.drift || verdict.violation) {
+        const content = verdict.violation
+          ? `Нарушаешь ограничение: ${verdict.reason || 'соблюдай закреплённые правила.'}`
+          : `Возвращайся к цели: ${verdict.reason || 'текущие шаги уходят в сторону.'}`
+        const hint: HintCandidate = { id: `nav-${Date.now()}`, source: 'navigator', content, score: 1 }
+        if (!injectHint(a, hint, 'navigator', signal)) bump('navigator', 'skipped')
+        else if (Number.isFinite(evtRound)) a.lastUsefulRound = evtRound
+      } else {
+        bump('navigator', 'skipped')
       }
-      case 'archivist': {
-        if (!s.archivistEnabled || !ready) return
-        const transcript = String(evt.transcript ?? '')
-        // Короткий ран (ответ «готово» без работы) — дистилляции там взяться
-        // неоткуда, не тратим слот локальной модели.
-        if (transcript.trim().length < 250) {
-          appendLog({ ts: Date.now(), role: 'archivist', kind: 'skip', detail: `транскрипт слишком короткий (${transcript.trim().length} симв.) — дистилляция не запускалась` })
-          bump('archivist', 'skipped')
-          break
-        }
-        const files = Array.isArray(evt.modifiedFiles) ? (evt.modifiedFiles as unknown[]).filter((f): f is string => typeof f === 'string').slice(0, 10) : []
-        const facts = await distillSession(transcript, files)
-        if (!globalSettings.enabled || !globalSettings.archivistEnabled) return
-        let savedCount = 0
-        for (const f of facts) {
-          if (await isE5Duplicate(f.content, evt.projectId as string | undefined)) {
-            appendLog({ ts: Date.now(), role: 'archivist', kind: 'dedup', detail: `E5-дубль пропущен: ${f.content.slice(0, 60)}` })
-            continue
-          }
-          const kindMap: Record<string, 'project_decision' | 'convention' | 'user_fact'> = { project: 'project_decision', feedback: 'convention', user: 'user_fact' }
-          await saveMemoryItem({
-            title: f.content.slice(0, 60), content: f.content, kind: kindMap[classifyFact(f.content, f.kind)] ?? 'project_decision',
-            scope: evt.projectId ? 'project' : 'global', projectId: (evt.projectId as string) ?? undefined,
-            chatId: (evt.chatId as string) ?? undefined, source: 'auto_extract', importance: 0.6,
-          })
-          savedCount++
-        }
-        if (savedCount) {
-          appendLog({ ts: Date.now(), role: 'archivist', kind: 'distilled', detail: `сохранено ${savedCount} фактов в память` })
-          bump('archivist', 'fired')
-        } else {
-          // Пустой результат больше не молчаливый: сырой вывод модели виден
-          // в debug.log ([LlmClient] distill: ...), здесь — причина в UI-логе.
-          appendLog({ ts: Date.now(), role: 'archivist', kind: 'skip', detail: '0 фактов: модель вернула пустоту/мусор (детали в debug.log) или все E5-дубли' })
-          bump('archivist', 'skipped')
-        }
-        maybeDecay()
-        break
-      }
-      case 'constitution_extract': {
-        if (!ready) return
-        const items = await extractConstraints(String(evt.text ?? ''), signal)
-        if (items.length && !signal?.aborted && isCurrent(a)) a.worker?.postMessage({ type: 'constitution', items })
-        break
-      }
-      case 'janitor_refine': {
-        if (!ready) return
-        const summary = await summarizeTool(String(evt.toolName ?? 'tool'), String(evt.content ?? ''), signal)
-        if (summary && !signal?.aborted && isCurrent(a) && a.settings.janitorEnabled) a.worker?.postMessage({ type: 'janitor_refined', archiveId: evt.archiveId, summary })
-        break
-      }
-    }
+    })
   } catch (err) {
-    log('[Assistants] agent %s error chat=%s: %s', kind, chatId, (err as Error).message)
+    log('[Assistants] navigator error chat=%s: %s', chatId, (err as Error).message)
   }
 }
 
-/** W1 feedback: после рана спрашиваем судью, какие хинты помогли, и корректируем веса.
- *  `invoked` — реально вызванные тулы/скиллы рана (из collectedSteps): точный
- *  сигнал «возможность использована» вместо хрупкого includes по транскрипту. */
+// ─── Archivist: фоновая дистилляция, привязанная к доверенному контексту ───
+
+/**
+ * Идентичность и scope берём из attachAssistants (main-side доверенные opts),
+ * а не из evt воркера: chatId/projectId из события можно подделать, и тогда
+ * факт уедет в чужой проект.
+ */
+function startArchivistJob(a: ActiveAssistant, evt: Record<string, unknown>): void {
+  if (!a.settings.archivistEnabled) return
+  const mem = getMemorySettings()
+  if (!mem.enabled || !mem.auto) {
+    appendLog({ ts: Date.now(), role: 'archivist', kind: 'skip', detail: 'память (или авто-запись) выключена — дистилляция пропущена' })
+    bump('archivist', 'skipped')
+    return
+  }
+  const transcript = String(evt.transcript ?? '')
+  // Независимый гейт длины: короткий ран («готово») дистиллировать нечего.
+  if (transcript.trim().length < MIN_ARCHIVIST_TRANSCRIPT_CHARS) {
+    appendLog({ ts: Date.now(), role: 'archivist', kind: 'skip', detail: `транскрипт слишком короткий (${transcript.trim().length} симв.) — дистилляция не запускалась` })
+    bump('archivist', 'skipped')
+    return
+  }
+  const chatId = a.chatId
+  if (deletedChats.has(chatId)) return
+  // Фиксируем состояние на старте: если строка chats есть сейчас, её
+  // исчезновение позже = удаление чата. У эфемерных чатов (side/инкогнито)
+  // строки нет изначально — их поведение не меняем.
+  const existedAtStart = rowExists(chatId) === true
+  // Новый ран важнее недоработавшего старого: отменяем предыдущую задачу.
+  cancelArchivistJob(chatId, 'новый ран')
+  const controller = new AbortController()
+  const job: ArchivistJob = { controller, chatId, projectId: a.projectId, existedAtStart }
+  archivistJobs.set(chatId, job)
+  const files = Array.isArray(evt.modifiedFiles)
+    ? (evt.modifiedFiles as unknown[]).filter((f): f is string => typeof f === 'string').slice(0, 10)
+    : []
+  void (async () => {
+    const signal = controller.signal
+    try {
+      const ready = await serverReadyOrWake(signal)
+      if (!ready || signal.aborted) return
+      const facts = await distillSession(transcript, files, signal)
+      if (signal.aborted || !facts.length) {
+        appendLog({ ts: Date.now(), role: 'archivist', kind: 'skip', detail: `0 фактов: модель вернула пустоту/мусор или задача отменена` })
+        bump('archivist', 'skipped')
+        return
+      }
+      if (!globalSettings.enabled || !globalSettings.archivistEnabled) return
+      // Между дистилляцией и записью чат мог быть удалён, память — выключена.
+      if (!chatStillAlive(chatId, job.existedAtStart)) {
+        appendLog({ ts: Date.now(), role: 'archivist', kind: 'cancel', detail: 'чат удалён во время дистилляции — факты не записаны' })
+        return
+      }
+      const stillMem = getMemorySettings()
+      if (!stillMem.enabled || !stillMem.auto) return
+      let savedCount = 0
+      for (const f of facts) {
+        if (signal.aborted || !chatStillAlive(chatId, job.existedAtStart)) break
+        if (await isE5Duplicate(f.content, job.projectId)) {
+          appendLog({ ts: Date.now(), role: 'archivist', kind: 'dedup', detail: `E5-дубль пропущен: ${f.content.slice(0, 60)}` })
+          continue
+        }
+        if (signal.aborted || !chatStillAlive(chatId, job.existedAtStart)) break
+        const kindMap: Record<string, 'project_decision' | 'convention' | 'user_fact'> = { project: 'project_decision', feedback: 'convention', user: 'user_fact' }
+        await saveMemoryItem({
+          title: f.content.slice(0, 60), content: f.content, kind: kindMap[classifyFact(f.content, f.kind)] ?? 'project_decision',
+          scope: job.projectId ? 'project' : 'global', projectId: job.projectId,
+          chatId, source: 'auto_extract', importance: 0.6,
+        })
+        savedCount++
+      }
+      if (savedCount) {
+        appendLog({ ts: Date.now(), role: 'archivist', kind: 'distilled', detail: `сохранено ${savedCount} фактов в память` })
+        bump('archivist', 'fired')
+      } else {
+        appendLog({ ts: Date.now(), role: 'archivist', kind: 'skip', detail: '0 фактов: модель вернула пустоту/мусор (детали в debug.log) или все E5-дубли' })
+        bump('archivist', 'skipped')
+      }
+      maybeDecay()
+    } catch (err) {
+      log('[Assistants] archivist error chat=%s: %s', chatId, (err as Error).message)
+    } finally {
+      if (archivistJobs.get(chatId) === job) archivistJobs.delete(chatId)
+    }
+  })()
+}
+
+/** hint_applied: worker реально вставил хинт в промпт — детерминированный
+ *  сигнал полезности (замена LLM-судье feedback'а). Модель не будим. */
+function applyHintFeedback(a: ActiveAssistant, hintId: string): void {
+  if (!hintId) return
+  let applied = appliedHints.get(a.chatId)
+  if (!applied) applied = new Set()
+  appliedHints.set(a.chatId, applied)
+  if (applied.has(hintId)) return
+  applied.add(hintId)
+  if (applied.size > 64) {
+    const first = applied.values().next().value
+    if (first) applied.delete(first)
+  }
+  const inj = injectedHints.get(a.chatId) ?? []
+  const hit = inj.find(h => h.id === hintId)
+  if (!hit) return
+  sourceWeights.set(hit.source, clampWeight((sourceWeights.get(hit.source) ?? 1) + 0.05))
+  if (hit.capId) capabilityWeights.set(hit.capId, clampWeight((capabilityWeights.get(hit.capId) ?? 1) + 0.1))
+  persistWeights()
+  appendLog({ ts: Date.now(), role: 'watcher', kind: 'applied', detail: `хинт принят агентом: ${hit.content.slice(0, 60)}` })
+}
+
+/** W1 feedback без LLM: веса корректируются по детерминированным сигналам —
+ *  хинт реально вставлен в промпт (hint_applied) и возможность формально
+ *  вызвана в ране (`invoked` из collectedSteps). Судья-генерация удалена:
+ *  её вердикт был шумом на 0.8–1.2B и держал слот очереди после рана. */
 export async function onRunDone(chatId: string, transcriptTail: string, invoked?: { tools: string[]; skills: string[] }): Promise<void> {
   const inj = injectedHints.get(chatId) ?? []
   injectedHints.delete(chatId)
-  if (inj.length === 0 || !globalSettings.enabled || !serverReady()) return
+  const applied = appliedHints.get(chatId) ?? new Set<string>()
+  appliedHints.delete(chatId)
+  if (inj.length === 0 || !globalSettings.enabled) return
   try {
-    const list = inj.map(h => h.content).join('; ')
-    const verdict = await judgeRelevance(`session transcript: ${transcriptTail.slice(0, 400)}`, `hints used: ${list}`)
-    // Простая эвристика: если судья считает контекст релевантным — поднимаем веса источников.
     const invokedSet = new Set([...(invoked?.tools ?? []), ...(invoked?.skills ?? [])])
     for (const h of inj) {
-      const w = sourceWeights.get(h.source) ?? 1
-      sourceWeights.set(h.source, clampWeight(w + (verdict.relevant ? 0.05 : -0.05)))
-      if (h.capId) {
-        // Точный сигнал — формальный вызов (get_skill с именем скилла / тул
-        // возможности); includes по транскрипту остаётся фолбэком: модель
-        // может последовать скиллу, не упоминая его имя в шагах.
-        const used = invokedSet.has(h.capId) || transcriptTail.includes(h.capId)
-        const cw = capabilityWeights.get(h.capId) ?? 1
-        capabilityWeights.set(h.capId, clampWeight(cw + (used ? 0.1 : -0.05)))
-      }
+      const wasApplied = applied.has(h.id)
+      // Точный сигнал — формальный вызов; includes по транскрипту остаётся
+      // фолбэком: модель может последовать скиллу, не упоминая его имя в шагах.
+      const used = wasApplied || invokedSet.has(h.source)
+        || (!!h.capId && (invokedSet.has(h.capId) || transcriptTail.includes(h.capId)))
+      const delta = used ? 0.1 : -0.05
+      sourceWeights.set(h.source, clampWeight((sourceWeights.get(h.source) ?? 1) + delta))
+      if (h.capId) capabilityWeights.set(h.capId, clampWeight((capabilityWeights.get(h.capId) ?? 1) + delta))
     }
     persistWeights()
   } catch { /* feedback не критичен */ }

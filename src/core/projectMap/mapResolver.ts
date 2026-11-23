@@ -64,6 +64,85 @@ export type ImportTarget =
   | { kind: 'package'; name: string }
   | { kind: 'unresolved' }
 
+/**
+ * Неразрешённая ссылка файла — durable-след для точечного восстановления.
+ *
+ * У неразрешённого импорта/вызова ребра в графе нет, поэтому по входящим
+ * рёбрам такой файл-импортёр не найти. `key` — грубый lookup-ключ (имя цели без
+ * расширения для импорта, имя символа для вызова), по нему ищутся кандидаты при
+ * появлении нового файла; `ref` — исходный спецификатор/имя, по которому
+ * ссылка перерезолвливается.
+ */
+export interface UnresolvedRef {
+  kind: 'import' | 'call'
+  key: string
+  ref: string
+  line: number
+}
+
+/**
+ * Потолок следа на один файл: неразрешённые ссылки — вспомогательный индекс, а
+ * не второй граф. Файл с сотнями «висящих» имён (сгенерированный код, DSL)
+ * не должен раздувать таблицу; восстановление всё равно идёт по ключам.
+ */
+const MAX_UNRESOLVED_PER_FILE = 200
+
+/** Расширения, которые снимаются с последнего сегмента при вычислении ключа. */
+const KNOWN_EXTS = [
+  '.d.ts', '.tsx', '.ts', '.jsx', '.js', '.mjs', '.cjs', '.pyi', '.py', '.rs', '.go',
+  '.hpp', '.hxx', '.hh', '.h', '.cpp', '.cxx', '.cc', '.c', '.java', '.cs', '.rb', '.php',
+  '.sh', '.bash', '.swift', '.kts', '.kt', '.scala', '.lua', '.dart', '.exs', '.ex',
+]
+
+/** Снять расширение с имени файла (`queue.d.ts` → `queue`). */
+function stripExt(name: string): string {
+  const lower = name.toLowerCase()
+  for (const ext of KNOWN_EXTS) {
+    if (lower.endsWith(ext) && lower.length > ext.length) return name.slice(0, -ext.length)
+  }
+  return name
+}
+
+/** Индексные файлы каталога: импорт «./lib» целится в них, а не в имя `index`. */
+const INDEX_STEMS = new Set(['index', 'index.d', '__init__', 'mod'])
+
+/**
+ * Lookup-ключ неразрешённого импорта: последний сегмент спецификатора без
+ * расширения; для index/__init__ — имя каталога; для python-пути (`app.svc`) —
+ * последний сегмент после точки. Совпадение ключа лишь повод ПЕРЕпроверить
+ * ссылку по-настоящему (см. mapRecovery), поэтому ключ сознательно грубый.
+ */
+export function importLookupKey(source: string): string | null {
+  const clean = source.trim().replace(/^["'<]+/, '').replace(/["'>]+$/, '').replace(/[\\/]+$/, '')
+  if (!clean) return null
+  const parts = clean.split(/[\\/]/).filter(Boolean)
+  let last = stripExt(parts[parts.length - 1] ?? '')
+  if (parts.length === 1 && last.includes('.')) {
+    // Python/Java-подобный пунктирный путь: app.services → services.
+    last = last.split('.').pop() ?? last
+  }
+  if (!last) return null
+  if (INDEX_STEMS.has(last.toLowerCase()) && parts.length > 1) {
+    last = stripExt(parts[parts.length - 2] ?? '')
+  }
+  if (!last) return null
+  return last.toLowerCase()
+}
+
+/** Lookup-ключи файла: то, чем он может закрыть чужой неразрешённый импорт. */
+export function fileLookupKeys(filePath: string): string[] {
+  const parts = filePath.split(/[\\/]/).filter(Boolean)
+  if (parts.length === 0) return []
+  const stem = stripExt(parts[parts.length - 1] ?? '')
+  const keys = new Set<string>()
+  if (stem) keys.add(stem.toLowerCase())
+  if (INDEX_STEMS.has(stem.toLowerCase()) && parts.length > 1) {
+    const parent = stripExt(parts[parts.length - 2] ?? '')
+    if (parent) keys.add(parent.toLowerCase())
+  }
+  return [...keys]
+}
+
 const TS_EXTS = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.d.ts']
 const PY_EXTS = ['.py', '.pyi']
 
@@ -324,9 +403,11 @@ export function resolveFileImports(
   fromFile: string,
   imports: SidecarImportDetail[],
   language: string | null,
-): { edges: CodeMapEdge[]; packages: string[] } {
+): { edges: CodeMapEdge[]; packages: string[]; unresolved: UnresolvedRef[] } {
   const edges: CodeMapEdge[] = []
   const packages = new Set<string>()
+  const unresolved: UnresolvedRef[] = []
+  const unresolvedSeen = new Set<string>()
   const fromId = fileNodeId(fromFile)
   const seen = new Set<string>()
 
@@ -342,6 +423,14 @@ export function resolveFileImports(
       packages.add(target.name)
       precision = 'external'
     } else {
+      // Цели в индексе нет: запоминаем ключ, чтобы восстановить ребро, когда
+      // файл-цель появится (ребра-то нет, по edges такой импорт не найти).
+      // Один ключ на файл (первая строка) — след ограничен по размеру.
+      const key = importLookupKey(imp.source)
+      if (key && !unresolvedSeen.has(key) && unresolved.length < MAX_UNRESOLVED_PER_FILE) {
+        unresolvedSeen.add(key)
+        unresolved.push({ kind: 'import', key, ref: imp.source, line: imp.line })
+      }
       continue
     }
     const key = `${toId}`
@@ -358,7 +447,7 @@ export function resolveFileImports(
       line: imp.line,
     })
   }
-  return { edges, packages: [...packages] }
+  return { edges, packages: [...packages], unresolved }
 }
 
 // ─── Рёбра вызовов файла ─────────────────────────────────────────────────────
@@ -484,16 +573,34 @@ export function resolveFileCalls(
   calls: SidecarCallSite[],
   imports: SidecarImportDetail[],
   language: string | null,
-): CodeMapEdge[] {
+): { edges: CodeMapEdge[]; unresolved: UnresolvedRef[] } {
   const fileDefs = index.defsByFile.get(fromFile) ?? []
   const importedBindings = buildImportBindings(index, fromFile, imports, language)
   const ctx: CallContext = { index, fromFile, fileDefs, importedBindings }
   const edges: CodeMapEdge[] = []
+  const unresolved: UnresolvedRef[] = []
+  const unresolvedSeen = new Set<string>()
   const seen = new Set<string>()
 
   for (const call of calls) {
     const resolved = resolveCall(ctx, call)
-    if (!resolved) continue
+    if (!resolved) {
+      // Вызов не нашёл определения: если такой символ появится в проекте
+      // позже, ребро восстановится точечно (по ключу-имени).
+      //
+      // След пишем только для «голых» вызовов (без receiver): это в основном
+      // функции проекта, и их немного. Методы/цепочки (`x.foo()`) почти всегда
+      // чужие и дали бы десятки тысяч строк следа без пользы для восстановления.
+      // Один ключ на файл (первая строка) — след ограничен по размеру.
+      if (!call.receiver && call.name && !BUILTIN_CALLS.has(call.name)) {
+        const key = call.name.toLowerCase()
+        if (!unresolvedSeen.has(key) && unresolved.length < MAX_UNRESOLVED_PER_FILE) {
+          unresolvedSeen.add(key)
+          unresolved.push({ kind: 'call', key, ref: call.name, line: call.line })
+        }
+      }
+      continue
+    }
     // from — enclosing определение (функция/метод), иначе сам файл.
     const fromId = call.parentName
       ? symbolNodeId(fromFile, call.parentName, findParentQualifier(fileDefs, call.parentName))
@@ -512,7 +619,7 @@ export function resolveFileCalls(
       line: call.line,
     })
   }
-  return edges
+  return { edges, unresolved }
 }
 
 /** parentName из sidecar — простое имя; находим qualified родителя для id. */

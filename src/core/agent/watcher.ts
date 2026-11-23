@@ -95,6 +95,11 @@ const MAX_HINTS_PER_TRIGGER = 2
 // планка 0.55 была главным источником мусорных memory-хинтов. 0.65 отсекает
 // маргинальную корреляцию, осмысленные совпадения у e5 обычно 0.7+.
 const MIN_E5_SCORE = 0.65
+// Кандидатный пол поиска: ниже рабочей планки, чтобы вес источника (0.5–1.5)
+// мог и повышать (weight > 1 пускает 0.46+), и понижать. Раньше поиск сразу
+// резал по MIN_E5_SCORE — умножение на вес было мёртвым кодом: снизить порог
+// он мог только у уже прошедших хитов, а поднять — нечего.
+const E5_CANDIDATE_FLOOR = MIN_E5_SCORE * 0.7
 const SKILL_KEYWORD_MIN_MATCH = 2
 
 function buildQuery(trigger: WatcherTrigger): string {
@@ -147,8 +152,10 @@ async function searchMemory(query: string, settings: AssistantsSettings, dbPath:
     // A user may disable a scope while the sidecar is still searching.
     if (!current.enabled || current.global !== memory.global || current.project !== memory.project || current.chat !== memory.chat) return []
     return hits
-      .filter(h => h.score >= MIN_E5_SCORE)
-      .slice(0, MAX_HINTS_PER_TRIGGER)
+      // Кандидатный пол, а не рабочая планка: окончательное решение принимает
+      // applyWeightsAndFloor (там учитывается вес источника).
+      .filter(h => h.score >= E5_CANDIDATE_FLOOR)
+      .slice(0, MAX_HINTS_PER_TRIGGER * 2)
       .map(h => ({
         id: `mem-${h.sourceId}`,
         source: 'memory' as const,
@@ -220,17 +227,23 @@ export class Watcher {
     this.projectOpts = opts
   }
 
-  async onTrigger(trigger: WatcherTrigger, extraQueries: string[] = [], memoryOnly = false): Promise<HintCandidate[]> {
-    if (!this.settings.enabled || !this.settings.watcherEnabled) return []
+  /**
+   * Один E5/скилл-проход, результат разделён по источникам. Мосту нужен
+   * именно такой вызов: memory-хиты он инжектит сразу (без LLM), а скиллы
+   * использует только как fallback, когда локальная модель недоступна.
+   * Два отдельных onTrigger() подряд не работают: minIntervalMs съедает второй.
+   */
+  async collect(trigger: WatcherTrigger, extraQueries: string[] = []): Promise<{ memory: HintCandidate[]; skills: HintCandidate[] }> {
+    if (!this.settings.enabled || !this.settings.watcherEnabled) return { memory: [], skills: [] }
     const now = Date.now()
-    if (now - this.lastTriggerTs < this.minIntervalMs) return []
+    if (now - this.lastTriggerTs < this.minIntervalMs) return { memory: [], skills: [] }
     this.lastTriggerTs = now
 
     const queries = [buildQuery(trigger), ...extraQueries.slice(0, 2)]
     const projectId = this.projectOpts.projectId
     const memoryBatches = await Promise.all(queries.map(q => searchMemory(q, this.settings, this.dbPath, projectId)))
-    if (!this.settings.enabled || !this.settings.watcherEnabled || projectId !== this.projectOpts.projectId) return []
-    const skillHints = memoryOnly ? [] : searchSkills(queries[0], this.settings, this.projectOpts)
+    if (!this.settings.enabled || !this.settings.watcherEnabled || projectId !== this.projectOpts.projectId) return { memory: [], skills: [] }
+    const skillHints = searchSkills(queries[0], this.settings, this.projectOpts)
     const seen = new Set<string>()
     const memoryHints: HintCandidate[] = []
     for (const batch of memoryBatches) {
@@ -241,14 +254,18 @@ export class Watcher {
         memoryHints.push(h)
       }
     }
+    return {
+      // Learned weights may raise the prior, but cannot silence the source:
+      // no accepted hints means no feedback and therefore no recovery.
+      memory: this.finish(memoryHints.filter(h => h.score * Math.max(1, this.sourceWeightFn('memory')) >= MIN_E5_SCORE), trigger),
+      // На skill порог не распространяем — его keyword-score несравним с E5-cosine.
+      skills: this.finish(skillHints, trigger),
+    }
+  }
 
-    const all = [...memoryHints, ...skillHints]
+  private finish(hints: HintCandidate[], trigger: WatcherTrigger): HintCandidate[] {
+    const all = hints
       .filter(h => !this.recentIds.has(h.id))
-      // Feedback-петля в деле: вес источника умножается на скор. Для memory это
-      // поднимает E5-планку у «расстроенного» источника (0.5 → нужен скор ≥1.3,
-      // т.е. фактически замолкает). На skill порог не распространяем — его
-      // keyword-score несравним с E5-cosine.
-      .filter(h => h.source !== 'memory' || h.score * this.sourceWeightFn('memory') >= MIN_E5_SCORE)
       .sort((a, b) => b.score - a.score)
       .slice(0, MAX_HINTS_PER_TRIGGER)
 
@@ -264,5 +281,11 @@ export class Watcher {
       log('[Watcher] trigger=%s → %d hints (top score=%.2f)', trigger.kind, all.length, all[0].score)
     }
     return all
+  }
+
+  async onTrigger(trigger: WatcherTrigger, extraQueries: string[] = [], memoryOnly = false): Promise<HintCandidate[]> {
+    const { memory, skills } = await this.collect(trigger, extraQueries)
+    if (memoryOnly) return memory
+    return [...memory, ...skills].sort((a, b) => b.score - a.score).slice(0, MAX_HINTS_PER_TRIGGER)
   }
 }

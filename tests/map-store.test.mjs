@@ -221,7 +221,73 @@ test('upsertDocs: вектор с NULL-тегом не переносится �
   assert.equal(store.countDocs(P).indexed, 1)
 })
 
+// ─── Неразрешённые ссылки (durable-след для точечного восстановления) ────────
+
+test('replaceUnresolved/findUnresolvedByKeys: обратный lookup по kind+key, изоляция проектов', () => {
+  const { store } = setup()
+  store.replaceUnresolved(P, 'src/a.ts', [
+    { kind: 'import', key: 'missing', ref: './missing', line: 1 },
+    { kind: 'call', key: 'parseconfig', ref: 'parseConfig', line: 5 },
+  ])
+  store.replaceUnresolved(P, 'src/b.ts', [
+    { kind: 'import', key: 'missing', ref: '../missing', line: 3 },
+  ])
+
+  assert.deepEqual(
+    store.findUnresolvedByKeys(P, 'import', ['missing']).map(r => r.filePath).sort(),
+    ['src/a.ts', 'src/b.ts'],
+  )
+  assert.deepEqual(
+    store.findUnresolvedByKeys(P, 'call', ['parseconfig']).map(r => r.ref),
+    ['parseConfig'],
+    'kind разделяет каналы: вызов не находится по импортному запросу',
+  )
+  assert.deepEqual(store.findUnresolvedByKeys(P, 'import', ['other']), [])
+  assert.deepEqual(store.findUnresolvedByKeys('other-project', 'import', ['missing']), [])
+  assert.equal(store.countUnresolved(P), 3)
+
+  // Замена следа файла не трогает чужие строки.
+  store.replaceUnresolved(P, 'src/a.ts', [])
+  assert.equal(store.countUnresolved(P), 1)
+  assert.deepEqual(store.findUnresolvedByKeys(P, 'import', ['missing']).map(r => r.filePath), ['src/b.ts'])
+})
+
+test('removeFile/pruneDanglingEdges: след неразрешённых ссылок удалённого файла снимается', () => {
+  const { store } = setup()
+  store.replaceFile(P, {
+    projectId: P, path: 'src/a.ts', language: 'typescript', hash: 'h1',
+    mtime: 1, size: 1, parser: 'ts', truncated: false, indexedAt: 1,
+  }, [], [])
+  store.replaceUnresolved(P, 'src/a.ts', [{ kind: 'import', key: 'x', ref: './x', line: 1 }])
+  store.replaceUnresolved(P, 'src/ghost.ts', [{ kind: 'import', key: 'y', ref: './y', line: 1 }])
+
+  // Файла нет в code_map_files (удалён мимо removeFile) — чистит prune.
+  store.pruneDanglingEdges(P)
+  assert.deepEqual(store.findUnresolvedByKeys(P, 'import', ['y']), [], 'след удалённого файла не должен воскрешать его')
+
+  store.removeFile(P, 'src/a.ts')
+  assert.equal(store.countUnresolved(P), 0, 'removeFile снимает и след неразрешённых ссылок')
+})
+
+test('clearProject: стирает и неразрешённые ссылки', () => {
+  const { store } = setup()
+  store.replaceUnresolved(P, 'src/a.ts', [{ kind: 'import', key: 'x', ref: './x', line: 1 }])
+  store.clearProject(P)
+  assert.equal(store.countUnresolved(P), 0)
+})
+
 // ─── Планы запросов (никаких full scan на горячем пути) ─────────────────────
+test('query plans: findUnresolvedByKeys идёт по индексу (project_id, kind, key)', () => {
+  const { db } = setup()
+  const plan = db.prepare(
+    `EXPLAIN QUERY PLAN
+     SELECT file_path, ref, line FROM code_map_unresolved
+     WHERE project_id = ? AND kind = ? AND key IN (?, ?) LIMIT ?`
+  ).all(P, 'import', 'a', 'b', 200).map(r => r.detail).join(' | ')
+  assert.match(plan, /idx_cmu_project_key/)
+  assert.doesNotMatch(plan, /SCAN code_map_unresolved/)
+})
+
 test('query plans: getDependentFilePaths и getFile используют индексы', () => {
   const { db } = setup()
   const depPlan = db.prepare(

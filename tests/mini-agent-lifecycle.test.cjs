@@ -177,18 +177,28 @@ function bridgeHarness(overrides = {}) {
   const settings = {
     enabled: true, watcherEnabled: true, navigatorEnabled: true, archivistEnabled: true,
     janitorEnabled: true, modelSize: 'auto', ctxSize: 'auto', device: 'auto',
+    sources: { memory: true, skills: true },
   }
+  let memory = overrides.memory ?? { enabled: true, global: true, project: true, chat: true, auto: true }
   const bridge = load('src/main/assistants/bridge.ts', {
     '../../core/agent/watcher': {
-      Watcher: class { setSourceWeightProvider() {} updateSettings() {} async onTrigger(_trigger, _queries, memoryOnly) { return memoryOnly ? overrides.memoryHints ?? [] : [] } },
+      Watcher: class {
+        setSourceWeightProvider() {} updateSettings() {}
+        async collect() { return { memory: overrides.memoryHints ?? [], skills: overrides.skillHints ?? [] } }
+        async onTrigger() { return overrides.memoryHints ?? [] }
+      },
       prefilterCapabilities: catalogue => catalogue,
       hashContext: text => text,
     },
-    '../../shared/assistants': { DEFAULT_ASSISTANTS_SETTINGS: settings },
+    '../../shared/assistants': { DEFAULT_ASSISTANTS_SETTINGS: settings, ASSISTANTS_LOG_MAX_ENTRIES: 500, ASSISTANTS_LOG_RETENTION_MS: 24 * 3600 * 1000 },
     '../../core/logger': { log: () => {} },
     './llmClient': overrides.llm ?? {},
     './llmServer': { getServerState: () => overrides.ready === false ? 'idle' : 'ready' },
-    '../../core/memory/MemoryStore': { saveMemoryItem: async () => { counts.saved++ }, decayAutoFacts: () => 0 },
+    '../../core/memory/MemoryStore': {
+      saveMemoryItem: async () => { counts.saved++ },
+      decayAutoFacts: () => 0,
+    },
+    '../../core/memory/globalMemorySettings': { getMemorySettings: () => memory },
     '../../core/sidecar/sidecarClient': { resolveSemanticModelPaths: () => null },
     '../localModels/LocalModelManager': {
       localModels: {
@@ -198,7 +208,7 @@ function bridgeHarness(overrides = {}) {
     },
     './modelManager': { detectModelSize: () => '1.2B' },
   })
-  bridge.initAssistants({ load: () => settings, persist: () => {}, dbPath: () => '' })
+  bridge.initAssistants({ load: () => settings, persist: () => {}, dbPath: () => '', chatAlive: overrides.chatAlive })
   function attach(chatId) {
     const worker = new EventEmitter()
     worker.messages = []
@@ -206,7 +216,7 @@ function bridgeHarness(overrides = {}) {
     bridge.attachAssistants(chatId, worker)
     return worker
   }
-  return { bridge, attach, counts }
+  return { bridge, attach, counts, setMemory: next => { memory = next } }
 }
 
 test('bookkeeping and disabled roles do not start a model or wait for readiness', async () => {
@@ -247,12 +257,112 @@ test('Archivist persists final-run facts after its worker exits', async () => {
   const result = deferred()
   const { bridge, attach, counts } = bridgeHarness({ llm: { distillSession: () => result.promise } })
   const worker = attach('a')
-  const task = bridge.onAssistantEvent('a', { kind: 'archivist', transcript: 'durable project decisions '.repeat(30) })
+  void bridge.onAssistantEvent('a', { kind: 'archivist', transcript: 'durable project decisions '.repeat(30) })
   await tick()
   worker.emit('exit')
   result.resolve([{ content: 'Use the project convention for future code', kind: 'project' }])
-  await task
+  await tick()
+  await tick()
   assert.equal(counts.saved, 1)
+  bridge.detachAssistants('a')
+})
+
+test('Archivist gates short transcripts and disabled memory in main before waking the model', async () => {
+  let distilled = 0
+  const { bridge, attach, counts, setMemory } = bridgeHarness({ llm: { distillSession: async () => { distilled++; return [] } } })
+  attach('short')
+  await bridge.onAssistantEvent('short', { kind: 'archivist', transcript: 'готово' })
+  await tick()
+  assert.equal(distilled, 0, 'short run is not distilled')
+  setMemory({ enabled: false, global: true, project: true, chat: true, auto: false })
+  await bridge.onAssistantEvent('short', { kind: 'archivist', transcript: 'durable decisions '.repeat(30) })
+  await tick()
+  assert.equal(distilled, 0, 'memory disabled → no generation')
+  assert.equal(counts.wake, 0, 'gates run before any server wake')
+  bridge.detachAssistants('short')
+})
+
+test('deleting a chat cancels its archivist job and never writes memory afterwards', async () => {
+  const result = deferred()
+  const { bridge, attach, counts } = bridgeHarness({ llm: { distillSession: () => result.promise } })
+  const worker = attach('gone')
+  void bridge.onAssistantEvent('gone', { kind: 'archivist', transcript: 'durable project decisions '.repeat(30) })
+  await tick()
+  worker.emit('exit')
+  bridge.onChatDeleted('gone')
+  result.resolve([{ content: 'Use the project convention for future code', kind: 'project' }])
+  await tick()
+  await tick()
+  assert.equal(counts.saved, 0)
+})
+
+test('navigator drops events beyond the round lag and pre-steer revisions without a model call', async () => {
+  let judgements = 0
+  const { bridge, attach } = bridgeHarness({ llm: { judgeDrift: async () => { judgements++; return { drift: true, reason: 'keep going' } } } })
+  const worker = attach('a')
+  await bridge.onAssistantEvent('a', { kind: 'round_advanced', round: 10 })
+  await bridge.onAssistantEvent('a', { kind: 'navigator', round: 1, taskRevision: 0 })
+  assert.equal(judgements, 0)
+  await bridge.onAssistantEvent('a', { kind: 'task_revised' })
+  await bridge.onAssistantEvent('a', { kind: 'navigator', round: 9, taskRevision: 0 })
+  assert.equal(judgements, 0, 'verdict for the pre-steer task is not requested')
+  await bridge.onAssistantEvent('a', { kind: 'navigator', round: 9, taskRevision: 1 })
+  assert.equal(judgements, 1)
+  assert.equal(worker.messages.filter(message => message.type === 'hint').length, 1)
+  bridge.detachAssistants('a')
+})
+
+test('round progress does not abort an in-flight navigator verdict (only a real task revision does)', async () => {
+  const tasks = []
+  const { bridge, attach } = bridgeHarness({ llm: { judgeDrift: (...args) => {
+    const task = deferred()
+    tasks.push({ ...task, signal: args[4] })
+    return task.promise
+  } } })
+  const worker = attach('a')
+  const pending = bridge.onAssistantEvent('a', { kind: 'navigator', round: 1, taskRevision: 0, lastUsefulRound: -100 })
+  await tick()
+  // Следующий раунд рана — судья ещё считает: это НЕ повод отменять вызов.
+  await bridge.onAssistantEvent('a', { kind: 'round_advanced', round: 2 })
+  assert.equal(tasks[0].signal.aborted, false)
+  tasks[0].resolve({ drift: true, reason: 'step back to the goal' })
+  await pending
+  assert.equal(worker.messages.filter(message => message.type === 'hint').length, 1)
+  bridge.detachAssistants('a')
+})
+
+test('navigator does not re-judge the same round nor repeat a just-applied hint', async () => {
+  let judgements = 0
+  const { bridge, attach } = bridgeHarness({ llm: { judgeDrift: async () => { judgements++; return { drift: true, reason: 'return to the goal now' } } } })
+  attach('a')
+  await bridge.onAssistantEvent('a', { kind: 'navigator', round: 4, taskRevision: 0, lastUsefulRound: -100 })
+  assert.equal(judgements, 1)
+  await bridge.onAssistantEvent('a', { kind: 'navigator', round: 4, taskRevision: 0, lastUsefulRound: -100 })
+  assert.equal(judgements, 1, 'same round is not judged twice')
+  await bridge.onAssistantEvent('a', { kind: 'navigator', round: 5, taskRevision: 0, lastUsefulRound: 4 })
+  assert.equal(judgements, 1, 'a hint applied in the previous round gets time to work')
+  await bridge.onAssistantEvent('a', { kind: 'navigator', round: 7, taskRevision: 0, lastUsefulRound: 4 })
+  assert.equal(judgements, 2)
+  bridge.detachAssistants('a')
+})
+
+test('hint_applied is deterministic feedback for real prompt insertions and needs no generation', async () => {
+  let generations = 0
+  const { bridge, attach } = bridgeHarness({ llm: {
+    judgeCapability: async () => ({ helpful: true, id: 'read_file', confidence: 1, action: 'Read package.json to identify the available build script' }),
+    judgeRelevance: async () => { generations++; return { relevant: true } },
+  } })
+  const worker = attach('a')
+  await bridge.onAssistantEvent('a', { kind: 'capabilities', capabilities: [{ id: 'read_file', name: 'Read file', desc: 'Read project files' }] })
+  await bridge.onAgentEvent('a', { kind: 'task_start', text: 'Build the application' })
+  const hint = worker.messages.find(message => message.type === 'hint').hint
+  await bridge.onAssistantEvent('a', { kind: 'hint_applied', hintId: hint.id })
+  const applied = bridge.getAssistantLog().filter(entry => entry.kind === 'applied')
+  assert.equal(applied.length, 1)
+  assert.match(applied[0].detail, /Read package\.json/)
+  await bridge.onRunDone('a', 'Built application after reading the package.json build script', { tools: ['read_file'], skills: [] })
+  assert.equal(generations, 0, 'no feedback generation after the run')
+  bridge.detachAssistants('a')
 })
 
 test('disable then re-enable cannot revive a stale advisory response', async () => {
@@ -312,22 +422,6 @@ test('role and source disable then re-enable cannot revive stale advisory work',
   }
 })
 
-test('feedback judges actual hint instructions instead of opaque timestamp IDs', async () => {
-  let judgement
-  const { bridge, attach } = bridgeHarness({ llm: {
-    judgeCapability: async () => ({ helpful: true, id: 'read_file', confidence: 1, action: 'Read package.json to identify the available build script' }),
-    judgeRelevance: async (...args) => { judgement = args; return { relevant: true } },
-  } })
-  attach('a')
-  await bridge.onAssistantEvent('a', { kind: 'capabilities', capabilities: [{ id: 'read_file', name: 'Read file', desc: 'Read project files' }] })
-  await bridge.onAgentEvent('a', { kind: 'task_start', text: 'Build the application' })
-  await bridge.onRunDone('a', 'Built application after reading the package.json build script', { tools: ['read_file'], skills: [] })
-  assert.match(judgement[0], /Built application/)
-  assert.match(judgement[1], /Read package.json/)
-  assert.doesNotMatch(judgement[1], /cap-read_file-\d+/)
-  bridge.detachAssistants('a')
-})
-
 test('semantic scoring stops after cancellation instead of computing the rest of the catalogue', async () => {
   const controller = new AbortController()
   let calls = 0
@@ -385,9 +479,24 @@ test('ready capability router also retrieves local memory without an extra gener
     llm: { judgeCapability: async () => { generations++; return { helpful: false, confidence: 0 } } },
   })
   const worker = attach('memory-ready')
+  await bridge.onAssistantEvent('memory-ready', { kind: 'capabilities', capabilities: [{ id: 'read_file', name: 'Read file', desc: 'Read project files' }] })
   await bridge.onAgentEvent('memory-ready', { kind: 'task_start', text: 'project configuration' })
   await bridge.onAgentEvent('memory-ready', { kind: 'task_start', text: 'project configuration' })
   assert.equal(generations, 2, 'exactly one existing capability judgement per trigger')
   assert.equal(worker.messages.filter(message => message.type === 'hint' && message.hint.source === 'memory').length, 1)
   bridge.detachAssistants('memory-ready')
+})
+
+test('an empty capability catalogue never wakes the model and still injects local memory', async () => {
+  let generations = 0
+  const { bridge, attach, counts } = bridgeHarness({
+    memoryHints: [{ id: 'mem-b', source: 'memory', content: 'Existing project rule', score: 0.9 }],
+    llm: { judgeCapability: async () => { generations++; return { helpful: true, id: 'x', confidence: 1, action: 'Do something concrete right now' } } },
+  })
+  const worker = attach('empty-catalogue')
+  await bridge.onAgentEvent('empty-catalogue', { kind: 'task_start', text: 'project configuration' })
+  assert.equal(generations, 0, 'no candidates → judge is never called')
+  assert.equal(counts.wake, 0, 'no server wake for an empty catalogue')
+  assert.equal(worker.messages.filter(message => message.type === 'hint' && message.hint.source === 'memory').length, 1)
+  bridge.detachAssistants('empty-catalogue')
 })

@@ -425,6 +425,7 @@ test('archive capacity preserves existing recalls and leaves new unique results 
   }))
   janitor.hydrateArchive(entries)
   const messages = flatten(runMsg(1, 'mcp__rea__analysis', {}, 'new unique output '.repeat(500)), runMsg(2, 'update_todo', {}, 'ok'))
+  messages.push({ role: 'tool', tool_call_id: 'refs', name: 'recall_context', content: entries.map(e => `[recall:${e.id}]`).join(' ') })
   const applied = janitor.apply(messages, janitor.scan(messages, 8))
   assert.equal(applied[1].content, messages[1].content)
   assert.equal(janitor.recall(entries[0].id)[0].content, 'original-0')
@@ -505,16 +506,14 @@ test('persistent tail counts tool rounds within one assistant message and preser
   assert.equal(plan.iterations[0].steps[0].content, '', 'call content must not be replaced with its result summary')
 })
 
-test('disabled Janitor ignores even emergency scans, and shorter refinements persist across workers', () => {
+test('disabled Janitor ignores even emergency scans, and committed summaries persist across workers', () => {
   const messages = flatten(runMsg(1, 'mcp__rea__analysis', {}, 'unique output '.repeat(500)), runMsg(2, 'update_todo', {}, 'ok'))
   const disabled = new Janitor({ ...SETTINGS, janitorEnabled: false, janitorTailSteps: 1 })
   assert.equal(disabled.scan(messages, 8, 'deep', 1).actions.length, 0)
   const janitor = new Janitor({ ...SETTINGS, janitorTailSteps: 1 })
   const report = janitor.scan(messages, 8)
-  janitor.apply(messages, report)
-  const id = report.actions[0].archiveId
-  const summary = `[Контекст оптимизирован локальным помощником] brief [recall:${id}]`
-  janitor.updateSummary(id, summary)
+  const applied = janitor.apply(messages, report)
+  const summary = applied[1].content
   const restarted = new Janitor(SETTINGS)
   restarted.hydrateArchive(JSON.parse(JSON.stringify(janitor.getArchiveEntries())))
   const history = JSON.parse(JSON.stringify(messages))

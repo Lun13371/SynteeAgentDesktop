@@ -37,6 +37,8 @@ import { searchAllSources, saveMemoryItem, type SaveMemoryInput } from '../../co
 import { bumpMemoryHit } from '../../core/memory/store/utils'
 import { getMemorySettings, getGlobalMemoryEnabled } from '../../core/memory/globalMemorySettings'
 import { persistApprovalGrant } from '../services/approvalAllowlist'
+import { getAssistantsSettings } from '../assistants/bridge'
+import { getBriefingContinuityWithin, noteBriefingChanges } from '../assistants/gitBriefingCache'
 
 export type AgentStatus = 'pending' | 'running' | 'done' | 'error' | 'cancelled'
 
@@ -641,6 +643,16 @@ class AgentManager {
     // обновление идёт round-trip'ом 'codex_token_refresh'.
     const codexToken = await getCodexAccessToken().catch(() => null)
     const codexAccountId = getCodexAccountId()
+    // Мини-агенты: глобальный снапшот настроек — воркер применяет его ДО
+    // первого раунда (иначе глобальный Off не действовал бы до сообщения
+    // 'assistants_settings', а для суб-агентов оно не приходит вовсе).
+    // Суб-агент сохраняет детерминированный janitor, LLM-роли гасит сам воркер.
+    const assistantsSettingsSnapshot = getAssistantsSettings()
+    // Briefing continuity (git) — снапшот из main-кеша, воркер git не запускает.
+    // Within(...) — с бюджетом ожидания: старт суб-агента не блокируется на git.
+    const briefingContinuity = assistantsSettingsSnapshot.enabled && assistantsSettingsSnapshot.briefingEnabled
+      ? await getBriefingContinuityWithin(effectiveWorkdir)
+      : ''
     if (record.status === 'cancelled') return { summary: '', error: 'Суб-агент отменен пользователем' }
 
     return new Promise((resolvePromise) => {
@@ -702,6 +714,10 @@ class AgentManager {
             projectId: context?.projectId,
             // Тумблер «Управление браузером» чата — суб-агент наследует.
             browserMode,
+            // Мини-агенты: снапшот настроек (детерминированный janitor у
+            // суб-агента сохраняется, LLM-роли гасит воркер) + briefing git.
+            assistantsSettings: assistantsSettingsSnapshot,
+            briefingContinuity,
           },
           env: process.env,
         })
@@ -852,6 +868,10 @@ class AgentManager {
               }
               onFileSnapshot?.([normalized])
               if (!onFileSnapshot) this.appendMergedSnapshots(record.chatId, [normalized])
+              // Briefing-continuity кеш: суб-агент правит файлы — следующее
+              // «git status» для этой workdir должно пересчитаться (git сам
+              // о правке не знает, пока файл не попал в его индекс).
+              noteBriefingChanges(effectiveWorkdir, [normalized.path])
             }
             break
           }

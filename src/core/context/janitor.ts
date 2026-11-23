@@ -1,5 +1,5 @@
 import type { ChatMessage } from './contextManager'
-import { estimateTokens, estimateTokensCalibrated } from '../tokens/usageTracker'
+import { estimateTokensCalibrated } from '../tokens/usageTracker'
 import { JANITOR_MARKER, type JanitorAction, type JanitorActionKind, type JanitorReport, type AssistantsSettings } from '../../shared/assistants'
 
 // ── Классификация тулов ──────────────────────────────────────────────────────
@@ -195,6 +195,52 @@ export interface JanitorArchiveEntry {
   ts: number
 }
 
+/** Индекс живых сообщений для проверки достижимости архивных записей. */
+export interface LiveMessageIndex {
+  /** id архивных записей, на которые ссылается живая история: `[recall:id]`. */
+  referenced: Set<string>
+  /** tool_call_id → контенты живых tool-сообщений (оригинал ещё в контексте). */
+  toolContents: Map<string, string[]>
+}
+
+/**
+ * Один проход по живым сообщениям: какие recall-ссылки в них есть и какие
+ * оригиналы tool-результатов ещё лежат в контексте. Нужен только когда
+ * бюджет архива реально упёрся — на обычных сканах не строится.
+ */
+export function indexLiveReferences(messages: ChatMessage[] | null | undefined): LiveMessageIndex {
+  const referenced = new Set<string>()
+  const toolContents = new Map<string, string[]>()
+  for (const message of messages ?? []) {
+    const content = message?.content
+    if (typeof content !== 'string') continue
+    if (message.role === 'tool' && message.tool_call_id) {
+      const list = toolContents.get(message.tool_call_id)
+      if (list) list.push(content)
+      else toolContents.set(message.tool_call_id, [content])
+    }
+    if (!content.includes('[recall:')) continue
+    for (const match of content.matchAll(/\[recall:([^\]\s]+)\]/g)) referenced.add(match[1])
+  }
+  return { referenced, toolContents }
+}
+
+export interface ArchiveReclaimOptions {
+  /** Не освобождать записи моложе этого возраста (мс) — защита от гонки с
+   *  персистом, который может ещё не видеть свежие ссылки. */
+  keepRecentMs?: number
+  /** Максимум освобождаемых записей за один вызов (по умолчанию — все). */
+  limit?: number
+}
+
+export interface ArchiveReclaimReport {
+  reclaimedIds: string[]
+  freedChars: number
+  keptReferenced: number
+  keptLive: number
+  keptRecent: number
+}
+
 /**
  * Джанитор рана: сжимает контекст в памяти. Принципы точности:
  *  - Активный хвост = последние janitorTailSteps ходов — не трогаем вовсе.
@@ -210,10 +256,19 @@ export interface JanitorArchiveEntry {
  *    чтения с завершённой работой сворачиваются с подсказкой перечитать.
  *  - Дедуп идентичных вызовов валиден, только если между ними не было мутаций.
  *  - Результаты правок (diff) и визуала никогда не сжимаются.
+ *  - Бюджет архива (50 записей / 4M символов) учитывается счётчиками, а
+ *    недостающее место освобождается только у недостижимых записей (нет
+ *    `[recall:id]` в живой истории и нет оригинала в ней) — битых
+ *    recall-ссылок не появляется.
  */
 export class Janitor {
   private archive = new Map<string, JanitorArchiveEntry>()
   private pendingArchive = new Map<string, JanitorArchiveEntry>()
+  /** Суммарный объём originalMessages — бюджет места считается за O(1) на
+   *  кандидата. Перебор всех записей на каждого кандидата превращал скан с
+   *  сотнями кандидатов в O(k·n) по большим строкам. */
+  private archiveChars = 0
+  private pendingChars = 0
   private archiveCounter = 0
   private lastScanRound = 0
   private settings: AssistantsSettings
@@ -234,6 +289,7 @@ export class Janitor {
   scan(messages: ChatMessage[], currentRound: number, mode: 'light' | 'deep' = 'deep', tailStepsOverride?: number): JanitorReport {
     const start = Date.now()
     this.pendingArchive.clear()
+    this.pendingChars = 0
     if (!this.settings.enabled || !this.settings.janitorEnabled) {
       return { actions: [], totalTokensSaved: 0, scannedMessages: messages.length, durationMs: 0 }
     }
@@ -298,6 +354,18 @@ export class Janitor {
     const reasons = new Map<number, { kind: JanitorActionKind; what: string; saved: number }>()
     const archiveIdByIndex = new Map<number, string>()
 
+    // Бюджет архива: индекс живых ссылок строится лениво — только когда места
+    // реально не хватает, и только один раз на скан. Освобождаем лишь записи,
+    // на которые нет [recall:id] в текущей истории и чьих оригиналов в ней
+    // больше нет; остальные (живые ссылки) не трогаем.
+    let liveRefs: LiveMessageIndex | null = null
+    const ensureArchiveRoom = (extraChars: number): boolean => {
+      if (this.hasArchiveRoom(extraChars)) return true
+      if (!liveRefs) liveRefs = indexLiveReferences(messages)
+      this.reclaimArchiveIndexed(liveRefs)
+      return this.hasArchiveRoom(extraChars)
+    }
+
     const put = (idx: number, text: string, kind: JanitorActionKind, what: string): void => {
       if (replacements.has(idx)) return
       const content = contentOf(idx)
@@ -305,11 +373,8 @@ export class Janitor {
       let archiveEntry: JanitorArchiveEntry | undefined
       if (kind === 'summarize_stale') {
         if (!messages[idx].tool_call_id) return
-        const entries = [...this.archive.values(), ...this.pendingArchive.values()]
-        const existing = entries.find(entry => entry.originalMessages[0]?.tool_call_id === messages[idx].tool_call_id
-          && entry.originalMessages[0]?.content === content)
-        if (!existing && (entries.length >= MAX_JANITOR_ARCHIVE_ENTRIES
-          || entries.reduce((n, entry) => n + this.entryChars(entry), 0) + content.length > MAX_JANITOR_ARCHIVE_CHARS)) return
+        const existing = this.findArchivedEntry(messages[idx].tool_call_id, content)
+        if (!existing && !ensureArchiveRoom(content.length)) return
         const archiveId = existing?.id ?? `jan-${++this.archiveCounter}-${Date.now()}`
         archiveIdByIndex.set(idx, archiveId)
         finalText += ` [recall:${archiveId}]`
@@ -320,7 +385,10 @@ export class Janitor {
       // в кольце — два разных числа об одном и том же сжатии.
       const saved = estimateTokensCalibrated(content) - estimateTokensCalibrated(finalText)
       if (saved < STALE_MIN_SAVED) return
-      if (archiveEntry) this.pendingArchive.set(archiveEntry.id, archiveEntry)
+      if (archiveEntry) {
+        this.pendingArchive.set(archiveEntry.id, archiveEntry)
+        this.pendingChars += this.entryChars(archiveEntry)
+      }
       replacements.set(idx, finalText)
       reasons.set(idx, { kind, what, saved })
     }
@@ -468,13 +536,14 @@ export class Janitor {
         if (action.kind === 'summarize_stale' && action.archiveId) {
           const entry = this.pendingArchive.get(action.archiveId) ?? this.archive.get(action.archiveId)
           if (!entry || entry.originalMessages[0]?.content !== msg.content) continue
-          this.archive.set(entry.id, entry)
+          this.commitArchiveEntry(entry)
         }
         const text = action.replacement ?? `${JANITOR_MARKER} ${action.description}`
         result[idx] = { ...msg, content: text, janitorCollapsed: true }
       }
     }
     this.pendingArchive.clear()
+    this.pendingChars = 0
     return result
   }
 
@@ -496,6 +565,32 @@ export class Janitor {
     return this.archive.size
   }
 
+  /** Текущий объём архива в символах оригиналов (учёт бюджета — O(1)). */
+  getArchiveChars(): number {
+    return this.archiveChars
+  }
+
+  /**
+   * Освобождает место в архиве, не порождая битых `[recall:id]`.
+   *
+   * Запись удаляется, только если одновременно:
+   *  1. на неё нет ссылки `[recall:id]` ни в одном переданном live-сообщении
+   *     (иначе модель получила бы ссылку в пустоту);
+   *  2. её оригинал больше не лежит в переданных live-сообщениях (тот же
+   *     tool_call_id + точный контент) — вспоминать нечего;
+   *  3. она старше keepRecentMs.
+   *
+   * Персист: уникальные tool-результаты остаются в БД сырыми, а постоянная
+   * компрессия БД (historyCompressor) пишет резюме БЕЗ recall-ссылок.
+   * Значит удаление записи из памяти не порождает битую ссылку в сохранённой
+   * истории: при рестарте `restoreSummaries` восстановит по записи только то,
+   * что осталось в архиве, а остальное прочитается из БД сырым. Поэтому
+   * «безопасно освободить» = «оригинала нет в live + ссылок нет».
+   */
+  reclaimArchive(messages: ChatMessage[], options: ArchiveReclaimOptions = {}): ArchiveReclaimReport {
+    return this.reclaimArchiveIndexed(indexLiveReferences(messages), options)
+  }
+
   /** Снимок архива для персиста (recorder пишет per chat — worker живёт
    *  один запрос, без этого [recall:id] в истории БД теряют источник). */
   getArchiveEntries(): JanitorArchiveEntry[] {
@@ -507,10 +602,11 @@ export class Janitor {
   hydrateArchive(entries: JanitorArchiveEntry[]): void {
     for (const e of entries ?? []) {
       if (!e?.id || !Array.isArray(e.originalMessages) || typeof e.summary !== 'string' || this.archive.has(e.id)) continue
+      // Бюджет — по счётчику, без пересчёта всех записей на каждую входящую.
       if (this.archive.size >= MAX_JANITOR_ARCHIVE_ENTRIES
-        || [...this.archive.values()].reduce((n, entry) => n + this.entryChars(entry), 0) + this.entryChars(e) > MAX_JANITOR_ARCHIVE_CHARS) continue
+        || this.archiveChars + this.entryChars(e) > MAX_JANITOR_ARCHIVE_CHARS) continue
       const summary = e.summary.includes(JANITOR_MARKER) ? e.summary : `${JANITOR_MARKER} ${e.summary} [recall:${e.id}]`
-      this.archive.set(e.id, { ...e, summary })
+      this.commitArchiveEntry({ ...e, summary })
       const m = /^jan-(\d+)-/.exec(e.id)
       if (m) this.archiveCounter = Math.max(this.archiveCounter, Number(m[1]))
     }
@@ -530,19 +626,67 @@ export class Janitor {
     }
   }
 
-  updateSummary(archiveId: string, summary: string): void {
-    const entry = this.archive.get(archiveId)
-    if (entry && estimateTokens(summary) <= estimateTokens(entry.summary)) entry.summary = summary
-  }
-
   private entryChars(entry: JanitorArchiveEntry): number {
     return entry.originalMessages.reduce((n, message) => n + (typeof message?.content === 'string' ? message.content.length : JSON.stringify(message?.content ?? '').length), 0)
   }
 
-  pruneArchive(maxAgeMs: number): void {
-    const cutoff = Date.now() - maxAgeMs
-    for (const [id, entry] of this.archive) {
-      if (entry.ts < cutoff) this.archive.delete(id)
+  /** Учёт бюджета места: архив + ещё не принятые (pending) записи скана. */
+  private hasArchiveRoom(extraChars: number): boolean {
+    return this.archive.size + this.pendingArchive.size < MAX_JANITOR_ARCHIVE_ENTRIES
+      && this.archiveChars + this.pendingChars + Math.max(0, extraChars) <= MAX_JANITOR_ARCHIVE_CHARS
+  }
+
+  /** Поиск уже архивированного оригинала по callId+контенту без копирования
+   *  обоих словарей в массив на каждого кандидата. */
+  private findArchivedEntry(toolCallId: string, content: string): JanitorArchiveEntry | undefined {
+    for (const entry of this.archive.values()) {
+      const original = entry.originalMessages[0]
+      if (original?.tool_call_id === toolCallId && original.content === content) return entry
     }
+    for (const entry of this.pendingArchive.values()) {
+      const original = entry.originalMessages[0]
+      if (original?.tool_call_id === toolCallId && original.content === content) return entry
+    }
+    return undefined
+  }
+
+  /** Фиксация записи в архиве с поддержкой счётчика объёма. */
+  private commitArchiveEntry(entry: JanitorArchiveEntry): void {
+    const previous = this.archive.get(entry.id)
+    if (previous === entry) return
+    if (previous) this.archiveChars = Math.max(0, this.archiveChars - this.entryChars(previous))
+    this.archive.set(entry.id, entry)
+    this.archiveChars += this.entryChars(entry)
+  }
+
+  private reclaimArchiveIndexed(live: LiveMessageIndex, options: ArchiveReclaimOptions = {}): ArchiveReclaimReport {
+    const report: ArchiveReclaimReport = { reclaimedIds: [], freedChars: 0, keptReferenced: 0, keptLive: 0, keptRecent: 0 }
+    if (this.archive.size === 0) return report
+    const limit = options.limit === undefined ? Number.POSITIVE_INFINITY : Math.max(0, Math.floor(options.limit))
+    if (limit <= 0) return report
+    const keepRecentMs = Math.max(0, options.keepRecentMs ?? 0)
+    const now = Date.now()
+    for (const [id, entry] of this.archive) {
+      if (report.reclaimedIds.length >= limit) break
+      if (live.referenced.has(id)) { report.keptReferenced++; continue }
+      const original = entry.originalMessages[0]
+      const stillLive = original && typeof original.content === 'string'
+        && (live.toolContents.get(String(original.tool_call_id ?? ''))?.some(c => c === original.content) ?? false)
+      if (stillLive) { report.keptLive++; continue }
+      if (keepRecentMs > 0 && now - entry.ts < keepRecentMs) { report.keptRecent++; continue }
+      const chars = this.entryChars(entry)
+      this.archive.delete(id)
+      this.archiveChars = Math.max(0, this.archiveChars - chars)
+      report.reclaimedIds.push(id)
+      report.freedChars += chars
+    }
+    return report
+  }
+
+  /** Устаревшие записи: только те, что старше maxAgeMs И недостижимы из
+   *  переданной истории. Записи с живой ссылкой [recall:id] остаются всегда —
+   *  иначе в контексте появились бы битые recall-ссылки. */
+  pruneArchive(maxAgeMs: number, messages: ChatMessage[] = []): ArchiveReclaimReport {
+    return this.reclaimArchive(messages, { keepRecentMs: Math.max(0, maxAgeMs) })
   }
 }

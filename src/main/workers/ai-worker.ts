@@ -84,6 +84,34 @@ const earlySteers: SteerEntry[] = []
 const earlyHints: Array<import('../../shared/assistants').HintCandidate> = []
 let earlyAssistantsSettings: import('../../shared/assistants').AssistantsSettings | null = null
 
+/**
+ * Настройки мини-агентов для ЭТОГО воркера, известные с самого старта.
+ *
+ * Раньше единственным источником был postMessage 'assistants_settings' из
+ * attachAssistants — а он молча выходит, когда глобальный тумблер выключен
+ * (и вообще не вызывается для суб-агентов). Воркер стартовал с
+ * DEFAULT_ASSISTANTS_SETTINGS (enabled: true), и первый раунд успевал
+ * прогнать briefing/janitor/watcher, хотя мини-агенты выключены.
+ * Теперь снапшот приходит в workerData и применяется ДО первого раунда.
+ *
+ * Суб-агент: детерминированный janitor (свёртка tool-результатов, без LLM)
+ * остаётся, LLM-роли гасятся — у суб-агента нет UI и локальная модель ему
+ * не положена (onAssistantEvent ему тоже не ставим, см. ниже).
+ */
+function resolveWorkerAssistantsSettings(): import('../../shared/assistants').AssistantsSettings | null {
+  const data = workerData as Record<string, unknown>
+  const raw = data.assistantsSettings as import('../../shared/assistants').AssistantsSettings | undefined
+  if (!raw || typeof raw.enabled !== 'boolean') return null
+  if (!data.isSubAgent) return raw
+  return {
+    ...raw,
+    watcherEnabled: false,
+    navigatorEnabled: false,
+    archivistEnabled: false,
+    briefingEnabled: false,
+  }
+}
+
 // set() мутирует локальную копию storeData — иначе API key round-robin
 // (AIClient.getClientForRole -> getNextApiKey -> store.set('providers', ...))
 // был no-op, и агент всегда брал один и тот же ключ провайдера на каждом
@@ -196,17 +224,6 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
     if (!hint?.id || !hint?.content) return
     if (steerAgent) steerAgent.pushHint(hint)
     else earlyHints.push(hint)
-    return
-  }
-  if (msg.type === 'constitution') {
-    const items = msg.items as string[] | undefined
-    if (items?.length && steerAgent) steerAgent.mergeConstitution(items)
-    return
-  }
-  if (msg.type === 'janitor_refined') {
-    const archiveId = msg.archiveId as string | undefined
-    const summary = msg.summary as string | undefined
-    if (archiveId && summary && steerAgent) steerAgent.refineJanitorSummary(archiveId, summary)
     return
   }
   if (msg.type === 'assistants_settings') {
@@ -443,6 +460,18 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
       for (const s of earlySteers.splice(0)) agent.pushSteer(s.id, s.text, s)
       for (const h of earlyHints.splice(0)) agent.pushHint(h)
       if (earlyAssistantsSettings) { agent.setAssistantsSettings(earlyAssistantsSettings); earlyAssistantsSettings = null }
+      else {
+        // Снапшот из workerData — чтобы глобальный Off действовал с первого
+        // раунда (сообщение 'assistants_settings' от attachAssistants может
+        // не прийти вообще, если мини-агенты выключены).
+        const snapshotSettings = resolveWorkerAssistantsSettings()
+        if (snapshotSettings) agent.setAssistantsSettings(snapshotSettings)
+      }
+      // Briefing continuity (git log/status) — снапшот из main: воркер git не
+      // запускает, снапшот считается один раз на проект с кешем/коалесингом
+      // (src/main/assistants/gitBriefingCache.ts) и идёт прямо в стартовый
+      // briefing-блок, без отдельной подсказки посреди рана.
+      agent.continuitySnapshot = ((workerData as Record<string, unknown>).briefingContinuity as string | undefined) ?? ''
 
       // Мутабельный тулсет рана: request_access может включить browser-тулы
       // ПОСРЕДИ рана (подтверждение юзера) — Agent держит ссылку на массив
@@ -559,10 +588,14 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
       agent.onFileSnapshot = (snapshot) => {
         send({ type: 'file_snapshot', chatId, msgId, snapshot })
       }
-      // Канал для LLM-зависимых мини-агентов (navigator/archivist/
-      // constitution/janitor_refine) — main решает, запускать ли локальную модель.
-      agent.onAssistantEvent = (evt) => {
-        send({ type: 'assistant_event', chatId, ...evt })
+      // Канал для LLM-зависимых мини-агентов (navigator/archivist) — main
+      // решает, запускать ли локальную модель. Суб-агенту он не ставится
+      // вовсе: у него нет своего UI-чата в main, а детерминированные роли
+      // (janitor-свёртка) работают и без LLM-событий.
+      if (!isSubAgent) {
+        agent.onAssistantEvent = (evt) => {
+          send({ type: 'assistant_event', chatId, ...evt })
+        }
       }
 
       // Синхронизируем workdir/projectId/chatId/gateway/колбэки в ToolDispatcher —

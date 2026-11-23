@@ -3,77 +3,25 @@ import { log } from '../../core/logger'
 
 export type { QueuePriority }
 
+/**
+ * Тонкая обёртка над очередью локальной модели. Все мини-агенты advisory:
+ * вызывающий обязан передать signal (или явный timeoutMs), иначе работа
+ * переживёт свой ран и займёт слот у следующего запроса.
+ */
 export function enqueue(prompt: string, priority: QueuePriority, maxTokens = 100, timeoutMs?: number, signal?: AbortSignal): Promise<string> {
   return localModels.complete(prompt, { priority, maxTokens, timeoutMs, signal })
-}
-
-export async function judgeRelevance(stepContext: string, hintContent: string): Promise<{ relevant: boolean; reason: string }> {
-  const prompt = `You are a relevance judge. Given the agent's current step and a candidate hint, decide if the hint is useful RIGHT NOW.
-
-Current step: ${stepContext.slice(0, 400)}
-
-Candidate hint: ${hintContent.slice(0, 400)}
-
-Answer in exactly this format:
-RELEVANT: YES or NO
-REASON: one short sentence
-
-Do not add anything else.`
-
-  try {
-    const text = await enqueue(prompt, 'watcher', 60)
-    const relevant = /RELEVANT:\s*YES/i.test(text)
-    const reasonMatch = text.match(/REASON:\s*(.+)/i)
-    return { relevant, reason: reasonMatch?.[1]?.trim() ?? '' }
-  } catch (err) {
-    log('[LlmClient] judge failed: %s', (err as Error).message)
-    return { relevant: true, reason: 'judge unavailable, defaulting to relevant' }
-  }
-}
-
-export interface JanitorAnalysis {
-  duplicates: Array<{ indices: number[]; description: string }>
-  rereads: Array<{ path: string; indices: number[] }>
-  stale: Array<{ index: number; summary: string }>
-}
-
-export async function analyzeContext(messagesSummary: string): Promise<JanitorAnalysis> {
-  const prompt = `You are a context optimizer. Analyze this conversation summary for waste patterns.
-
-${messagesSummary.slice(0, 2000)}
-
-Identify:
-1. DUPLICATES: identical tool calls repeated (give indices)
-2. REREADS: same file read multiple times (give path and indices)
-3. STALE: old tool results no longer needed (give index and 1-line summary)
-
-Answer in JSON:
-{"duplicates":[{"indices":[0,1],"description":"..."}],"rereads":[{"path":"...","indices":[2,3]}],"stale":[{"index":4,"summary":"..."}]}
-
-Only output JSON, nothing else.`
-
-  try {
-    const text = await enqueue(prompt, 'janitor', 300)
-    const jsonMatch = text.match(/\{[\s\S]*\}/)
-    if (!jsonMatch) return { duplicates: [], rereads: [], stale: [] }
-    const parsed = JSON.parse(jsonMatch[0]) as JanitorAnalysis
-    return {
-      duplicates: Array.isArray(parsed.duplicates) ? parsed.duplicates : [],
-      rereads: Array.isArray(parsed.rereads) ? parsed.rereads : [],
-      stale: Array.isArray(parsed.stale) ? parsed.stale : [],
-    }
-  } catch (err) {
-    log('[LlmClient] janitor analysis failed: %s', (err as Error).message)
-    return { duplicates: [], rereads: [], stale: [] }
-  }
 }
 
 export function getQueueLength(): number { return localModels.getStatus().queueLength }
 export function isProcessing(): boolean { return localModels.isReady() }
 
-// ─── Новые мини-агенты (все advisory, короткие промпты, низкий приоритет) ───
+// ─── Мини-агенты: только те роли, что реально шлёт worker ───
+// janitor_refine (summarizeTool) и constitution_extract (extractConstraints)
+// больше не имеют продюсеров: их ветки удалены из моста вместе с промптами.
+// Feedback-судья (judgeRelevance) тоже удалён — веса источников корректируются
+// детерминированно по фактическим сигналам (вызванные тулы + hint_applied).
 
-/** Мелкие модели заворачивают JSON в ```-фенсы, prose или {"facts":[...]} —
+/** Мелкие модели заворачивают JSON в ```-фенсы, prose или {"facts":[...]} — *
  *  вытаскиваем массив перебором кандидатов. null = ничего парсибельного. */
 function parseJsonArray(text: string): Array<Record<string, unknown>> | null {
   const cleaned = text.replace(/```(?:json)?/gi, '').trim()
@@ -112,17 +60,26 @@ export async function judgeDrift(objective: string, transcript: string, constrai
   } catch { return { drift: false, violation: false, reason: '' } }
 }
 
+/** Сколько символов транскрипта вообще осмысленно дистиллировать. Мост
+ *  отсекает слишком короткие раны ДО пробуждения модели — столько же он
+ *  пропускает в промпт, чтобы очередь не занимал гигантский текст. */
+export const DISTILL_MAX_TRANSCRIPT_CHARS = 4000
+
 /** Archivist: дистиллировать сессию в 1-3 факта для долгосрочной памяти (JSON).
  *  `modifiedFiles` — файлы, правленные в ране: дешёвый сигнал дистилляции,
- *  какие области проекта «горячие» (раньше передавался, но не использовался). */
-export async function distillSession(transcript: string, modifiedFiles: string[] = []): Promise<Array<{ content: string; kind: string }>> {
+ *  какие области проекта «горячие».
+ *  `signal` — отмена фоновой задачи (удаление чата / выключение памяти). */
+export async function distillSession(transcript: string, modifiedFiles: string[] = [], signal?: AbortSignal): Promise<Array<{ content: string; kind: string }>> {
+  if (signal?.aborted) return []
   const filesPart = modifiedFiles.length ? `Files modified this session: ${modifiedFiles.slice(0, 10).join(', ')}\n` : ''
-  const prompt = `From this coding session transcript, extract 1-3 durable facts worth remembering (decisions, gotchas, user constraints, project conventions). The transcript contains tool-call noise — ignore it. If there is nothing durable, return [].\n\n${filesPart}${transcript.slice(0, 1500)}\n\nOutput JSON array: [{"content":"...","kind":"project"}] where kind is project|feedback|user. Only JSON.`
+  // Хвост транскрипта: финальный ответ и последние решения — в конце.
+  const body = transcript.length > DISTILL_MAX_TRANSCRIPT_CHARS ? transcript.slice(-DISTILL_MAX_TRANSCRIPT_CHARS) : transcript
+  const prompt = `From this coding session transcript, extract 1-3 durable facts worth remembering (decisions, gotchas, user constraints, project conventions). The transcript contains tool-call noise — ignore it. If there is nothing durable, return [].\n\n${filesPart}${body}\n\nOutput JSON array: [{"content":"...","kind":"project"}] where kind is project|feedback|user. Only JSON.`
   try {
     // Дистилляция — самое длинное поколение мини-агентов (русский текст в JSON
-    // ест токены): дефолтные 15с на CPU-декоде не хватало, вызов молча умирал
+    // ест токены): дефолтных 15с на CPU-декоде не хватало, вызов молча умирал
     // по таймауту → «Archivist: 0 срабатываний». Даём 40с и 400 токенов.
-    const text = await enqueue(prompt, 'janitor', 400, 40_000)
+    const text = await enqueue(prompt, 'janitor', 400, 40_000, signal)
     if (!text.trim()) {
       log('[LlmClient] distill: empty output (timeout or model refusal)')
       return []
@@ -142,24 +99,6 @@ export async function distillSession(transcript: string, modifiedFiles: string[]
   }
 }
 
-/** J1: LLM-экстракция ограничений из user-текста (JSON array строк). */
-export async function extractConstraints(text: string, signal?: AbortSignal): Promise<string[]> {
-  const prompt = `Extract standing user constraints/rules (things the agent must always/never do) from this message. Ignore transient task steps.\n\n${text.slice(0, 700)}\n\nOutput JSON array of short strings, e.g. ["never modify tests","always use pnpm"]. Only JSON.`
-  try {
-    const out = await enqueue(prompt, 'watcher', 150, undefined, signal)
-    const m = out.match(/\[[\s\S]*\]/)
-    if (!m) return []
-    const arr = JSON.parse(m[0]) as unknown[]
-    return arr.filter(x => typeof x === 'string' && x.length > 3).slice(0, 6).map(x => String(x))
-  } catch { return [] }
-}
-
-/** J4: структурное резюме старого tool-результата. */
-export async function summarizeTool(toolName: string, content: string, signal?: AbortSignal): Promise<string> {
-  const prompt = `Summarize this "${toolName}" tool result in one line, KEEPING file paths, line numbers and key facts/errors:\n${content.slice(0, 900)}\n\nOne line only.`
-  try { return (await enqueue(prompt, 'janitor', 100, undefined, signal)).trim() } catch { return '' }
-}
-
 export interface CapabilityVerdict {
   helpful: boolean
   id: string
@@ -168,7 +107,8 @@ export interface CapabilityVerdict {
 }
 
 /** Watcher v2: точный вердикт — какую конкретную возможность вызвать сейчас.
- *  Возвращает helpful=false, если ничего уверенно полезного нет (тогда skip). */
+ *  Возвращает helpful=false, если ничего уверенно полезного нет (тогда skip).
+ *  Вызывается только когда prefilter/семантика уже отобрали кандидатов. */
 export async function judgeCapability(context: string, catalog: Array<{ id: string; name: string; desc: string }>, signal?: AbortSignal): Promise<CapabilityVerdict> {
   const none: CapabilityVerdict = { helpful: false, id: '', action: '', confidence: 0 }
   if (catalog.length === 0) return none

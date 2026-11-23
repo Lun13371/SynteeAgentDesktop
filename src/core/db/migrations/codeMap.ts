@@ -76,6 +76,22 @@ export function runCodeMapSchema(db: Database.Database): void {
       PRIMARY KEY (project_id, node_id)
     );
 
+    -- Неразрешённые ссылки (импорт/вызов), которые при последнем резолвинге
+    -- файла не нашли цели. Ребра у них нет, поэтому по code_map_edges такой
+    -- импортёр не находится: таблица — durable-обратный индекс для точечного
+    -- восстановления, когда цель наконец появляется. key — lookup-ключ
+    -- (имя файла-цели без расширения для импорта, имя символа для вызова),
+    -- ref — исходный спецификатор/имя для повторного резолвинга.
+    CREATE TABLE IF NOT EXISTS code_map_unresolved (
+      project_id  TEXT NOT NULL,
+      file_path   TEXT NOT NULL,
+      kind        TEXT NOT NULL,
+      key         TEXT NOT NULL,
+      ref         TEXT NOT NULL,
+      line        INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (project_id, file_path, kind, key, line)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_cmn_project_file ON code_map_nodes(project_id, file_path);
     CREATE INDEX IF NOT EXISTS idx_cmn_project_name ON code_map_nodes(project_id, name);
     CREATE INDEX IF NOT EXISTS idx_cmn_project_kind ON code_map_nodes(project_id, kind);
@@ -85,6 +101,9 @@ export function runCodeMapSchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_cme_project_type ON code_map_edges(project_id, type);
     CREATE INDEX IF NOT EXISTS idx_cmd_project_file ON code_map_docs(project_id, file_path);
     CREATE INDEX IF NOT EXISTS idx_cmd_project_tier ON code_map_docs(project_id, tier);
+    -- Обратный поиск кандидатов на восстановление: (kind, key) → импортёры.
+    CREATE INDEX IF NOT EXISTS idx_cmu_project_key ON code_map_unresolved(project_id, kind, key);
+    CREATE INDEX IF NOT EXISTS idx_cmu_project_file ON code_map_unresolved(project_id, file_path);
 
     -- Служебные метки проекта (версия схемы парсинга/документов). Смена версии
     -- → одноразовая полная пересборка: иначе в БД остаются узлы/документы,

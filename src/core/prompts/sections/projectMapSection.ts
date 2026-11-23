@@ -32,6 +32,8 @@ indexed graph without pulling file contents into context:
 - \`action="god"\` (architecture hubs) | \`action="communities"\` (subsystems)
 - \`action="path"\` (how A connects to B) | \`action="affected"\` (what breaks if X changes)
 Edges carry precision: resolved (certain), heuristic (~ guess), ambiguous (?) — say so when it matters.
+If the target is ambiguous, retry with a candidate nodeId (for path: pass the ID in query/to).
+If analytics reports a truncated snapshot, verify missing paths or dependencies with search_code/read_file.
 Read only the files the map points at, with offset/limit ranges.
 `
 }

@@ -54,8 +54,8 @@ const mkEdge = (from, to, type = 'calls', precision = 'resolved', line = 1) => (
 
 function loadAnalytics(edges, nodes) {
   const store = {
-    getGraph: () => ({ nodes, edges: [], packages: [] }),
-    listAnalysisEdges: () => edges,
+    listNodes: (_pid, limit) => nodes.slice(0, limit),
+    listAnalysisEdges: (_pid, limit) => edges.slice(0, limit),
     getNode: (_pid, id) => nodes.find(n => n.id === id) ?? null,
     findNodes: (_pid, q) => nodes.filter(n => n.name.includes(q)),
   }
@@ -82,6 +82,17 @@ const EDGES = [
   mkEdge(B.id, PUSH.id, 'calls', 'heuristic', 9),
   mkEdge(FILE.id, PKG.id, 'imports', 'external', 1),
 ]
+
+test('analytics coverage distinguishes exact caps from truncated rows', () => {
+  const nodes = Array(20_000).fill(A)
+  const edges = Array(120_000).fill(EDGES[7])
+  const exact = loadAnalytics(edges, nodes).getSnapshot(P)
+  assert.deepEqual(exact.coverage, { nodesTruncated: false, edgesTruncated: false })
+  const truncated = loadAnalytics([...edges, EDGES[0]], [...nodes, B]).getSnapshot(P)
+  assert.deepEqual(truncated.coverage, { nodesTruncated: true, edgesTruncated: true })
+  assert.equal(truncated.edges, 120_000)
+  assert.equal(truncated.nodes.has(B.id), false)
+})
 
 test('godNodes — взвешенный degree, без файлов/пакетов и generic-имён', () => {
   const api = loadAnalytics(EDGES, [A, B, C, X, Y, PUSH, FILE, PKG])

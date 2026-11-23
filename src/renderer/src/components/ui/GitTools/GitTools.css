@@ -589,16 +589,7 @@
   to { transform: rotate(360deg); }
 }
 
-.git-tools-branch-group {
-  padding: 8px 8px 4px;
-  font-size: 10.5px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--text-muted, rgba(255, 255, 255, 0.32));
-}
-
-/* Тихий статус списка веток: загрузка / ошибка чтения / ошибка remote-fetch.
+/* Тихий статус списка веток: загрузка / ошибка чтения / ошибка git fetch.
    Специально без красной плашки — это фон, а не блокирующая ошибка. */
 .git-tools-branch-status {
   display: flex;
@@ -613,12 +604,6 @@
 .git-tools-branch-status .is-spinning {
   animation: git-tools-spin 1s linear infinite;
   flex-shrink: 0;
-}
-
-/* Удалённая ветка: клик создаёт локальную с tracking — визуально приглушена,
-   чтобы её не путали с уже существующей локальной. */
-.git-tools-branch-item.is-remote .git-tools-branch-name {
-  color: var(--text-secondary, rgba(255, 255, 255, 0.7));
 }
 
 /* Обновление списка веток (локальные + fetch удалённых) из шапки подвью. */

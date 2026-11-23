@@ -40,6 +40,7 @@ import { getActivityManager } from '../managers/ActivityManager'
 import { getGitSyncManager } from '../managers/GitSyncManager'
 import { agentManager } from '../managers/AgentManager'
 import { attachAssistants, onAgentEvent, onAssistantEvent, onRunDone, onJanitorAction, getAssistantsSettings } from '../assistants/bridge'
+import { getBriefingContinuityWithin, noteBriefingChanges } from '../assistants/gitBriefingCache'
 import { attachBrowserWorkerBroker, disposeBrowserWorkerBroker } from '../../core/agent/browserWorkerBroker'
 import { attachMcpWorkerBroker } from '../../core/mcp/mcpWorkerBroker'
 import { compressStoredMessages } from '../../core/context/historyCompressor'
@@ -977,6 +978,19 @@ async function runChatSendScoped(
     // здесь для workerData.
 
     if (cancelledDelegatedStarts.has(assistantMsgId)) throw new Error('Delegated request cancelled during preparation')
+    // ── Мини-агенты: снапшот настроек и briefing-continuity на старте воркера ──
+    // Настройки передаём в workerData, чтобы глобальный Off действовал с ПЕРВОГО
+    // раунда: attachAssistants() при выключенных мини-агентах вообще не шлёт
+    // 'assistants_settings', а воркер до этого жил на DEFAULT (enabled: true).
+    const assistantsSettingsSnapshot = getAssistantsSettings()
+    // Briefing continuity (git log/status) считает main — кеш на проект,
+    // коалесинг параллельных чатов, git не запускается, если подпись
+    // репозитория/изменённые файлы не менялись
+    // (src/main/assistants/gitBriefingCache.ts). Воркер git больше не спавнит.
+    // Within(...) — с бюджетом ожидания: старт чата не блокируется на git.
+    const briefingContinuity = assistantsSettingsSnapshot.enabled && assistantsSettingsSnapshot.briefingEnabled
+      ? await getBriefingContinuityWithin(chatWorkdir)
+      : ''
     const worker = new Worker(workerPath, {
       workerData: {
         storeData,
@@ -1023,6 +1037,9 @@ async function runChatSendScoped(
         // передаёт в Agent/ToolDispatcher для подстановки ${{KEY}} в аргументы
         // тулов и обратной маскировки значений в результатах.
         secretValues: secretValuesMap,
+        // Мини-агенты: применяются воркером ДО первого раунда (см. ai-worker).
+        assistantsSettings: assistantsSettingsSnapshot,
+        briefingContinuity,
       },
       env: process.env,
     })
@@ -2121,6 +2138,7 @@ async function runChatSendScoped(
         case 'file_changed': {
           const filePath = msg.path as string
           if (filePath) {
+            noteBriefingChanges(chatWorkdir, [filePath])
             win?.webContents.send('file:changed', { path: filePath })
           }
           break

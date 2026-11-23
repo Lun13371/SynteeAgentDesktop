@@ -27,6 +27,9 @@ export interface AssistantsSettings {
   briefingEnabled: boolean
   navigatorEnabled: boolean
   archivistEnabled: boolean
+  /** Legacy: Economist влит в Janitor (порог окна → глубина сжатия). Поле
+   *  сохранено, чтобы старые настройки не ломались; в UI и в логике не
+   *  используется — Janitor решает сам. */
   economistEnabled: boolean
   modelSize: 'auto' | '1.2B' | '1B' | '0.8B'
   /** Контекст локальной модели: 'auto' — по RAM. */

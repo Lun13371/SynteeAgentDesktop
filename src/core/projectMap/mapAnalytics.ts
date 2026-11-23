@@ -34,6 +34,7 @@ export interface GraphSnapshot {
    */
   contains: Map<string, string[]>
   edges: number
+  coverage: { nodesTruncated: boolean; edgesTruncated: boolean }
   builtAt: number
 }
 
@@ -85,13 +86,17 @@ export function getSnapshot(projectId: string): GraphSnapshot {
   const cached = snapshotCache.get(projectId)
   if (cached) return cached
 
-  const graph = store.getGraph(projectId, { limit: MAX_NODES })
+  // Один дополнительный ряд отличает усечённую выборку от ровно заполненной.
+  // Читаем отдельно: getGraph также загрузил бы ненужный второй набор рёбер.
+  const nodeRows = store.listNodes(projectId, MAX_NODES + 1)
+  const nodesTruncated = nodeRows.length > MAX_NODES
+  if (nodesTruncated) nodeRows.pop()
   const nodes = new Map<string, CodeMapNode>()
-  for (const n of graph.nodes) nodes.set(n.id, n)
+  for (const n of nodeRows) nodes.set(n.id, n)
 
-  // Рёбра берём с запасом: getGraph ограничивает limit*4, для больших проектов
-  // это меньше фактического числа рёбер — поэтому читаем напрямую через store.
-  const edges = store.listAnalysisEdges(projectId, GRAPH_EDGE_LIMIT, [...ANALYTICS_TYPES, 'contains'])
+  const edges = store.listAnalysisEdges(projectId, GRAPH_EDGE_LIMIT + 1, [...ANALYTICS_TYPES, 'contains'])
+  const edgesTruncated = edges.length > GRAPH_EDGE_LIMIT
+  if (edgesTruncated) edges.pop()
 
   const undirected = new Map<string, Array<{ id: string; type: CodeEdgeType; precision: CodeEdgePrecision; w: number }>>()
   const incoming = new Map<string, Array<{ id: string; type: CodeEdgeType; precision: CodeEdgePrecision }>>()
@@ -117,7 +122,10 @@ export function getSnapshot(projectId: string): GraphSnapshot {
     push(outgoing, e.fromNode, { id: e.toNode, type: e.type, precision: e.precision })
   }
 
-  const snapshot: GraphSnapshot = { nodes, undirected, incoming, outgoing, contains, edges: edges.length, builtAt: Date.now() }
+  const snapshot: GraphSnapshot = {
+    nodes, undirected, incoming, outgoing, contains, edges: edges.length,
+    coverage: { nodesTruncated, edgesTruncated }, builtAt: Date.now(),
+  }
   snapshotCache.set(projectId, snapshot)
   return snapshot
 }

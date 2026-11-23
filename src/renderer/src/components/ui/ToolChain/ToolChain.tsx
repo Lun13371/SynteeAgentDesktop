@@ -387,7 +387,6 @@ const ASSISTANT_SOURCE_META: Record<string, { label: string; color: string; icon
   briefing: { label: 'Briefing · состояние проекта', color: '#38bdf8', icon: 'brain' },
   navigator: { label: 'Navigator · курс на цель', color: '#a78bfa', icon: 'compass' },
   archivist: { label: 'Archivist · память', color: '#34d399', icon: 'archive' },
-  economist: { label: 'Economist · бюджет', color: '#4ade80', icon: 'gauge' },
 }
 
 const AssistantCard = memo(function AssistantCard({ step, isRunning, animateEntrance }: {

@@ -10,7 +10,7 @@ import { getLanguage } from '../CodePreview/CodePreview'
 import { useFileTabsStore } from '../../../store/fileTabs.store'
 import { useUIStore } from '../../../store/ui.store'
 import { useToast } from '../Toast/Toast'
-import { localNameForRemote, useGitBranches } from '../../../hooks/useGitBranches'
+import { useGitBranches } from '../../../hooks/useGitBranches'
 import './GitPanel.css'
 
 // ── Опции Monaco DiffEditor (модульная константа) ───────────────────────
@@ -666,9 +666,6 @@ export default function GitPanel({ workdir, visible = false }: GitPanelProps) {
   const [selectedCommitFile, setSelectedCommitFile] = useState<string | null>(null)
   // Ветки живут в общем сторе useGitBranches (см. ниже) — локального списка нет.
   const [branchDropdownOpen, setBranchDropdownOpen] = useState(false)
-  // Удалённая ветка, выбранная для переключения: сначала подтверждение,
-  // потому что checkout по remote создаёт локальную tracking-ветку.
-  const [pendingRemoteBranch, setPendingRemoteBranch] = useState<string | null>(null)
   const [newBranchName, setNewBranchName] = useState('')
   const [showNewBranchInput, setShowNewBranchInput] = useState(false)
   const [syncLoading, setSyncLoading] = useState(false)
@@ -771,7 +768,6 @@ export default function GitPanel({ workdir, visible = false }: GitPanelProps) {
       if (branchDropdownOpen && branchDropdownRef.current && !branchDropdownRef.current.contains(target)) {
         setBranchDropdownOpen(false)
         setShowNewBranchInput(false)
-        setPendingRemoteBranch(null)
       }
       if (actionMenuOpen && actionMenuRef.current && !actionMenuRef.current.contains(target)) {
         setActionMenuOpen(false)
@@ -844,13 +840,13 @@ export default function GitPanel({ workdir, visible = false }: GitPanelProps) {
     createBranch,
   } = useGitBranches(workdir, visible)
 
-  // Локальные и удалённые — отдельными секциями. Удалённые не переключаются
-  // напрямую (detached HEAD): для них — подтверждение и tracking-checkout.
+  // В переключателе — ТОЛЬКО локальные ветки: это именно те ветки, по которым
+  // реально ходит `git checkout`. `origin/*` (refs/remotes/*) отсюда убраны:
+  // напрямую по ним не переключаются (git уводит в detached HEAD), а в списке
+  // они дублировали локальные имена и показывали уже удалённые на сервере refs.
+  // Сам fetch refs/remotes остаётся (`refreshRemote` ниже) — от него зависят
+  // ahead/behind в шапке и чипы веток в графе коммитов.
   const localBranches = useMemo(() => gitBranches.filter(b => !b.remote), [gitBranches])
-  const remoteBranches = useMemo(() => gitBranches.filter(b => b.remote), [gitBranches])
-  // Имена локальных веток — чтобы подтверждение по удалённой ветке писало правду:
-  // существующая локальная просто переключается, новая — создаётся.
-  const localNames = useMemo(() => new Set(localBranches.map(b => b.name)), [localBranches])
 
   const loadDiff = useCallback(async (file: GitFileStatus) => {
     if (!workdir) return
@@ -1135,17 +1131,15 @@ export default function GitPanel({ workdir, visible = false }: GitPanelProps) {
     } finally { setSyncLoading(false) }
   }, [workdir, status, refresh])
 
-  const handleCheckout = useCallback(async (branch: string, remote = false) => {
+  const handleCheckout = useCallback(async (branch: string) => {
     if (!workdir) return
     setBranchSwitchLoading(branch)
     try {
-      // Общий стор: для remote main делает `--track -b` (локальная ветка с
-      // upstream, без detached HEAD), для локальной — обычный checkout.
+      // Общий стор: по локальной ветке main делает обычный checkout.
       // Авто-stash нет; ошибку git хук бросает с читаемой причиной.
       // Успех — без тоста (тихо, как в VS Code), иначе панель выглядит
       // «не переключающей ветки».
-      await checkoutBranch({ branch, remote })
-      setPendingRemoteBranch(null)
+      await checkoutBranch({ branch })
       setBranchDropdownOpen(false)
       await refresh()
     } catch (e) {
@@ -1278,7 +1272,6 @@ export default function GitPanel({ workdir, visible = false }: GitPanelProps) {
               onClick={() => {
                 setBranchDropdownOpen(prev => !prev)
                 setShowNewBranchInput(false)
-                setPendingRemoteBranch(null)
               }}
             >
               <span className="git-panel__branch-name">{displayBranchLabel}</span>
@@ -1316,23 +1309,20 @@ export default function GitPanel({ workdir, visible = false }: GitPanelProps) {
                   </div>
                 )}
                 <div className="git-panel__branch-list">
-                  {gitBranches.length === 0 && branchesLoading && (
+                  {localBranches.length === 0 && branchesLoading && (
                     <div className="git-panel__branch-note">
                       <AppIcon name="loader" size="xs" animation="spin" />
                       <span>Загрузка веток…</span>
                     </div>
                   )}
-                  {gitBranches.length === 0 && !branchesLoading && (
+                  {localBranches.length === 0 && !branchesLoading && (
                     <div className="git-panel__branch-note">
                       <span>{branchesError ? 'Не удалось прочитать ветки' : 'Веток нет'}</span>
                     </div>
                   )}
 
-                  {/* Локальные: только переключение. Удаления здесь нет —
+                  {/* Только локальные: переключение. Удаления здесь нет —
                       IPC git:branchDelete в main/preload не реализован. */}
-                  {localBranches.length > 0 && (
-                    <div className="git-panel__branch-section-label">Локальные</div>
-                  )}
                   {localBranches.map(b => (
                     <button
                       key={`local:${b.name}`}
@@ -1347,55 +1337,8 @@ export default function GitPanel({ workdir, visible = false }: GitPanelProps) {
                     </button>
                   ))}
 
-                  {/* Удалённые: только tracking-checkout с явным подтверждением.
-                      Удалять их отсюда нельзя — кнопки delete здесь нет. */}
-                  {remoteBranches.length > 0 && (
-                    <div className="git-panel__branch-section-label">Удалённые</div>
-                  )}
-                  {remoteBranches.map(b => {
-                    // Как git назовёт локальную ветку для этой удалённой.
-                    const localName = localNameForRemote(gitBranches, b.name)
-                    // Такая локальная уже есть → checkout просто переключит на неё,
-                    // ничего не создавая и не перезаписывая. Обещать «создать» нельзя.
-                    const hasLocal = localNames.has(localName)
-                    return pendingRemoteBranch === b.name ? (
-                      <div key={`remote:${b.name}`} className="git-panel__branch-confirm">
-                        {hasLocal ? (
-                          <span>
-                            Переключиться на существующую локальную ветку <b>{localName}</b>{' '}
-                            (удалённая <b>{b.name}</b>)? Ветка не перезаписывается — только checkout.
-                          </span>
-                        ) : (
-                          <span>Создать локальную ветку <b>{localName}</b> из <b>{b.name}</b> и переключиться на неё?</span>
-                        )}
-                        <div className="git-panel__branch-confirm-actions">
-                          <button
-                            className="git-panel__branch-confirm-ok"
-                            onClick={() => void handleCheckout(b.name, true)}
-                            disabled={branchSwitchLoading === b.name}
-                          >
-                            {hasLocal ? 'Переключиться' : 'Создать и переключиться'}
-                          </button>
-                          <button onClick={() => setPendingRemoteBranch(null)}>Отмена</button>
-                        </div>
-                      </div>
-                    ) : (
-                      <div key={`remote:${b.name}`} className="git-panel__branch-row">
-                        <button
-                          className="git-panel__branch-item git-panel__branch-item--remote"
-                          onClick={() => setPendingRemoteBranch(b.name)}
-                          disabled={branchSwitchLoading === b.name}
-                          title={`Удалённая ветка ${b.name}`}
-                        >
-                          <AppIcon name="globe" size="xs" tone="muted" />
-                          <span className="git-panel__branch-item-name">{b.name}</span>
-                        </button>
-                      </div>
-                    )
-                  })}
-
                   {/* Ошибки — тихие, строкой внизу списка (без тоста/модалки). */}
-                  {branchesError && gitBranches.length > 0 && (
+                  {branchesError && localBranches.length > 0 && (
                     <div className="git-panel__branch-note git-panel__branch-note--error" title={branchesError}>
                       <AppIcon name="alertCircle" size="xs" tone="warning" />
                       <span>{branchesError}</span>

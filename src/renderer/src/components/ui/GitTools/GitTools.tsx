@@ -15,9 +15,15 @@
  * или повторным кликом по чипу; клик по пустому месту панель не трогает.
  *
  * Данные: `git:repoSummary` (агрегат) и ОБЩИЙ стор веток `useGitBranches`
- * (локальные + удалённые, дедуплицированные чтения, общий checkout/create с
- * GitPanel), `git:generateCommitMessage` (локальная мини-модель), прогресс —
- * `liveByChat[chatId].todo`.
+ * (дедуплицированные чтения, общий checkout/create с GitPanel),
+ * `git:generateCommitMessage` (локальная мини-модель), `liveByChat[chatId].todo`
+ * — прогресс.
+ *
+ * ПОЧЕМУ В СПИСКЕ ТОЛЬКО ЛОКАЛЬНЫЕ ВЕТКИ: `origin/*` — это refs/remotes/*, по
+ * ним нельзя переключиться напрямую (git уводит в detached HEAD), поэтому
+ * панель их не показывает — только ветки, по которым реально ходит checkout.
+ * Обновление refs/remotes при этом продолжается (main: `fetch --all --prune`
+ * через git:refreshBranches) — от него зависят ahead/behind и чипы графа.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
@@ -40,7 +46,7 @@ import {
 import type { LastTurnChanges } from '../../../../../shared/types'
 import { useChatStore } from '../../../store/chat.store'
 import { useUIStore } from '../../../store/ui.store'
-import { localNameForRemote, useGitBranches } from '../../../hooks/useGitBranches'
+import { useGitBranches } from '../../../hooks/useGitBranches'
 import { useToast } from '../Toast/Toast'
 import GitGraph from '../GitGraph/GitGraph'
 import { useSubagentOverview } from '../../../hooks/useSubagentOverview'
@@ -347,33 +353,12 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
 
   /**
    * Переключение ветки — через общий стор (тот же checkout, что в GitPanel).
-   * Локальная ветка переключается молча (как в VS Code). Удалённая — сначала
-   * явное подтверждение: `git checkout origin/x` увёл бы в detached HEAD, поэтому
-   * main создаёт локальную tracking-ветку, и это стоит проговорить до клика.
+   * Переключение молчаливое, без подтверждений: в списке только локальные
+   * ветки, то есть именно те, по которым `git checkout` работает напрямую.
    */
   const switchBranch = useCallback(
-    async (branch: string, remote = false): Promise<void> => {
+    async (branch: string): Promise<void> => {
       if (!workdir || busy) return
-      if (remote) {
-        const local = localNameForRemote(branches, branch)
-        // Подтверждение должно говорить правду: если локальная ветка уже есть,
-        // main НЕ создаёт новую, а просто переключается на существующую.
-        const exists = branches.some(b => !b.remote && b.name === local)
-        const ok = exists
-          ? window.confirm(
-              t(
-                `Локальная ветка «${local}» уже есть — переключиться на неё без изменений?`,
-                `Local branch “${local}” already exists — switch to it without changing it?`,
-              ),
-            )
-          : window.confirm(
-              t(
-                `Создать локальную ветку «${local}» из «${branch}» и переключиться на неё?`,
-                `Create local branch “${local}” from “${branch}” and switch to it?`,
-              ),
-            )
-        if (!ok) return
-      }
       setBusy(true)
       setSwitching(branch)
       try {
@@ -381,7 +366,7 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
         // на успех: переключение должно быть тихим и мгновенным. Остаёмся в
         // списке веток — галка просто переезжает на новую строку (её двигает
         // стор: optimistic current + перечитывание после мутации).
-        await checkoutBranch({ branch, remote })
+        await checkoutBranch({ branch })
         await refresh()
       } catch (e) {
         useToast.getState().add(String((e as Error)?.message ?? e), 'error')
@@ -390,7 +375,7 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
         setBusy(false)
       }
     },
-    [workdir, busy, branches, refresh, checkoutBranch, lang, t],
+    [workdir, busy, refresh, checkoutBranch],
   )
 
   const createBranch = useCallback(
@@ -426,9 +411,10 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
   const activeBranch = branchesLastLoadedAt !== null ? currentBranch : (summary?.branch ?? null)
   const query = branchQuery.trim().toLowerCase()
   const matchesQuery = (name: string): boolean => !query || name.toLowerCase().includes(query)
+  // Только локальные ветки: `origin/*` — refs/remotes/*, по ним не
+  // переключаются напрямую (detached HEAD), поэтому в этом списке их нет.
   const localBranches = branches.filter(b => !b.remote && matchesQuery(b.name))
-  const remoteBranches = branches.filter(b => b.remote && matchesQuery(b.name))
-  const branchesEmpty = localBranches.length === 0 && remoteBranches.length === 0
+  const branchesEmpty = localBranches.length === 0
   const requestAdded = lastTurnChanges?.totalAdded ?? 0
   const requestDeleted = lastTurnChanges?.totalDeleted ?? 0
   const requestFiles = lastTurnChanges?.files.length ?? 0
@@ -709,16 +695,13 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
                             ? t('Обновляем список веток…', 'Refreshing branches…')
                             : branchesError ??
                               t(
-                                `Удалённые не обновились: ${branchesRemoteError}`,
-                                `Remote branches not refreshed: ${branchesRemoteError}`,
+                                `git fetch не прошёл: ${branchesRemoteError}`,
+                                `git fetch failed: ${branchesRemoteError}`,
                               )}
                         </span>
                       </div>
                     )}
 
-                    {localBranches.length > 0 && (
-                      <div className="git-tools-branch-group">{t('Локальные', 'Local')}</div>
-                    )}
                     {localBranches.map(b => (
                       <button
                         key={b.name}
@@ -744,37 +727,6 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
                               {t(`Незакоммиченных файлов: ${dirty}`, `Uncommitted files: ${dirty}`)}
                             </span>
                           )}
-                        </span>
-                      </button>
-                    ))}
-
-                    {/* Удалённые ветки: переключаемся не «в них», а на локальную
-                        копию с tracking — поэтому клик спрашивает подтверждение. */}
-                    {remoteBranches.length > 0 && (
-                      <div className="git-tools-branch-group">{t('Удалённые', 'Remote')}</div>
-                    )}
-                    {remoteBranches.map(b => (
-                      <button
-                        key={b.name}
-                        type="button"
-                        className={`git-tools-branch-item is-remote${switching === b.name ? ' is-switching' : ''}`}
-                        disabled={switching !== null}
-                        title={t(
-                          `Создать локальную ветку из ${b.name} и переключиться`,
-                          `Create a local branch from ${b.name} and switch to it`,
-                        )}
-                        onClick={() => void switchBranch(b.name, true)}
-                      >
-                        <span className="git-tools-branch-check">
-                          {switching === b.name ? (
-                            <Loader2 size={12} className="is-spinning" />
-                          ) : (
-                            <GitBranch size={12} />
-                          )}
-                        </span>
-                        <span className="git-tools-branch-body">
-                          <span className="git-tools-branch-name">{b.name}</span>
-                          <span className="git-tools-branch-note">{t('удалённая', 'remote')}</span>
                         </span>
                       </button>
                     ))}
