@@ -125,10 +125,16 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
   }, [])
   const [menuOpen, setMenuOpen] = useState(false)
   const [graphOpen, setGraphOpen] = useState(false)
+  /** Пользователь сам переключал панель — авто-раскрытие больше не вмешивается. */
+  const userToggled = useRef(false)
 
   const [summary, setSummary] = useState<RepoSummary | null>(null)
   const [summaryError, setSummaryError] = useState<string | null>(null)
-  /** true/false — знаем точно; null — ещё не проверяли. Вне git-репо панель не рисуем. */
+  /**
+   * true/false — знаем точно; null — ещё не проверяли. Вне git-репо панель НЕ
+   * скрывается: в ней остаются план задачи, суб-агенты и изменения запроса,
+   * а git-строки просто не рисуются (см. showGit/noRepo ниже).
+   */
   const [isRepo, setIsRepo] = useState<boolean | null>(null)
 
   // Ветки — НЕ локальный стейт: единый стор (useGitBranches). Здесь только
@@ -187,7 +193,15 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
   const planHidden = progress ? progress.items.length - planItems.length : 0
 
   const refresh = useCallback(async (): Promise<void> => {
-    if (!workdir) return
+    // Чата без проекта: workdir нет, спрашивать git не о чем. Явно сбрасываем
+    // состояние, иначе isRepo навсегда остаётся null и панель не знает, что
+    // показать вместо git-строк.
+    if (!workdir) {
+      setSummary(null)
+      setSummaryError(null)
+      setIsRepo(false)
+      return
+    }
     try {
       const res = (await window.syntee.git.repoSummary(workdir)) as RepoSummary
       if (res?.notARepo) {
@@ -213,6 +227,7 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
   // пока панель открыта (active=open), дедуплицирует чтения и обновляет всех
   // подписчиков после checkout/create. Локального fetch здесь больше нет.
   const openPanel = useCallback((): void => {
+    userToggled.current = true
     setOpen(true)
     setView('panel')
     setFormError(null)
@@ -221,6 +236,7 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
   }, [refresh, refreshBranchList, setView])
 
   const close = useCallback((): void => {
+    userToggled.current = true
     setOpen(false)
     setMenuOpen(false)
     setView('panel')
@@ -398,8 +414,30 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
     [workdir, busy, createBranchInStore, refresh, setView],
   )
 
-  const showGit = Boolean(workdir) && isRepo !== false
-  if (!showGit && subagents.length === 0) return null
+  // Панель «Обзор» — часть тулбара чата, поэтому рисуется ВСЕГДА (в т.ч. в
+  // чате без проекта и в папке без git): внутри остаются план задачи,
+  // суб-агенты и изменения последнего запроса. Git-строки — только под showGit,
+  // а вместо них в теле панели показывается причина (noProject/noRepo).
+  const hasWorkdir = Boolean(workdir)
+  const showGit = hasWorkdir && isRepo !== false
+  const noProject = !hasWorkdir
+  const noRepo = hasWorkdir && isRepo === false
+
+  // Панель по стандарту раскрыта — это основной рабочий инструмент. Но если
+  // показывать нечего, кроме пометки «git недоступен» (чат без проекта, плана
+  // и суб-агентов нет), раскрывать её сами не будем: пустая плашка мешает.
+  // Ручной выбор пользователя (клик по чипу) не перебиваем; при смене чата
+  // выбор сбрасывается — у каждого чата своё состояние.
+  const onlyNote = !showGit && !progress && subagents.length === 0
+  const lastChatRef = useRef(chatId)
+  useEffect(() => {
+    if (lastChatRef.current !== chatId) {
+      lastChatRef.current = chatId
+      userToggled.current = false
+    }
+    if (userToggled.current) return
+    setOpen(!onlyNote)
+  }, [chatId, onlyNote])
 
   const dirty = summary ? summary.files : 0
   const canCommit = dirty > 0
@@ -430,7 +468,8 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
       >
         <FileDiff size={13} className="git-tools-chip-icon" />
         <span className="git-tools-chip-label">{t('Обзор', 'Overview')}</span>
-        {/* План есть → бейдж показывает прогресс; плана нет → изменения. */}
+        {/* План есть → бейдж показывает прогресс; плана нет → изменения git,
+            а без git — приглушённая причина, чтобы чип не выглядел пустым. */}
         {progress ? (
           <span className="git-tools-chip-progress">{progress.done}/{progress.total}</span>
         ) : showGit && summary && dirty > 0 ? (
@@ -440,6 +479,10 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
           </span>
         ) : showGit && summary ? (
           <span className="git-tools-chip-clean">{t('чисто', 'clean')}</span>
+        ) : noProject ? (
+          <span className="git-tools-chip-clean">{t('без проекта', 'no project')}</span>
+        ) : noRepo ? (
+          <span className="git-tools-chip-clean">{t('без git', 'no git')}</span>
         ) : null}
         <ChevronDown size={12} className={`git-tools-chip-chevron${open ? ' is-open' : ''}`} />
       </button>
@@ -462,16 +505,16 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
                 <span className="git-tools-title">{t('Обзор', 'Overview')}</span>
                 {showGit && activeBranch && <span className="git-tools-header-branch">{activeBranch}</span>}
                 <div className="git-tools-header-actions">
-                  {showGit && (
-                    <button
-                      type="button"
-                      className={`git-tools-icon-btn${menuOpen ? ' is-active' : ''}`}
-                      onClick={() => setMenuOpen(m => !m)}
-                      title={t('Ещё', 'More')}
-                    >
-                      <span className="git-tools-dots">···</span>
-                    </button>
-                  )}
+                  {/* «…» доступно и без git: «Обновить» полезно, если в папке
+                      только что появился .git. Git-пункты внутри — под showGit. */}
+                  <button
+                    type="button"
+                    className={`git-tools-icon-btn${menuOpen ? ' is-active' : ''}`}
+                    onClick={() => setMenuOpen(m => !m)}
+                    title={t('Ещё', 'More')}
+                  >
+                    <span className="git-tools-dots">···</span>
+                  </button>
                   <button type="button" className="git-tools-icon-btn" onClick={close} title={t('Свернуть', 'Collapse')}>
                     <X size={14} />
                   </button>
@@ -479,7 +522,7 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
               </header>
 
               <AnimatePresence initial={false}>
-              {showGit && menuOpen && (
+              {menuOpen && (
                 <motion.div
                   className="git-tools-menu"
                   initial={{ height: 0, opacity: 0 }}
@@ -492,27 +535,31 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
                     <RefreshCw size={13} />
                     {t('Обновить', 'Refresh')}
                   </button>
-                  <button
-                    type="button"
-                    className="git-tools-menu-item"
-                    onClick={() => { setMenuOpen(false); setGraphOpen(true) }}
-                  >
-                    <ListChecks size={13} />
-                    {t('Граф Git', 'Git Graph')}
-                  </button>
-                  <button
-                    type="button"
-                    className="git-tools-menu-item"
-                    onClick={() => {
-                      setMenuOpen(false)
-                      useUIStore.getState().setAgentPanelTab('git')
-                      useUIStore.getState().setAgentPanelOpen(true)
-                      close()
-                    }}
-                  >
-                    <FileDiff size={13} />
-                    {t('Открыть панель Git', 'Open Git panel')}
-                  </button>
+                  {showGit && (
+                    <button
+                      type="button"
+                      className="git-tools-menu-item"
+                      onClick={() => { setMenuOpen(false); setGraphOpen(true) }}
+                    >
+                      <ListChecks size={13} />
+                      {t('Граф Git', 'Git Graph')}
+                    </button>
+                  )}
+                  {showGit && (
+                    <button
+                      type="button"
+                      className="git-tools-menu-item"
+                      onClick={() => {
+                        setMenuOpen(false)
+                        useUIStore.getState().setAgentPanelTab('git')
+                        useUIStore.getState().setAgentPanelOpen(true)
+                        close()
+                      }}
+                    >
+                      <FileDiff size={13} />
+                      {t('Открыть панель Git', 'Open Git panel')}
+                    </button>
+                  )}
                 </motion.div>
               )}
               </AnimatePresence>
@@ -529,9 +576,25 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
                   exit="exit"
                   transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
                 >
-                  {showGit && summaryError && <div className="git-tools-error">{summaryError}</div>}
+                  {/* Ошибку чтения репозитория показываем всегда: без git-строк
+                      она иначе потерялась бы, а «Не git-репозиторий» соврало бы. */}
+                  {summaryError && <div className="git-tools-error">{summaryError}</div>}
 
-                  {showGit && <div className="git-tools-rows">
+                  {/* Причина, по которой git-строк нет. Панель при этом
+                      остаётся рабочей: план, суб-агенты, изменения запроса. */}
+                  {noProject && (
+                    <div className="git-tools-empty">
+                      {t('Чат без проекта — git недоступен', 'Chat without a project — git unavailable')}
+                    </div>
+                  )}
+                  {noRepo && !summaryError && (
+                    <div className="git-tools-empty">
+                      {t('Не git-репозиторий', 'Not a git repository')}
+                    </div>
+                  )}
+
+                  <div className="git-tools-rows">
+                    {showGit && (
                     <button
                       type="button"
                       className="git-tools-row"
@@ -551,9 +614,11 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
                         )}
                       </span>
                     </button>
+                    )}
 
                     {/* Отдельная строка: что сделал именно последний запрос.
-                        Не смешиваем с состоянием репозитория выше. */}
+                        Не смешиваем с состоянием репозитория выше. Показываем и
+                        без git — агент правит файлы и в чате без проекта. */}
                     {lastTurnChanges && requestFiles > 0 && (
                       <div
                         className="git-tools-row git-tools-row--static"
@@ -571,6 +636,7 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
                       </div>
                     )}
 
+                    {showGit && (
                     <button
                       type="button"
                       className="git-tools-row"
@@ -584,13 +650,16 @@ export default function GitTools({ workdir, chatId, lang, todo: todoProp, lastTu
                         <ChevronDown size={12} />
                       </span>
                     </button>
+                    )}
 
+                    {showGit && (
                     <button type="button" className="git-tools-row" onClick={() => setView('commit')}>
                       <CornerUpLeft size={14} className="git-tools-row-icon" />
                       <span className="git-tools-row-label">{t('Коммит или push', 'Commit or push')}</span>
                       <ChevronDown size={12} className="git-tools-row-chevron-right" style={{ transform: 'rotate(-90deg)' }} />
                     </button>
-                  </div>}
+                    )}
+                  </div>
 
                   <SubagentOverview key={chatId} items={subagents} lang={lang} />
 
