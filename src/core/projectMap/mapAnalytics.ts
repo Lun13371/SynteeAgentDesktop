@@ -140,9 +140,8 @@ export function isProjectCodeNode(node: CodeMapNode): boolean {
 /**
  * Мусорные имена: JS/TS builtins, JSON-ключи и общие слова, вокруг которых
  * копятся heuristic-рёбра («все push проекта → мок в тесте»). Без фильтра
- * top-degree заполняется `push`/`map`/`set`/`get` — идея фильтра взята из
- * graphify (`_BUILTIN_NOISE_LABELS` / `_JSON_NOISE_LABELS`), список адаптирован
- * под JS/TS.
+ * top-degree заполняется `push`/`map`/`set`/`get`, поэтому такие метки
+ * исключаются из ранжирования god-узлов — список подобран под JS/TS.
  */
 const NOISE_NAMES = new Set([
   'push', 'pop', 'shift', 'unshift', 'slice', 'splice', 'map', 'filter', 'reduce',
