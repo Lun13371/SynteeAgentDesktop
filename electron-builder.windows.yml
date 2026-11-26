@@ -1,6 +1,8 @@
 extends: ./electron-builder.yml
 appId: com.synteehelper.desktop
-productName: Syntee Helper Desktop
+# Имя совпадает с прежней установкой (%LOCALAPPDATA%\Programs\Syntee Helper):
+# новая версия встаёт на то же место, второго каталога не появляется.
+productName: Syntee Helper
 # Locked packages include Windows x64 prebuilds. Avoid rebuilding them with
 # a different local Node toolchain than the packaged Electron uses.
 npmRebuild: false
