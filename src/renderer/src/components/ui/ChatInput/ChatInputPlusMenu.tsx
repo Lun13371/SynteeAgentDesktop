@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { AnimatePresence, motion, type Variants } from 'framer-motion'
+import { AnimatePresence, motion, useReducedMotion, type Variants } from 'framer-motion'
 import AppIcon from '../AppIcon/AppIcon'
 import { SLASH_COMMANDS, type SlashCommand } from '../../../../../shared/slashCommands'
 import type { Attachment, MentionItem } from '../../../../../shared/types'
@@ -49,27 +49,21 @@ interface ChatInputPlusMenuProps {
 }
 
 // ── Анимации ─────────────────────────────────────────────────────────────
-// Появление — каскад строго в порядке чтения: левый верхний угол → вправо →
-// следующая строка → категории сверху вниз. Явная задержка на каждый элемент
-// (без вложенной оркестрации variants, которая давала разнобой и «вязкость»).
-const EASE: [number, number, number, number] = [0.22, 1, 0.36, 1]
-
-/** Каскад верхнего уровня: i — порядковый номер в порядке чтения. */
-const reveal = (i: number) => ({
-  initial: { opacity: 0, y: 10 },
-  animate: { opacity: 1, y: 0, transition: { delay: 0.04 + i * 0.05, duration: 0.3, ease: EASE } },
-})
-
-/** Каскад внутри раскрытой категории (строки/плитки по порядку). */
-const rowReveal = (i: number) => ({
-  initial: { opacity: 0, y: 8 },
-  animate: { opacity: 1, y: 0, transition: { delay: Math.min(i * 0.03, 0.36), duration: 0.26, ease: EASE } },
-})
+const EASE_OUT: [number, number, number, number] = [0.22, 1, 0.36, 1]
+const EASE_IN: [number, number, number, number] = [0.4, 0, 1, 1]
 
 const panelVariants: Variants = {
-  hidden: { opacity: 0, y: 14, scale: 0.97 },
-  visible: { opacity: 1, y: 0, scale: 1, transition: { type: 'spring', stiffness: 420, damping: 30 } },
-  exit: { opacity: 0, y: 8, scale: 0.98, transition: { duration: 0.14, ease: [0.4, 0, 1, 1] } },
+  hidden: (direction: number) => ({ opacity: 0, y: direction * 8 }),
+  visible: { opacity: 1, y: 0, transition: { duration: 0.18, ease: EASE_OUT } },
+  exit: (direction: number) => ({ opacity: 0, y: direction * 5, transition: { duration: 0.12, ease: EASE_IN } }),
+}
+
+// Волну проигрывают три группы при открытии панели, не отдельные строки.
+const groupVariants: Variants = {
+  hidden: ({ direction }: { direction: number }) => ({ opacity: 0.45, y: direction * 3 }),
+  visible: ({ index }: { index: number }) => ({
+    opacity: 1, y: 0, transition: { delay: index * 0.024, duration: 0.15, ease: EASE_OUT },
+  }),
 }
 
 const bodyVariants: Variants = {
@@ -77,29 +71,30 @@ const bodyVariants: Variants = {
   visible: {
     height: 'auto',
     opacity: 1,
-    transition: { height: { duration: 0.26, ease: [0.32, 0.72, 0, 1] }, opacity: { duration: 0.18, delay: 0.03 } },
+    transition: { height: { duration: 0.2, ease: EASE_OUT }, opacity: { duration: 0.14, delay: 0.02 } },
   },
   exit: {
     height: 0,
     opacity: 0,
-    transition: { height: { duration: 0.18, ease: [0.4, 0, 1, 1] }, opacity: { duration: 0.1 } },
+    transition: { height: { duration: 0.15, ease: EASE_IN }, opacity: { duration: 0.09 } },
   },
 }
 
 /** Визуальный тумблер (клик обрабатывает строка/плитка целиком). */
-function Switch({ on }: { on: boolean }) {
+function Switch({ on, reducedMotion }: { on: boolean; reducedMotion: boolean }) {
   return (
     <span className={`plus-switch${on ? ' plus-switch--on' : ''}`} aria-hidden="true">
       <motion.span
         className="plus-switch-thumb"
+        initial={false}
         animate={{ x: on ? 16 : 2 }}
-        transition={{ type: 'spring', stiffness: 500, damping: 30 }}
+        transition={reducedMotion ? { duration: 0 } : { type: 'spring', stiffness: 500, damping: 30 }}
       />
     </span>
   )
 }
 
-function Category({ icon, tint, label, sub, count, open, onToggle, quick, order, children }: {
+function Category({ icon, tint, label, sub, count, open, onToggle, quick, reducedMotion, children }: {
   icon: IconName
   tint: string
   label: string
@@ -108,12 +103,11 @@ function Category({ icon, tint, label, sub, count, open, onToggle, quick, order,
   open: boolean
   onToggle: () => void
   quick?: { icon: IconName; title: string; onClick: () => void }
-  /** Порядковый номер в каскаде появления панели. */
-  order: number
+  reducedMotion: boolean
   children: ReactNode
 }) {
   return (
-    <motion.div {...reveal(order)} className={`plus-cat${open ? ' plus-cat--open' : ''}`} style={{ '--cat': tint } as React.CSSProperties}>
+    <div className={`plus-cat${open ? ' plus-cat--open' : ''}`} style={{ '--cat': tint } as React.CSSProperties}>
       <div className="plus-cat-headrow">
         <button type="button" className="plus-cat-head" onClick={onToggle} aria-expanded={open}>
           <span className="plus-cat-icon"><AppIcon name={icon} size="sm" /></span>
@@ -122,7 +116,7 @@ function Category({ icon, tint, label, sub, count, open, onToggle, quick, order,
             {sub && <span className="plus-cat-sub">{sub}</span>}
           </span>
           {!!count && <span className="plus-cat-count">{count}</span>}
-          <motion.span className="plus-cat-chev" animate={{ rotate: open ? 180 : 0 }} transition={{ type: 'spring', stiffness: 400, damping: 28 }}>
+          <motion.span className="plus-cat-chev" animate={{ rotate: open ? 180 : 0 }} transition={reducedMotion ? { duration: 0 } : { duration: 0.16, ease: EASE_OUT }}>
             <AppIcon name="chevronDown" size="xs" />
           </motion.span>
         </button>
@@ -140,18 +134,18 @@ function Category({ icon, tint, label, sub, count, open, onToggle, quick, order,
       </div>
       <AnimatePresence initial={false}>
         {open && (
-          <motion.div className="plus-cat-body" variants={bodyVariants} initial="hidden" animate="visible" exit="exit">
-            <motion.div
-              className="plus-cat-inner"
-              initial={{ opacity: 0, y: -6 }}
-              animate={{ opacity: 1, y: 0, transition: { delay: 0.04, duration: 0.22, ease: EASE } }}
-            >
-              {children}
-            </motion.div>
+          <motion.div
+            className="plus-cat-body"
+            variants={bodyVariants}
+            initial={reducedMotion ? false : 'hidden'}
+            animate="visible"
+            exit={reducedMotion ? undefined : 'exit'}
+          >
+            <div className="plus-cat-inner">{children}</div>
           </motion.div>
         )}
       </AnimatePresence>
-    </motion.div>
+    </div>
   )
 }
 
@@ -191,6 +185,8 @@ export function ChatInputPlusMenu({
   const t = (ru: string, en: string) => (lang === 'en' ? en : ru)
   const [open, setOpen] = useState(false)
   const [pos, setPos] = useState<{ top: number; left: number; width: number; maxH: number; openUp: boolean } | null>(null)
+  const reducedMotion = !!useReducedMotion()
+  const direction = pos?.openUp ? 1 : -1
   const [sections, setSections] = useState<Record<SectionId, boolean>>({ files: false, skills: false, mcp: false, plugins: false, commands: false })
   const [fileQuery, setFileQuery] = useState('')
   const [fileResults, setFileResults] = useState<MentionItem[]>([])
@@ -444,28 +440,29 @@ export function ChatInputPlusMenu({
           }
           setOpen(true)
         }}
-        whileHover={{ scale: 1.06 }}
-        whileTap={{ scale: 0.94 }}
+        whileHover={reducedMotion ? undefined : { scale: 1.06 }}
+        whileTap={reducedMotion ? undefined : { scale: 0.94 }}
         transition={{ type: 'spring', stiffness: 400, damping: 18 }}
         title={t('Прикрепить / режимы / команды', 'Attach / modes / commands')}
         aria-expanded={open}
       >
-        <motion.svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" animate={{ rotate: open ? 45 : 0 }} transition={{ type: 'spring', stiffness: 400, damping: 18 }}>
+        <motion.svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" animate={{ rotate: open ? 45 : 0 }} transition={{ duration: reducedMotion ? 0 : 0.16, ease: EASE_OUT }}>
           <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
         </motion.svg>
       </motion.button>
 
       {createPortal(
-        <AnimatePresence>
+        <AnimatePresence custom={direction}>
           {open && pos && (
             <motion.div
               ref={menuRef}
               className="chat-input-plus-menu"
+              custom={direction}
               variants={panelVariants}
-              initial="hidden"
+              initial={reducedMotion ? false : 'hidden'}
               animate="visible"
-              exit="exit"
-              style={{ position: 'fixed', left: pos.left, top: pos.top, width: pos.width, maxHeight: pos.maxH, zIndex: 9999, transformOrigin: pos.openUp ? 'bottom left' : 'top left' }}
+              exit={reducedMotion ? undefined : 'exit'}
+              style={{ position: 'fixed', left: pos.left, top: pos.top, width: pos.width, maxHeight: pos.maxH, zIndex: 9999 }}
               onMouseDown={e => e.stopPropagation()}
               role="dialog"
               aria-label={t('Меню действий', 'Actions menu')}
@@ -480,348 +477,344 @@ export function ChatInputPlusMenu({
               </div>
 
               <div className="plus-scroll">
-                {/* Тумблеры режимов — две колонки; каскад слева направо, сверху вниз */}
-                <div className="plus-grid plus-grid--toggles">
-                  {toggles.map((tg, i) => (
+                {/* Тумблеры режимов — две колонки */}
+                <motion.div className="plus-grid plus-grid--toggles" variants={reducedMotion ? undefined : groupVariants} custom={{ index: 0, direction }}>
+                  {toggles.map(tg => (
                     <motion.button
                       key={tg.key}
                       type="button"
-                      {...reveal(i)}
                       transition={{ duration: 0.16, ease: 'easeOut' }}
                       className={`plus-tile${tg.on ? ' plus-tile--on' : ''}`}
                       style={{ '--cat': tg.tint } as React.CSSProperties}
                       onClick={() => tg.change?.(!tg.on)}
-                      whileHover={{ y: -1.5 }}
-                      whileTap={{ scale: 0.98 }}
+                      whileHover={reducedMotion ? undefined : { y: -1.5 }}
+                      whileTap={reducedMotion ? undefined : { scale: 0.98 }}
                       title={tg.title}
                       aria-pressed={tg.on}
                     >
                       <span className="plus-tile-icon"><AppIcon name={tg.icon} size="sm" /></span>
                       <span className="plus-tile-label">{tg.label}</span>
-                      <Switch on={tg.on} />
+                      <Switch on={tg.on} reducedMotion={reducedMotion} />
                     </motion.button>
                   ))}
-                </div>
+                </motion.div>
 
-                {/* Текстовые действия — строки на всю ширину */}
-                {onOrchestrate && (
-                  <motion.button
+                <motion.div className="plus-menu-group" variants={reducedMotion ? undefined : groupVariants} custom={{ index: 1, direction }}>
+                  {/* Текстовые действия — строки на всю ширину */}
+                  {onOrchestrate && (
+                    <button
+                      type="button"
+                      className={`plus-row plus-row--action plus-row--orchestration${orchestrationActive ? ' plus-row--on' : ''}`}
+                      style={{ '--cat': '#8b5cf6' } as React.CSSProperties}
+                      onClick={() => { onOrchestrate(); setOpen(false) }}
+                      title={t(
+                        'Один ход с отдельным исполнителем и ревьюером. Модель чата остаётся координатором',
+                        'One turn with a separate executor and reviewer. The chat model stays the coordinator'
+                      )}
+                      aria-pressed={orchestrationActive}
+                    >
+                      <span className="plus-row-icon" style={{ '--cat': '#8b5cf6' } as React.CSSProperties}><AppIcon name="layers" size="sm" /></span>
+                      <span className="plus-row-text">
+                        <span className="plus-row-label">{t('Оркестрация', 'Orchestration')}</span>
+                        <span className="plus-row-sub">{t('Исполнитель + ревьюер на один ход', 'Executor + reviewer for one turn')}</span>
+                      </span>
+                      {orchestrationActive
+                        ? <span className="plus-cat-count plus-cat-count--accent">{t('вкл', 'on')}</span>
+                        : <span className="plus-row-chev"><AppIcon name="chevronRight" size="xs" /></span>}
+                    </button>
+                  )}
+
+                  <button
                     type="button"
-                    {...reveal(4)}
-                    className={`plus-row plus-row--action plus-row--orchestration${orchestrationActive ? ' plus-row--on' : ''}`}
-                    style={{ '--cat': '#8b5cf6' } as React.CSSProperties}
-                    onClick={() => { onOrchestrate(); setOpen(false) }}
-                    title={t(
-                      'Один ход с отдельным исполнителем и ревьюером. Модель чата остаётся координатором',
-                      'One turn with a separate executor and reviewer. The chat model stays the coordinator'
-                    )}
-                    aria-pressed={orchestrationActive}
+                    className="plus-row plus-row--action"
+                    onClick={() => { onProtectedVarsClick?.(); setOpen(false) }}
+                    title={t('Секреты (IP, пароли, ключи), которые AI подставляет без вопросов', 'Secrets (IPs, passwords, keys) the AI uses without asking')}
                   >
-                    <span className="plus-row-icon" style={{ '--cat': '#8b5cf6' } as React.CSSProperties}><AppIcon name="layers" size="sm" /></span>
+                    <span className="plus-row-icon" style={{ '--cat': '#f59e0b' } as React.CSSProperties}><AppIcon name="lock" size="sm" /></span>
                     <span className="plus-row-text">
-                      <span className="plus-row-label">{t('Оркестрация', 'Orchestration')}</span>
-                      <span className="plus-row-sub">{t('Исполнитель + ревьюер на один ход', 'Executor + reviewer for one turn')}</span>
+                      <span className="plus-row-label">{t('Защищённые переменные', 'Protected variables')}</span>
+                      <span className="plus-row-sub">{t('Секреты для тулов и промпта', 'Secrets for tools and prompt')}</span>
                     </span>
-                    {orchestrationActive
-                      ? <span className="plus-cat-count plus-cat-count--accent">{t('вкл', 'on')}</span>
-                      : <span className="plus-row-chev"><AppIcon name="chevronRight" size="xs" /></span>}
-                  </motion.button>
-                )}
+                    {secretsCount > 0 && <span className="plus-cat-count">{secretsCount}</span>}
+                    <span className="plus-row-chev"><AppIcon name="chevronRight" size="xs" /></span>
+                  </button>
+                </motion.div>
 
-                <motion.button
-                  type="button"
-                  {...reveal(4)}
-                  className="plus-row plus-row--action"
-                  onClick={() => { onProtectedVarsClick?.(); setOpen(false) }}
-                  title={t('Секреты (IP, пароли, ключи), которые AI подставляет без вопросов', 'Secrets (IPs, passwords, keys) the AI uses without asking')}
-                >
-                  <span className="plus-row-icon" style={{ '--cat': '#f59e0b' } as React.CSSProperties}><AppIcon name="lock" size="sm" /></span>
-                  <span className="plus-row-text">
-                    <span className="plus-row-label">{t('Защищённые переменные', 'Protected variables')}</span>
-                    <span className="plus-row-sub">{t('Секреты для тулов и промпта', 'Secrets for tools and prompt')}</span>
-                  </span>
-                  {secretsCount > 0 && <span className="plus-cat-count">{secretsCount}</span>}
-                  <span className="plus-row-chev"><AppIcon name="chevronRight" size="xs" /></span>
-                </motion.button>
+                <div className="plus-divider" />
 
-                <motion.div className="plus-divider" {...reveal(5)} />
-
-                <Category
-                  order={6}
-                  icon="paperclip" tint="#f59e0b"
-                  label={t('Прикрепить файл', 'Attach file')}
-                  sub={t('Поиск по файлам проекта', 'Search project files')}
-                  count={attachments.length}
-                  open={sections.files}
-                  onToggle={() => toggleSection('files')}
-                  quick={{ icon: 'folder', title: t('Выбрать с диска…', 'Browse disk…'), onClick: () => { onAttachClick(); setOpen(false) } }}
-                >
-                  <motion.div className="plus-search" {...rowReveal(0)}>
-                    <AppIcon name="search" size="xs" />
-                    <input
-                      autoFocus
-                      value={fileQuery}
-                      onChange={e => setFileQuery(e.target.value)}
-                      placeholder={t('Имя файла или картинки…', 'File or image name…')}
-                      aria-label={t('Поиск файлов проекта', 'Search project files')}
-                    />
-                    {fileQuery && (
-                      <button type="button" className="plus-search-clear" onClick={() => setFileQuery('')} aria-label={t('Очистить', 'Clear')}>
-                        <AppIcon name="x" size="xs" />
-                      </button>
-                    )}
-                  </motion.div>
-                  {!fileQuery.trim() ? (
-                    <>
-                      <div className="plus-grid">
-                        <motion.button type="button" {...rowReveal(0)} className="plus-row plus-row--action" onClick={() => { onAttachClick(); setOpen(false) }}>
-                          <span className="plus-row-icon" style={{ '--cat': '#f59e0b' } as React.CSSProperties}><AppIcon name="upload" size="sm" /></span>
-                          <span className="plus-row-text">
-                            <span className="plus-row-label">{t('Выбрать с диска…', 'Browse disk…')}</span>
-                            <span className="plus-row-sub">{t('Несколько файлов через диалог', 'Multiple files via dialog')}</span>
-                          </span>
-                        </motion.button>
-                      </div>
-                      <motion.div className="plus-hint" {...rowReveal(1)}>{t('Или перетащите файлы в инпут / вставьте из буфера (Ctrl+V).', 'Or drag files onto the input / paste from clipboard (Ctrl+V).')}</motion.div>
-                    </>
-                  ) : fileLoading ? (
-                    <motion.div className="plus-hint plus-hint--busy" {...rowReveal(0)}><AppIcon name="loader" size="xs" animation="spin" />{t('Ищем файлы…', 'Searching files…')}</motion.div>
-                  ) : fileResults.length === 0 ? (
-                    <motion.div className="plus-hint" {...rowReveal(0)}>{t(`Ничего не найдено по «${fileQuery.trim()}»`, `Nothing found for “${fileQuery.trim()}”`)}</motion.div>
-                  ) : (
-                    <div className="plus-list">
-                      {fileResults.map((item, i) => {
-                        const attached = attachments.some(a => a.path && a.path === item.path)
-                        return (
-                          <motion.button
-                            key={item.id}
-                            type="button"
-                            {...rowReveal(i)}
-                            className={`plus-row${attached ? ' plus-row--attached' : ''}`}
-                            onClick={() => attachFromSearch(item)}
-                            title={item.path}
-                          >
-                            <span className="plus-row-icon" style={{ '--cat': item.type === 'image' ? '#f472b6' : '#f59e0b' } as React.CSSProperties}>
-                              <AppIcon name={item.type === 'image' ? 'image' : 'fileText'} size="sm" />
-                            </span>
+                <motion.div className="plus-menu-group" variants={reducedMotion ? undefined : groupVariants} custom={{ index: 2, direction }}>
+                  <Category
+                    reducedMotion={reducedMotion}
+                    icon="paperclip" tint="#f59e0b"
+                    label={t('Прикрепить файл', 'Attach file')}
+                    sub={t('Поиск по файлам проекта', 'Search project files')}
+                    count={attachments.length}
+                    open={sections.files}
+                    onToggle={() => toggleSection('files')}
+                    quick={{ icon: 'folder', title: t('Выбрать с диска…', 'Browse disk…'), onClick: () => { onAttachClick(); setOpen(false) } }}
+                  >
+                    <div className="plus-search">
+                      <AppIcon name="search" size="xs" />
+                      <input
+                        autoFocus
+                        value={fileQuery}
+                        onChange={e => setFileQuery(e.target.value)}
+                        placeholder={t('Имя файла или картинки…', 'File or image name…')}
+                        aria-label={t('Поиск файлов проекта', 'Search project files')}
+                      />
+                      {fileQuery && (
+                        <button type="button" className="plus-search-clear" onClick={() => setFileQuery('')} aria-label={t('Очистить', 'Clear')}>
+                          <AppIcon name="x" size="xs" />
+                        </button>
+                      )}
+                    </div>
+                    {!fileQuery.trim() ? (
+                      <>
+                        <div className="plus-grid">
+                          <button type="button" className="plus-row plus-row--action" onClick={() => { onAttachClick(); setOpen(false) }}>
+                            <span className="plus-row-icon" style={{ '--cat': '#f59e0b' } as React.CSSProperties}><AppIcon name="upload" size="sm" /></span>
                             <span className="plus-row-text">
-                              <span className="plus-row-label">{item.label}</span>
-                              <span className="plus-row-sub">{item.relPath || item.description || item.path}</span>
+                              <span className="plus-row-label">{t('Выбрать с диска…', 'Browse disk…')}</span>
+                              <span className="plus-row-sub">{t('Несколько файлов через диалог', 'Multiple files via dialog')}</span>
                             </span>
-                            {attached
-                              ? <span className="plus-row-check"><AppIcon name="check" size="xs" /></span>
-                              : <span className="plus-row-add"><AppIcon name="plus" size="xs" /></span>}
-                          </motion.button>
-                        )
-                      })}
-                    </div>
-                  )}
-                </Category>
-
-                <Category
-                  order={7}
-                  icon="sparkles" tint="#a78bfa"
-                  label={t('Прикрепить скилл', 'Attach skill')}
-                  sub={t('Инструкции в system prompt агента', 'Instructions in the agent system prompt')}
-                  count={enabledSkills}
-                  open={sections.skills}
-                  onToggle={() => toggleSection('skills')}
-                >
-                  <motion.div className="plus-search" {...rowReveal(0)}>
-                    <AppIcon name="search" size="xs" />
-                    <input
-                      autoFocus
-                      value={skillQuery}
-                      onChange={e => setSkillQuery(e.target.value)}
-                      placeholder={t('Фильтр скиллов…', 'Filter skills…')}
-                      aria-label={t('Фильтр скиллов', 'Filter skills')}
-                    />
-                    {skillQuery && (
-                      <button type="button" className="plus-search-clear" onClick={() => setSkillQuery('')} aria-label={t('Очистить', 'Clear')}>
-                        <AppIcon name="x" size="xs" />
-                      </button>
-                    )}
-                  </motion.div>
-                  {skillsLoading && skills.length === 0 ? (
-                    <motion.div className="plus-hint plus-hint--busy" {...rowReveal(0)}><AppIcon name="loader" size="xs" animation="spin" />{t('Загружаем скиллы…', 'Loading skills…')}</motion.div>
-                  ) : skillsError && skills.length === 0 ? (
-                    <motion.div className="plus-hint plus-hint--err" {...rowReveal(0)}>{skillsError}</motion.div>
-                  ) : filteredSkills.length === 0 ? (
-                    <motion.div className="plus-hint" {...rowReveal(0)}>{skills.length === 0 ? t('Скиллов пока нет — добавьте .md в .syntee/skills/', 'No skills yet — add .md files to .syntee/skills/') : t('Ничего не найдено', 'Nothing found')}</motion.div>
-                  ) : (
-                    <div className="plus-list">
-                      {filteredSkills.map((sk, i) => (
-                        <motion.button
-                          key={sk.id}
-                          type="button"
-                          {...rowReveal(i)}
-                          className={`plus-row${sk.state.enabled ? ' plus-row--on' : ''}`}
-                          style={{ '--cat': '#a78bfa' } as React.CSSProperties}
-                          onClick={() => { if (pendingSkill !== sk.id) void toggleSkill(sk) }}
-                          aria-pressed={sk.state.enabled}
-                          title={sk.description}
-                        >
-                          <span className="plus-row-icon"><AppIcon name="sparkles" size="sm" /></span>
-                          <span className="plus-row-text">
-                            <span className="plus-row-label">{sk.name}</span>
-                            <span className="plus-row-sub">{sk.description || sk.relativePath}</span>
-                          </span>
-                          <span className="plus-chip">{sk.source === 'builtin' ? t('встроенный', 'builtin') : sk.source === 'project' ? t('проект', 'project') : t('мой', 'user')}</span>
-                          {pendingSkill === sk.id
-                            ? <span className="plus-row-spin"><AppIcon name="loader" size="xs" animation="spin" /></span>
-                            : <Switch on={sk.state.enabled} />}
-                        </motion.button>
-                      ))}
-                    </div>
-                  )}
-                </Category>
-
-                <Category
-                  order={8}
-                  icon="server" tint="#22d3ee"
-                  label={t('Прикрепить MCP', 'Attach MCP')}
-                  sub={t('Внешние серверы с инструментами', 'External tool servers')}
-                  count={enabledMcp}
-                  open={sections.mcp}
-                  onToggle={() => toggleSection('mcp')}
-                >
-                  {mcpLoading && mcpServers.length === 0 ? (
-                    <motion.div className="plus-hint plus-hint--busy" {...rowReveal(0)}><AppIcon name="loader" size="xs" animation="spin" />{t('Загружаем серверы…', 'Loading servers…')}</motion.div>
-                  ) : mcpServers.length === 0 ? (
-                    <motion.div className="plus-hint" {...rowReveal(0)}>{t('MCP-серверов нет. Добавьте их в Настройки → Расширения или в .mcp.json проекта.', 'No MCP servers. Add them in Settings → Extensions or in the project .mcp.json.')}</motion.div>
-                  ) : (
-                    <div className="plus-list">
-                      {mcpServers.map((srv, i) => {
-                        const st = mcpStatus(srv)
-                        const attached = attachments.some(a => a.kind === 'mcp' && a.mcpServerId === srv.id)
-                        return (
-                          <motion.div
-                            key={srv.id}
-                            {...rowReveal(i)}
-                            className={`plus-row plus-row--mcp${srv.enabled ? ' plus-row--on' : ''}`}
-                            style={{ '--cat': '#22d3ee' } as React.CSSProperties}
-                          >
+                          </button>
+                        </div>
+                        <div className="plus-hint">{t('Или перетащите файлы в инпут / вставьте из буфера (Ctrl+V).', 'Or drag files onto the input / paste from clipboard (Ctrl+V).')}</div>
+                      </>
+                    ) : fileLoading ? (
+                      <div className="plus-hint plus-hint--busy"><AppIcon name="loader" size="xs" animation="spin" />{t('Ищем файлы…', 'Searching files…')}</div>
+                    ) : fileResults.length === 0 ? (
+                      <div className="plus-hint">{t(`Ничего не найдено по «${fileQuery.trim()}»`, `Nothing found for “${fileQuery.trim()}”`)}</div>
+                    ) : (
+                      <div className="plus-list">
+                        {fileResults.map(item => {
+                          const attached = attachments.some(a => a.path && a.path === item.path)
+                          return (
                             <button
+                              key={item.id}
                               type="button"
-                              className="plus-row-main"
-                              onClick={() => { if (pendingMcp !== srv.id) void toggleMcp(srv) }}
-                              aria-pressed={srv.enabled}
-                              title={srv.command || srv.url || srv.name}
+                              className={`plus-row${attached ? ' plus-row--attached' : ''}`}
+                              onClick={() => attachFromSearch(item)}
+                              title={item.path}
                             >
-                              <span className="plus-row-icon"><AppIcon name="server" size="sm" /></span>
+                              <span className="plus-row-icon" style={{ '--cat': item.type === 'image' ? '#f472b6' : '#f59e0b' } as React.CSSProperties}>
+                                <AppIcon name={item.type === 'image' ? 'image' : 'fileText'} size="sm" />
+                              </span>
                               <span className="plus-row-text">
-                                <span className="plus-row-label">{srv.name}</span>
+                                <span className="plus-row-label">{item.label}</span>
+                                <span className="plus-row-sub">{item.relPath || item.description || item.path}</span>
+                              </span>
+                              {attached
+                                ? <span className="plus-row-check"><AppIcon name="check" size="xs" /></span>
+                                : <span className="plus-row-add"><AppIcon name="plus" size="xs" /></span>}
+                            </button>
+                          )
+                        })}
+                      </div>
+                    )}
+                  </Category>
+
+                  <Category
+                    reducedMotion={reducedMotion}
+                    icon="sparkles" tint="#a78bfa"
+                    label={t('Прикрепить скилл', 'Attach skill')}
+                    sub={t('Инструкции в system prompt агента', 'Instructions in the agent system prompt')}
+                    count={enabledSkills}
+                    open={sections.skills}
+                    onToggle={() => toggleSection('skills')}
+                  >
+                    <div className="plus-search">
+                      <AppIcon name="search" size="xs" />
+                      <input
+                        autoFocus
+                        value={skillQuery}
+                        onChange={e => setSkillQuery(e.target.value)}
+                        placeholder={t('Фильтр скиллов…', 'Filter skills…')}
+                        aria-label={t('Фильтр скиллов', 'Filter skills')}
+                      />
+                      {skillQuery && (
+                        <button type="button" className="plus-search-clear" onClick={() => setSkillQuery('')} aria-label={t('Очистить', 'Clear')}>
+                          <AppIcon name="x" size="xs" />
+                        </button>
+                      )}
+                    </div>
+                    {skillsLoading && skills.length === 0 ? (
+                      <div className="plus-hint plus-hint--busy"><AppIcon name="loader" size="xs" animation="spin" />{t('Загружаем скиллы…', 'Loading skills…')}</div>
+                    ) : skillsError && skills.length === 0 ? (
+                      <div className="plus-hint plus-hint--err">{skillsError}</div>
+                    ) : filteredSkills.length === 0 ? (
+                      <div className="plus-hint">{skills.length === 0 ? t('Скиллов пока нет — добавьте .md в .syntee/skills/', 'No skills yet — add .md files to .syntee/skills/') : t('Ничего не найдено', 'Nothing found')}</div>
+                    ) : (
+                      <div className="plus-list">
+                        {filteredSkills.map(sk => (
+                          <button
+                            key={sk.id}
+                            type="button"
+                            className={`plus-row${sk.state.enabled ? ' plus-row--on' : ''}`}
+                            style={{ '--cat': '#a78bfa' } as React.CSSProperties}
+                            onClick={() => { if (pendingSkill !== sk.id) void toggleSkill(sk) }}
+                            aria-pressed={sk.state.enabled}
+                            title={sk.description}
+                          >
+                            <span className="plus-row-icon"><AppIcon name="sparkles" size="sm" /></span>
+                            <span className="plus-row-text">
+                              <span className="plus-row-label">{sk.name}</span>
+                              <span className="plus-row-sub">{sk.description || sk.relativePath}</span>
+                            </span>
+                            <span className="plus-chip">{sk.source === 'builtin' ? t('встроенный', 'builtin') : sk.source === 'project' ? t('проект', 'project') : t('мой', 'user')}</span>
+                            {pendingSkill === sk.id
+                              ? <span className="plus-row-spin"><AppIcon name="loader" size="xs" animation="spin" /></span>
+                              : <Switch on={sk.state.enabled} reducedMotion={reducedMotion} />}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </Category>
+
+                  <Category
+                    reducedMotion={reducedMotion}
+                    icon="server" tint="#22d3ee"
+                    label={t('Прикрепить MCP', 'Attach MCP')}
+                    sub={t('Внешние серверы с инструментами', 'External tool servers')}
+                    count={enabledMcp}
+                    open={sections.mcp}
+                    onToggle={() => toggleSection('mcp')}
+                  >
+                    {mcpLoading && mcpServers.length === 0 ? (
+                      <div className="plus-hint plus-hint--busy"><AppIcon name="loader" size="xs" animation="spin" />{t('Загружаем серверы…', 'Loading servers…')}</div>
+                    ) : mcpServers.length === 0 ? (
+                      <div className="plus-hint">{t('MCP-серверов нет. Добавьте их в Настройки → Расширения или в .mcp.json проекта.', 'No MCP servers. Add them in Settings → Extensions or in the project .mcp.json.')}</div>
+                    ) : (
+                      <div className="plus-list">
+                        {mcpServers.map(srv => {
+                          const st = mcpStatus(srv)
+                          const attached = attachments.some(a => a.kind === 'mcp' && a.mcpServerId === srv.id)
+                          return (
+                            <div
+                              key={srv.id}
+                              className={`plus-row plus-row--mcp${srv.enabled ? ' plus-row--on' : ''}`}
+                              style={{ '--cat': '#22d3ee' } as React.CSSProperties}
+                            >
+                              <button
+                                type="button"
+                                className="plus-row-main"
+                                onClick={() => { if (pendingMcp !== srv.id) void toggleMcp(srv) }}
+                                aria-pressed={srv.enabled}
+                                title={srv.command || srv.url || srv.name}
+                              >
+                                <span className="plus-row-icon"><AppIcon name="server" size="sm" /></span>
+                                <span className="plus-row-text">
+                                  <span className="plus-row-label">{srv.name}</span>
+                                  <span className={`plus-row-sub plus-row-sub--${st.tone}`}>{st.text}</span>
+                                </span>
+                                <span className={`plus-dot plus-dot--${st.tone}`} />
+                                {pendingMcp === srv.id
+                                  ? <span className="plus-row-spin"><AppIcon name="loader" size="xs" animation="spin" /></span>
+                                  : <Switch on={srv.enabled} reducedMotion={reducedMotion} />}
+                              </button>
+                              <button
+                                type="button"
+                                className={`plus-row-attach${attached ? ' plus-row-attach--done' : ''}`}
+                                onClick={() => { void attachMcpServer(srv) }}
+                                title={attached
+                                  ? t('Сервер прикреплён к сообщению', 'Server attached to the message')
+                                  : t('Прикрепить сервер к сообщению', 'Attach the server to the message')}
+                                aria-label={t('Прикрепить MCP-сервер к сообщению', 'Attach MCP server to the message')}
+                                aria-pressed={attached}
+                              >
+                                <AppIcon name={attached ? 'check' : 'paperclip'} size="xs" />
+                              </button>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
+                  </Category>
+
+                  <Category
+                    reducedMotion={reducedMotion}
+                    icon="puzzle" tint="#f472b6"
+                    label={t('Подключить плагин', 'Connect plugin')}
+                    sub={t('Локальные расширения с тулами', 'Local extensions with tools')}
+                    count={enabledPlugins}
+                    open={sections.plugins}
+                    onToggle={() => toggleSection('plugins')}
+                  >
+                    {pluginsLoading && plugins.length === 0 ? (
+                      <div className="plus-hint plus-hint--busy"><AppIcon name="loader" size="xs" animation="spin" />{t('Загружаем плагины…', 'Loading plugins…')}</div>
+                    ) : plugins.length === 0 ? (
+                      <div className="plus-hint">{t('Плагинов нет. Установите их в Настройки → Расширения.', 'No plugins. Install them in Settings → Extensions.')}</div>
+                    ) : (
+                      <div className="plus-list">
+                        {plugins.map(pl => {
+                          const st = pluginStatus(pl)
+                          return (
+                            <button
+                              key={pl.id}
+                              type="button"
+                              className={`plus-row${pl.state.enabled ? ' plus-row--on' : ''}`}
+                              style={{ '--cat': '#f472b6' } as React.CSSProperties}
+                              onClick={() => { if (pendingPlugin !== pl.id) void togglePlugin(pl) }}
+                              aria-pressed={pl.state.enabled}
+                              title={pl.manifest.name}
+                            >
+                              <span className="plus-row-icon"><AppIcon name="puzzle" size="sm" /></span>
+                              <span className="plus-row-text">
+                                <span className="plus-row-label">{pl.manifest.name}</span>
                                 <span className={`plus-row-sub plus-row-sub--${st.tone}`}>{st.text}</span>
                               </span>
                               <span className={`plus-dot plus-dot--${st.tone}`} />
-                              {pendingMcp === srv.id
+                              {pendingPlugin === pl.id
                                 ? <span className="plus-row-spin"><AppIcon name="loader" size="xs" animation="spin" /></span>
-                                : <Switch on={srv.enabled} />}
+                                : <Switch on={pl.state.enabled} reducedMotion={reducedMotion} />}
                             </button>
-                            <button
-                              type="button"
-                              className={`plus-row-attach${attached ? ' plus-row-attach--done' : ''}`}
-                              onClick={() => { void attachMcpServer(srv) }}
-                              title={attached
-                                ? t('Сервер прикреплён к сообщению', 'Server attached to the message')
-                                : t('Прикрепить сервер к сообщению', 'Attach the server to the message')}
-                              aria-label={t('Прикрепить MCP-сервер к сообщению', 'Attach MCP server to the message')}
-                              aria-pressed={attached}
-                            >
-                              <AppIcon name={attached ? 'check' : 'paperclip'} size="xs" />
-                            </button>
-                          </motion.div>
-                        )
-                      })}
-                    </div>
-                  )}
-                </Category>
+                          )
+                        })}
+                      </div>
+                    )}
+                  </Category>
 
-                <Category
-                  order={9}
-                  icon="puzzle" tint="#f472b6"
-                  label={t('Подключить плагин', 'Connect plugin')}
-                  sub={t('Локальные расширения с тулами', 'Local extensions with tools')}
-                  count={enabledPlugins}
-                  open={sections.plugins}
-                  onToggle={() => toggleSection('plugins')}
-                >
-                  {pluginsLoading && plugins.length === 0 ? (
-                    <motion.div className="plus-hint plus-hint--busy" {...rowReveal(0)}><AppIcon name="loader" size="xs" animation="spin" />{t('Загружаем плагины…', 'Loading plugins…')}</motion.div>
-                  ) : plugins.length === 0 ? (
-                    <motion.div className="plus-hint" {...rowReveal(0)}>{t('Плагинов нет. Установите их в Настройки → Расширения.', 'No plugins. Install them in Settings → Extensions.')}</motion.div>
-                  ) : (
-                    <div className="plus-list">
-                      {plugins.map((pl, i) => {
-                        const st = pluginStatus(pl)
-                        return (
-                          <motion.button
-                            key={pl.id}
-                            type="button"
-                            {...rowReveal(i)}
-                            className={`plus-row${pl.state.enabled ? ' plus-row--on' : ''}`}
-                            style={{ '--cat': '#f472b6' } as React.CSSProperties}
-                            onClick={() => { if (pendingPlugin !== pl.id) void togglePlugin(pl) }}
-                            aria-pressed={pl.state.enabled}
-                            title={pl.manifest.name}
-                          >
-                            <span className="plus-row-icon"><AppIcon name="puzzle" size="sm" /></span>
-                            <span className="plus-row-text">
-                              <span className="plus-row-label">{pl.manifest.name}</span>
-                              <span className={`plus-row-sub plus-row-sub--${st.tone}`}>{st.text}</span>
-                            </span>
-                            <span className={`plus-dot plus-dot--${st.tone}`} />
-                            {pendingPlugin === pl.id
-                              ? <span className="plus-row-spin"><AppIcon name="loader" size="xs" animation="spin" /></span>
-                              : <Switch on={pl.state.enabled} />}
-                          </motion.button>
-                        )
-                      })}
+                  <Category
+                    reducedMotion={reducedMotion}
+                    icon="terminal" tint="#34d399"
+                    label={t('Команды', 'Commands')}
+                    sub={t('Вставить slash-команду в инпут', 'Insert a slash command into the input')}
+                    count={commands.length}
+                    open={sections.commands}
+                    onToggle={() => toggleSection('commands')}
+                  >
+                    <div className="plus-grid plus-grid--commands">
+                      {commands.map(cmd => (
+                        <motion.button
+                          key={cmd.name}
+                          type="button"
+                          transition={{ duration: 0.16, ease: 'easeOut' }}
+                          className="plus-cmd"
+                          style={{ '--cat': '#34d399' } as React.CSSProperties}
+                          onClick={() => { onInsertCommand?.(cmd); setOpen(false) }}
+                          whileHover={reducedMotion ? undefined : { y: -1.5 }}
+                          whileTap={reducedMotion ? undefined : { scale: 0.98 }}
+                          title={cmd.description}
+                        >
+                          <span className="plus-cmd-icon"><AppIcon name={cmd.icon as IconName} size="sm" /></span>
+                          <span className="plus-cmd-text">
+                            <span className="plus-cmd-label">{cmd.label}</span>
+                            <span className="plus-cmd-desc">{cmd.description}</span>
+                          </span>
+                        </motion.button>
+                      ))}
                     </div>
-                  )}
-                </Category>
-
-                <Category
-                  order={10}
-                  icon="terminal" tint="#34d399"
-                  label={t('Команды', 'Commands')}
-                  sub={t('Вставить slash-команду в инпут', 'Insert a slash command into the input')}
-                  count={commands.length}
-                  open={sections.commands}
-                  onToggle={() => toggleSection('commands')}
-                >
-                  <div className="plus-grid plus-grid--commands">
-                    {commands.map((cmd, i) => (
-                      <motion.button
-                        key={cmd.name}
-                        type="button"
-                        {...rowReveal(i)}
-                        transition={{ duration: 0.16, ease: 'easeOut' }}
-                        className="plus-cmd"
-                        style={{ '--cat': '#34d399' } as React.CSSProperties}
-                        onClick={() => { onInsertCommand?.(cmd); setOpen(false) }}
-                        whileHover={{ y: -1.5 }}
-                        whileTap={{ scale: 0.98 }}
-                        title={cmd.description}
-                      >
-                        <span className="plus-cmd-icon"><AppIcon name={cmd.icon as IconName} size="sm" /></span>
-                        <span className="plus-cmd-text">
-                          <span className="plus-cmd-label">{cmd.label}</span>
-                          <span className="plus-cmd-desc">{cmd.description}</span>
-                        </span>
-                      </motion.button>
-                    ))}
-                  </div>
-                </Category>
+                  </Category>
+                </motion.div>
               </div>
 
               <AnimatePresence>
                 {notice && (
                   <motion.div
                     className="plus-notice"
-                    initial={{ opacity: 0, y: 8 }}
+                    initial={reducedMotion ? false : { opacity: 0, y: 8 }}
                     animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: 8 }}
+                    exit={reducedMotion ? undefined : { opacity: 0, y: 8 }}
                     transition={{ duration: 0.16 }}
                     role="status"
                   >

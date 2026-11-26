@@ -686,6 +686,12 @@
   scrollbar-width: thin;
   scrollbar-color: color-mix(in srgb, var(--accent) 30%, transparent) transparent;
 }
+.plus-menu-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 0 0 auto;
+}
 .plus-scroll::-webkit-scrollbar,
 .plus-list::-webkit-scrollbar { width: 8px; }
 .plus-scroll::-webkit-scrollbar-track,
