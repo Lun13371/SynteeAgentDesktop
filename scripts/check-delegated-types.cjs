@@ -7,14 +7,14 @@ const normalize = p => path.resolve(p).replace(/\\/g, '/').toLowerCase()
 const changed = [
   'src/core/agent/Agent.ts', 'src/core/agent/injectionGuard.ts', 'src/core/agent/toolDispatcher.ts',
   'src/core/agent/types.ts', 'src/core/agent/utils.ts', 'src/core/db/migrations/index.ts',
-  'src/core/prompts/sections/codeModeSection.ts', 'src/core/tools/schemas/index.ts',
+  'src/core/prompts/sections/codeModeSection.ts', 'src/shared/toolSchemas/index.ts',
   'src/main/ipc/chat.ipc.ts', 'src/main/workers/ai-worker.ts',
   'src/renderer/src/components/ui/ToolChain/ToolResultRenderer.tsx', 'src/renderer/src/hooks/useRunStatus.ts',
   'src/shared/modes.ts', 'src/shared/toolMeta.ts',
 ]
 const added = new Set([
   'src/core/db/delegatedChats.ts', 'src/core/db/migrations/delegatedChats.ts',
-  'src/core/tools/schemas/chats.ts', 'src/main/services/delegatedChats.ts', 'src/shared/delegatedChats.ts',
+  'src/shared/toolSchemas/chats.ts', 'src/main/services/delegatedChats.ts', 'src/shared/delegatedChats.ts',
 ].map(normalize))
 const original = new Map(changed.map(p => [normalize(p), cp.execFileSync('git', ['show', `HEAD:${p}`], { encoding: 'utf8' })]))
 function check(config, baseline) {

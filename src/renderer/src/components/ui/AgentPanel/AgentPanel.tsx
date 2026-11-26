@@ -5,6 +5,7 @@ import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import AppIcon, { type IconName } from '../AppIcon/AppIcon'
+import AgentOrb from '../AgentOrb/AgentOrb'
 import ToolChain from '../ToolChain/ToolChain'
 import { getSubagentRole } from '../../../../../shared/subagent-roles'
 import { getToolMeta } from '../../../../../shared/toolMeta'
@@ -293,12 +294,7 @@ const AgentStreamCard = memo(function AgentStreamCard({ agent, expanded, onToggl
         {/* Заголовок — всегда виден */}
         <div className="agent-stream-card__header" onClick={onToggle}>
           <div className="agent-stream-card__status-icon">
-            <AppIcon
-              name={agent.status === 'running' ? 'loader' : agent.status === 'done' ? 'check' : agent.status === 'error' ? 'x' : agent.status === 'cancelled' ? 'archive' : 'clock'}
-              size="xs"
-              tone={agent.status === 'done' ? 'success' : agent.status === 'error' ? 'danger' : agent.status === 'running' ? 'accent' : 'muted'}
-              animation={agent.status === 'running' ? 'spin' : 'none'}
-            />
+            <AgentOrb role={agent.role} status={agent.status} size={18} />
           </div>
           <span className="agent-stream-card__task" title={agent.task}>{agent.task}</span>
           {statusText ? (

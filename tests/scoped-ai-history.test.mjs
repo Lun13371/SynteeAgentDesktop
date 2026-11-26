@@ -8,14 +8,19 @@ import Database from 'better-sqlite3'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const chatSource = fs.readFileSync(path.join(root, 'src/main/ipc/chat.ipc.ts'), 'utf8')
+// С распила chat.ipc.ts на модули (801a59d) getLiveMessages живёт в
+// chatCompaction.ts, а send-путь — в chatSendEngine.ts. Раньше тест искал
+// их в chat.ipc.ts и падал.
+const compactionSource = fs.readFileSync(path.join(root, 'src/main/ipc/chatCompaction.ts'), 'utf8')
+const sendEngineSource = fs.readFileSync(path.join(root, 'src/main/ipc/chatSendEngine.ts'), 'utf8')
 const dbSource = fs.readFileSync(path.join(root, 'src/core/db/messages.ts'), 'utf8')
 
 function ephemeralFilter() {
-  const start = chatSource.indexOf('function getLiveMessages(')
-  const end = chatSource.indexOf('\n}', start) + 2
+  const start = compactionSource.indexOf('export function getLiveMessages(')
+  const end = compactionSource.indexOf('\n}', start) + 2
   assert.ok(start >= 0 && end > start)
-  const fn = chatSource.slice(start, end).replace(/: Message\[\]/g, '')
-  return vm.runInNewContext(`(${fn.replace(/^function getLiveMessages/, 'function')})`)
+  const fn = compactionSource.slice(start, end).replace(/: Message\[\]/g, '')
+  return vm.runInNewContext(`(${fn.replace(/^export function getLiveMessages/, 'function')})`)
 }
 
 test('ephemeral history preserves passed messages and filters compact boundary', () => {
@@ -47,7 +52,7 @@ test('persistent scoped SQL excludes just-saved current user and retains system 
 })
 
 test('send path uses ephemeral supplied history and persistent exclusion; send prompt is snapshotted once', () => {
-  assert.match(chatSource, /params\.incognito\s*\?\s*getLiveMessages\(history\)\s*:\s*filterContextHistory\(params\.chatId,\s*getMessagesAfterLatestCompactCached\(params\.chatId, userMsg\.id\),\s*userMsg\.id\)/)
-  assert.equal((chatSource.match(/const sendSystemPrompt = params\.sideChatParentId[\s\S]{0,100}await getSystemPrompt\(/g) ?? []).length, 1)
-  assert.match(chatSource, /systemPrompt = sendSystemPrompt/)
+  assert.match(sendEngineSource, /params\.incognito\s*\?\s*getLiveMessages\(history\)\s*:\s*filterContextHistory\(params\.chatId,\s*getMessagesAfterLatestCompactCached\(params\.chatId, userMsg\.id\),\s*userMsg\.id\)/)
+  assert.equal((sendEngineSource.match(/const sendSystemPrompt = params\.sideChatParentId[\s\S]{0,100}await getSystemPrompt\(/g) ?? []).length, 1)
+  assert.match(sendEngineSource, /systemPrompt = sendSystemPrompt/)
 })

@@ -10,7 +10,8 @@
 //! проиндексированными — поэтому паритет закреплён тестом
 //! `tests/semantic-parity.test.cjs`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use ort::environment::Environment;
@@ -41,6 +42,50 @@ pub const E5_MODEL_TAG: &str = "Xenova/multilingual-e5-small@q8-rust";
 const INTRA_OP_THREADS: usize = 2;
 const INTER_OP_THREADS: usize = 1;
 
+/// Потоки эмбеддера переопределяются средой SYNTEE_SEMANTIC_THREADS (1..16).
+/// Sidecar спавнится из TS со значением 4: догрев карты идёт заметно быстрее,
+/// а политика «уступить foreground» остаётся на стороне планировщика TS.
+fn semantic_intra_threads() -> usize {
+    std::env::var("SYNTEE_SEMANTIC_THREADS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&t| (1..=16).contains(&t))
+        .unwrap_or(INTRA_OP_THREADS)
+}
+
+/// Где считать E5-инференс.
+///
+/// `SYNTEE_SEMANTIC_DEVICE`: `auto` (по умолчанию) — сначала DirectML, при
+/// неудаче CPU; `cpu` — всегда CPU; `gpu`/`directml` — DirectML с откатом на
+/// CPU, если адаптера нет. DirectML — нативный GPU-бэкенд Windows: любая
+/// DX12-карта (NVIDIA/AMD/Intel), никакого CUDA-тулкита. Ограничение против
+/// «жрёт видяху во время игры»: у GPU нет аналога BELOW_NORMAL-приоритета,
+/// поэтому авто-режим включается осознанно.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SemanticDevice {
+    Auto,
+    Cpu,
+    Gpu,
+}
+
+fn semantic_device() -> SemanticDevice {
+    let value = std::env::var("SYNTEE_SEMANTIC_DEVICE").unwrap_or_default();
+    match value.trim() {
+        "cpu" => SemanticDevice::Cpu,
+        "gpu" | "directml" | "dml" => SemanticDevice::Gpu,
+        _ => SemanticDevice::Auto,
+    }
+}
+
+/// Провайдер, которым реально поднята последняя сессия (`directml`/`cpu`),
+/// `unknown` — пока модель не загружена. Отдаётся в `health`, чтобы настройки
+/// показывали, что выбрал авто-режим.
+static ACTIVE_DEVICE: OnceLock<&'static str> = OnceLock::new();
+
+pub fn active_device() -> &'static str {
+    ACTIVE_DEVICE.get().copied().unwrap_or("unknown")
+}
+
 /// Лимит токенов на вход — `model_max_length` E5 (позиционных эмбеддингов 514).
 const MAX_TOKENS: usize = 512;
 
@@ -68,6 +113,10 @@ impl EmbedPrefix {
 pub struct E5Embedder {
     session: Mutex<Session>,
     tokenizer: Tokenizer,
+    /// Путь модели — нужен, чтобы пересобрать сессию на CPU при откате DML.
+    model_path: PathBuf,
+    /// Активен ли DirectML; снимается при первой ошибке инференса (fallback).
+    dml: AtomicBool,
 }
 
 /// ONNX-окружение — одно на процесс и живёт до конца работы sidecar.
@@ -94,6 +143,71 @@ fn shared_environment() -> Result<&'static Environment> {
         .ok_or_else(|| SidecarError::Model("onnx environment unavailable".to_owned()))
 }
 
+/// Поднимает ONNX-сессию под выбранный провайдер.
+///
+/// DML запрашивается и для `Gpu`, и для `Auto`; не поднявшаяся GPU-сессия —
+/// не ошибка, а откат на CPU: сломанный слой семантики хуже медленного.
+/// DirectML EP требует отключённого memory pattern (ограничение EP).
+/// Возвращает `(сессия, работает ли DirectML)`.
+fn build_session(
+    environment: &Environment,
+    model_path: &Path,
+    device: SemanticDevice,
+) -> Result<(Session, bool)> {
+    if cfg!(windows) && device != SemanticDevice::Cpu {
+        match build_session_inner(environment, model_path, true) {
+            Ok(session) => return Ok((session, true)),
+            Err(error) => {
+                eprintln!(
+                    "[semantic] DirectML недоступен ({error}); откат на CPU"
+                );
+            }
+        }
+    }
+    let session = build_session_inner(environment, model_path, false)?;
+    Ok((session, false))
+}
+
+fn build_session_inner(
+    environment: &Environment,
+    model_path: &Path,
+    dml: bool,
+) -> Result<Session> {
+    let mut builder = Session::builder(environment)
+        .map_err(|error| SidecarError::Model(format!("session builder: {error}")))?
+        .with_intra_threads(semantic_intra_threads())
+        .map_err(|error| SidecarError::Model(format!("intra threads: {error}")))?
+        .with_inter_threads(INTER_OP_THREADS)
+        .map_err(|error| SidecarError::Model(format!("inter threads: {error}")))?;
+    // Арена процессора держит освобождённые блоки под себя: в простое это
+    // десятки мегабайт «мусора», которые видно в RSS. Для одного короткого
+    // прогона на текст аллокатор и так дешёвый.
+    if let Ok(next) = builder.clone().with_config_entry("session.use_env_allocators", "0") {
+        builder = next;
+    }
+    if dml {
+        #[cfg(windows)]
+        {
+            builder = builder
+                .with_execution_providers([ort::ep::DirectML::default().build()])
+                .map_err(|error| SidecarError::Model(format!("directml provider: {error}")))?
+                .with_memory_pattern(false)
+                .map_err(|error| SidecarError::Model(format!("memory pattern: {error}")))?;
+        }
+    }
+    builder
+        .with_optimization_level(ort::session::builder::GraphOptimizationLevel::Level3)
+        .map_err(|error| SidecarError::Model(format!("optimization level: {error}")))?
+        // Сессионный пул: тот же отказ от busy-wait + FTZ (ключи ORT;
+        // дублируют глобальные настройки — покрывают оба вида пула).
+        .with_config_entry("session.intra_op.allow_spinning", "0")
+        .map_err(|error| SidecarError::Model(format!("intra spinning: {error}")))?
+        .with_config_entry("session.set_denormal_as_zero", "1")
+        .map_err(|error| SidecarError::Model(format!("denormal as zero: {error}")))?
+        .commit_from_file(model_path)
+        .map_err(|error| SidecarError::Model(format!("load model: {error}")))
+}
+
 impl E5Embedder {
     /// Загружает модель и токенизатор с диска.
     ///
@@ -114,24 +228,19 @@ impl E5Embedder {
         }
 
         let environment = shared_environment()?;
-
-        let mut builder = Session::builder(environment)
-            .map_err(|error| SidecarError::Model(format!("session builder: {error}")))?
-            .with_intra_threads(INTRA_OP_THREADS)
-            .map_err(|error| SidecarError::Model(format!("intra threads: {error}")))?
-            .with_inter_threads(INTER_OP_THREADS)
-            .map_err(|error| SidecarError::Model(format!("inter threads: {error}")))?;
-        // Арена процессора держит освобождённые блоки под себя: в простое это
-        // десятки мегабайт «мусора», которые видно в RSS. Для одного короткого
-        // прогона на текст аллокатор и так дешёвый.
-        if let Ok(next) = builder.clone().with_config_entry("session.use_env_allocators", "0") {
-            builder = next;
-        }
-        let session = builder
-            .with_optimization_level(ort::session::builder::GraphOptimizationLevel::Level3)
-            .map_err(|error| SidecarError::Model(format!("optimization level: {error}")))?
-            .commit_from_file(model_path)
-            .map_err(|error| SidecarError::Model(format!("load model: {error}")))?;
+        let device = semantic_device();
+        let (session, dml) = build_session(environment, model_path, device)?;
+        // Лог фактического выбора: auto может откатиться на CPU.
+        eprintln!(
+            "[semantic] device: {} → {}",
+            match device {
+                SemanticDevice::Auto => "auto",
+                SemanticDevice::Cpu => "cpu",
+                SemanticDevice::Gpu => "gpu",
+            },
+            if dml { "directml" } else { "cpu" }
+        );
+        let _ = ACTIVE_DEVICE.set(if dml { "directml" } else { "cpu" });
 
         let tokenizer = Tokenizer::from_file(tokenizer_path)
             .map_err(|error| SidecarError::Model(format!("load tokenizer: {error}")))?;
@@ -139,72 +248,191 @@ impl E5Embedder {
         Ok(Self {
             session: Mutex::new(session),
             tokenizer,
+            model_path: model_path.to_path_buf(),
+            dml: AtomicBool::new(dml),
         })
     }
 
     /// Считает эмбеддинг одного текста.
+    ///
+    /// Это батч из одного элемента: [1, seq] — та же математика, что и раньше,
+    /// но единый путь инференса с откатом DirectML→CPU.
     pub fn embed(&self, text: &str, prefix: EmbedPrefix) -> Result<Vec<f32>> {
-        let prompt = format!("{}: {}", prefix.as_str(), text);
-        let encoding = self
-            .tokenizer
-            .encode(prompt, true)
-            .map_err(|error| SidecarError::Model(format!("tokenize: {error}")))?;
+        let mut out = self.embed_batch(&[text.to_string()], prefix)?;
+        Ok(out.pop().expect("single text embedded"))
+    }
 
-        let mut ids: Vec<i64> = encoding.get_ids().iter().map(|v| i64::from(*v)).collect();
-        let mut mask: Vec<i64> = encoding
-            .get_attention_mask()
-            .iter()
-            .map(|v| i64::from(*v))
-            .collect();
-        if ids.len() > MAX_TOKENS {
-            ids.truncate(MAX_TOKENS);
-            mask.truncate(MAX_TOKENS);
+    /// Считает эмбеддинги пачки текстов. На DirectML тексты среза паддятся к
+    /// общей длине и гоняются ОДНИМ сеансом [B, L] — в разы меньше запусков
+    /// модели, чем по-текстовый [1, seq]. На CPU срез всегда один текст —
+    /// вектор не зависит от соседей (см. комментарий про q8-квантизацию ниже).
+    ///
+    /// Срезы ограничены бюджетом токенов (B×L ≤ MAX_BATCH_TOKENS) и числом
+    /// текстов, чтобы hidden-тензор [B, L, 384] не пиковал в сотни мегабайт.
+    pub fn embed_batch(&self, texts: &[String], prefix: EmbedPrefix) -> Result<Vec<Vec<f32>>> {
+        let mut encoded: Vec<(Vec<i64>, Vec<i64>)> = Vec::with_capacity(texts.len());
+        for text in texts {
+            let prompt = format!("{}: {}", prefix.as_str(), text);
+            let encoding = self
+                .tokenizer
+                .encode(prompt, true)
+                .map_err(|error| SidecarError::Model(format!("tokenize: {error}")))?;
+            let mut ids: Vec<i64> = encoding.get_ids().iter().map(|v| i64::from(*v)).collect();
+            let mut mask: Vec<i64> = encoding
+                .get_attention_mask()
+                .iter()
+                .map(|v| i64::from(*v))
+                .collect();
+            if ids.len() > MAX_TOKENS {
+                ids.truncate(MAX_TOKENS);
+                mask.truncate(MAX_TOKENS);
+            }
+            if ids.is_empty() {
+                return Err(SidecarError::Model("empty token sequence".to_owned()));
+            }
+            encoded.push((ids, mask));
         }
-        let seq = ids.len();
-        if seq == 0 {
-            return Err(SidecarError::Model("empty token sequence".to_owned()));
+
+        // Сортировка индексов по длине перед нарезкой: в срез попадают тексты
+        // близкой длины, паддинг внутри среза минимален. Смешанный срез паддил
+        // каждую короткую строку до самой длинной — до 2-4× лишних вычислений
+        // на паддинг. Порядок результатов восстанавливается по исходным
+        // индексам, mean-pool отрезает падд по маске.
+        //
+        // ⚠️ Батчинг разрешён только на DirectML. У q8-модели DynamicQuantize
+        // считает scale по ВСЕМУ тензору: соседние тексты в срезе меняют
+        // квантование каждой строки — вектор текста зависит от состава батча
+        // (замер 16.11.2026: same-text cosine 0.996-0.998 против single-run).
+        // Это ломало паритет с JS-эталоном и детерминизм «тот же хэш — тот же
+        // вектор», поэтому на CPU срез = один текст [1, len] без паддинга —
+        // ровно как в JS. На GPU арифметика fp и так отличается от CPU
+        // (пользователь осознанно включил GPU), батчинг даёт 3×.
+        let mut order: Vec<usize> = (0..encoded.len()).collect();
+        order.sort_by_key(|&i| std::cmp::Reverse(encoded[i].0.len()));
+
+        let mut out: Vec<Option<Vec<f32>>> = (0..encoded.len()).map(|_| None).collect();
+        let batch_cap = if self.dml.load(Ordering::Relaxed) { MAX_BATCH_TEXTS } else { 1 };
+        let mut index = 0;
+        while index < order.len() {
+            // Срез: сумма длин в бюджете токенов; минимум 1 текст в срезе.
+            let mut end = index;
+            let mut budget = 0usize;
+            while end < order.len() && end - index < batch_cap {
+                let len = encoded[order[end]].0.len().max(1);
+                if end > index && budget + len > MAX_BATCH_TOKENS {
+                    break;
+                }
+                budget += len;
+                end += 1;
+            }
+            let slice = &order[index..end];
+            let seq = slice.iter().map(|&i| encoded[i].0.len()).max().unwrap_or(1).max(1);
+            let batch = slice.len();
+
+            let mut input_ids = Vec::with_capacity(batch * seq);
+            let mut attention = Vec::with_capacity(batch * seq);
+            let mut token_types = Vec::with_capacity(batch * seq);
+            for &orig in slice {
+                let (ids, mask) = &encoded[orig];
+                input_ids.extend_from_slice(ids);
+                attention.extend_from_slice(mask);
+                token_types.extend(std::iter::repeat(0i64).take(seq));
+                let pad = seq - ids.len();
+                input_ids.extend(std::iter::repeat(0i64).take(pad));
+                attention.extend(std::iter::repeat(0i64).take(pad));
+            }
+
+            let hidden = self.run_batch(batch, seq, input_ids, attention, token_types)?;
+
+            // Mean-pool по строкам: base строки в плоском [B, L, H] = row*L*H;
+            // падд-позиции отрезаны длиной реального текста (len < L).
+            for (row, &orig) in slice.iter().enumerate() {
+                let (ids, mask) = &encoded[orig];
+                let len = ids.len();
+                let row_base = row * seq * E5_DIM;
+                let flat = &hidden[row_base..row_base + len * E5_DIM];
+                out[orig] = Some(mean_pool_normalized(flat, mask, len));
+            }
+
+            index = end;
         }
-        let token_types = vec![0i64; seq];
-        let shape = vec![1i64, seq as i64];
+        Ok(out.into_iter().map(|v| v.expect("every text embedded")).collect())
+    }
 
-        let input_ids = Tensor::from_array((shape.clone(), ids))
-            .map_err(|error| SidecarError::Model(format!("input_ids tensor: {error}")))?;
-        let attention = Tensor::from_array((shape.clone(), mask.clone()))
-            .map_err(|error| SidecarError::Model(format!("attention_mask tensor: {error}")))?;
-        let token_type_ids = Tensor::from_array((shape, token_types))
-            .map_err(|error| SidecarError::Model(format!("token_type_ids tensor: {error}")))?;
-
+    /// Один прогон батча [B, L]: тензоры → инференс → плоский hidden [B·L·H].
+    ///
+    /// При ошибке инференса на DirectML (устаревший драйвер, отвалившееся
+    /// устройство, не хватило VRAM) сессия один раз пересобирается на CPU:
+    /// индексация не должна умирать из-за видеопамяти.
+    fn run_batch(
+        &self,
+        batch: usize,
+        seq: usize,
+        input_ids: Vec<i64>,
+        attention: Vec<i64>,
+        token_types: Vec<i64>,
+    ) -> Result<Vec<f32>> {
+        let shape = vec![batch as i64, seq as i64];
         let mut session = self
             .session
             .lock()
             .map_err(|_| SidecarError::Model("session lock poisoned".to_owned()))?;
-        let outputs = session
-            .run(ort::inputs![
-                "input_ids" => input_ids,
-                "attention_mask" => attention,
-                "token_type_ids" => token_type_ids,
-            ])
-            .map_err(|error| SidecarError::Model(format!("inference: {error}")))?;
-
-        let vector = {
-            let (_, hidden) = outputs["last_hidden_state"]
-                .try_extract_tensor::<f32>()
-                .map_err(|error| SidecarError::Model(format!("extract output: {error}")))?;
-            mean_pool_normalized(hidden, &mask, seq)
+        let hidden = match run_locked(&mut session, &shape, &input_ids, &attention, &token_types) {
+            Ok(hidden) => hidden,
+            Err(error) => {
+                if !self.dml.swap(false, Ordering::SeqCst) {
+                    return Err(error);
+                }
+                eprintln!(
+                    "[semantic] инференс на DirectML упал ({error}); пересобираю сессию на CPU"
+                );
+                let environment = shared_environment()?;
+                let (fresh, _) = build_session(environment, &self.model_path, SemanticDevice::Cpu)?;
+                *session = fresh;
+                run_locked(&mut session, &shape, &input_ids, &attention, &token_types)?
+            }
         };
-
-        Ok(vector)
-    }
-
-    /// Считает эмбеддинги пачки текстов (последовательно, один сеанс модели).
-    pub fn embed_batch(&self, texts: &[String], prefix: EmbedPrefix) -> Result<Vec<Vec<f32>>> {
-        let mut out = Vec::with_capacity(texts.len());
-        for text in texts {
-            out.push(self.embed(text, prefix)?);
-        }
-        Ok(out)
+        Ok(hidden)
     }
 }
+
+/// Блокирует сессию, гоняет батч и забирает `last_hidden_state` во владение.
+fn run_locked(
+    session: &mut Session,
+    shape: &[i64],
+    input_ids: &[i64],
+    attention: &[i64],
+    token_types: &[i64],
+) -> Result<Vec<f32>> {
+    let shape = shape.to_vec();
+    let input_ids = Tensor::from_array((shape.clone(), input_ids.to_vec()))
+        .map_err(|error| SidecarError::Model(format!("input_ids tensor: {error}")))?;
+    let attention = Tensor::from_array((shape.clone(), attention.to_vec()))
+        .map_err(|error| SidecarError::Model(format!("attention tensor: {error}")))?;
+    let token_type_ids = Tensor::from_array((shape, token_types.to_vec()))
+        .map_err(|error| SidecarError::Model(format!("token_type_ids tensor: {error}")))?;
+
+    let outputs = session
+        .run(ort::inputs![
+            "input_ids" => input_ids,
+            "attention_mask" => attention,
+            "token_type_ids" => token_type_ids,
+        ])
+        .map_err(|error| SidecarError::Model(format!("inference: {error}")))?;
+    let (_, hidden) = outputs["last_hidden_state"]
+        .try_extract_tensor::<f32>()
+        .map_err(|error| SidecarError::Model(format!("extract output: {error}")))?;
+    Ok(hidden.to_vec())
+}
+
+/// Бюджет токенов одного сеанса модели (B×L). 8192 при L≤512 — компромисс
+/// между утилизацией батчинга и пиком памяти hidden-тензора. На CPU не
+/// действует: там срез всегда один текст.
+const MAX_BATCH_TOKENS: usize = 8192;
+/// С отсортированными по длине срезами паддинг не растёт с B — можно брать
+/// больше текстов на прогон: меньше накладных расходов на session.run.
+/// Только DirectML; CPU ограничен единицей ради паритета с JS-эталоном.
+const MAX_BATCH_TEXTS: usize = 64;
 
 /// Mean-pooling по attention_mask + L2-нормализация.
 ///

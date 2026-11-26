@@ -130,15 +130,22 @@ export default function UserCard() {
           <Identicon
             seed={user.id || user.email}
             src={user.avatar_url}
-            size={30}
+            size={26}
             alt={displayName}
           />
           <div className="usercard-info">
-            <div className="usercard-name">{displayName}</div>
-            <div className="usercard-email">{handle}</div>
+            <div className="usercard-name" title={user.email}>{displayName}</div>
           </div>
-          <AppIcon name={panelOpen ? 'chevronDown' : 'chevronRight'} size="xs" tone="muted" />
         </motion.button>
+        <button
+          type="button"
+          className="usercard-quick"
+          onClick={handleSettings}
+          title="Настройки"
+          aria-label="Настройки"
+        >
+          <AppIcon name="settings" size="sm" />
+        </button>
       </div>
 
       {createPortal(
@@ -164,22 +171,24 @@ export default function UserCard() {
                 <Identicon
                   seed={user.id || user.email}
                   src={user.avatar_url}
-                  size={40}
+                  size={36}
                   alt={displayName}
                 />
                 <div className="usercard-panel-user">
                   <div className="usercard-panel-name">{displayName}</div>
                   <div className="usercard-panel-email">{handle}</div>
-                  {balanceVal !== undefined && (
-                    <div className="usercard-panel-balance">
-                      <span className="usercard-panel-balance-value">${balanceVal.toFixed(4)}</span>
-                      {heldVal > 0 && (
-                        <span className="usercard-panel-balance-held">· холд ${heldVal.toFixed(4)}</span>
-                      )}
-                    </div>
-                  )}
                 </div>
               </div>
+
+              {balanceVal !== undefined && (
+                <div className="usercard-panel-balance" title="Баланс Syntee-Gateway">
+                  <AppIcon name="dollar" size="xs" tone="muted" />
+                  <span className="usercard-panel-balance-value">${balanceVal.toFixed(4)}</span>
+                  {heldVal > 0 && (
+                    <span className="usercard-panel-balance-held">холд ${heldVal.toFixed(4)}</span>
+                  )}
+                </div>
+              )}
 
               <div className="usercard-panel-actions">
                 <motion.button className="usercard-panel-action" onClick={handleProfile} whileHover={whileHoverListItem} whileTap={whileTapListItem} transition={springHover}>

@@ -42,6 +42,9 @@ import type {
   ExtensionScope,
 } from '../../shared/types'
 import { log } from '../logger'
+import { DEFAULT_MCP_TOOL_TIMEOUT_SECONDS, isMcpToolTimeout } from '../../shared/mcpTimeout'
+
+type McpServerState = { enabled?: boolean; scope?: ExtensionScope; toolStates?: Record<string, McpToolState>; toolTimeoutSeconds?: number }
 
 export class McpManager {
   /** Не переподключаемся к упавшему серверу чаще, чем раз в это время
@@ -185,6 +188,7 @@ export class McpManager {
       return {
         ...c,
         enabled,
+        toolTimeoutSeconds: this.getToolTimeout(c),
         scope: this.getServerScope(c),
         // enabled — policy, status — runtime. Если policy выключена,
         // UI всегда показывает disconnected даже при запоздавшем событии SDK.
@@ -196,6 +200,28 @@ export class McpManager {
         logs: client?.logs ?? [],
       }
     })
+  }
+
+  private getToolTimeout(config: McpServerConfig): number {
+    const value = config.source === 'project' && config.projectId
+      ? (this.store.get('mcpProjectState') as Record<string, Record<string, McpServerState>> | undefined)?.[config.projectId]?.[config.name]?.toolTimeoutSeconds
+      : (this.store.get('mcpGlobalState') as Record<string, McpServerState> | undefined)?.[config.name]?.toolTimeoutSeconds
+    return isMcpToolTimeout(value) ? value : DEFAULT_MCP_TOOL_TIMEOUT_SECONDS
+  }
+
+  setToolTimeout(config: McpServerConfig, seconds: number): void {
+    if (!isMcpToolTimeout(seconds)) throw new RangeError('Invalid MCP tool timeout')
+    if (config.source === 'project' && config.projectId) {
+      const all = (this.store.get('mcpProjectState') as Record<string, Record<string, McpServerState>> | undefined) ?? {}
+      const project = all[config.projectId] ?? {}
+      this.store.set('mcpProjectState', {
+        ...all,
+        [config.projectId]: { ...project, [config.name]: { ...project[config.name], toolTimeoutSeconds: seconds } },
+      })
+    } else {
+      const all = (this.store.get('mcpGlobalState') as Record<string, McpServerState> | undefined) ?? {}
+      this.store.set('mcpGlobalState', { ...all, [config.name]: { ...all[config.name], toolTimeoutSeconds: seconds } })
+    }
   }
 
   /** enabled сервера (глобальный тумблер). */
@@ -455,6 +481,7 @@ export class McpManager {
     if (opts.isIncognito) return []
     const configs = this.loadConfigs(opts.projectWorkdir, opts.projectId)
     const out: McpToolRuntime[] = []
+    const publishedNames = new Set<string>()
     for (const config of configs) {
       if (!this.getServerEnabled(config)) continue
       const scope = this.getServerScope(config)
@@ -466,7 +493,9 @@ export class McpManager {
         const toolStates = this.getToolStatesForServer(config)
         for (const tool of client.tools) {
           const state = toolStates[tool.name] ?? defaultToolState()
-          if (state.enabled) out.push(tool)
+          if (!state.enabled || publishedNames.has(tool.name)) continue
+          publishedNames.add(tool.name)
+          out.push(tool)
         }
       } else {
         // Не подключён (или ещё коннектится/упал) — не ждём. Запускаем/
@@ -485,37 +514,13 @@ export class McpManager {
   }
 
   /**
-   * Возвращает id активных MCP-серверов для конкретного чата — для бейджа.
-   * Фильтрует по enabled + scope + статусу (connected/connecting).
-   * Симметрично getActiveSkillsForChat в skillManager.
-   */
-  getActiveServerIdsForChat(opts: {
-    projectWorkdir?: string
-    projectId?: string
-    isIncognito?: boolean
-  }): string[] {
-    if (opts.isIncognito) return []
-    const configs = this.loadConfigs(opts.projectWorkdir, opts.projectId)
-    const out: string[] = []
-    for (const config of configs) {
-      if (!this.getServerEnabled(config)) continue
-      if (!this.scopeApplies(this.getServerScope(config), opts.projectId)) continue
-      const client = this.clients.get(config.id)
-      if (client && (client.status === 'connected' || client.status === 'connecting')) {
-        out.push(config.id)
-      }
-    }
-    return out
-  }
-
-  /**
    * Вызов тулза по имени. Маршрутизация: mcp__serverName__toolName → клиент.
    * serverName извлекается из имени (после mcp__).
    */
   async callToolByName(
     fullToolName: string,
     args: Record<string, unknown>,
-    opts: { projectWorkdir?: string; projectId?: string },
+    opts: { projectWorkdir?: string; projectId?: string; serverId?: string; signal?: AbortSignal },
   ): Promise<{ success: boolean; output: string; error?: string }> {
     // Парсим mcp__serverName__toolName. ServerName после sanitize может
     // содержать подчёркивания (напр. `dolphin-browser` → `dolphin_browser`),
@@ -534,23 +539,28 @@ export class McpManager {
     const configs = this.loadConfigs(opts.projectWorkdir, opts.projectId)
     // Находим сервер по sanitized-имени (как формирует McpClient).
     const sanitize = (n: string) => n.replace(/[^A-Za-z0-9_]/g, '_')
-    const config = configs.find(c => sanitize(c.name) === serverNameRaw)
+    const config = configs.find(c => sanitize(c.name) === serverNameRaw && (!opts.serverId || c.id === opts.serverId))
     if (!config) {
       return { success: false, output: '', error: `MCP-сервер не найден для тула ${fullToolName}` }
     }
     if (!this.getServerEnabled(config)) {
       return { success: false, output: '', error: `MCP-сервер ${config.name} выключен` }
     }
+    if (!this.scopeApplies(this.getServerScope(config), opts.projectId)) {
+      return { success: false, output: '', error: `MCP-сервер ${config.name} недоступен в этом проекте` }
+    }
     const toolStates = this.getToolStatesForServer(config)
     const toolState = toolStates[fullToolName] ?? defaultToolState()
     if (!toolState.enabled) {
       return { success: false, output: '', error: `MCP-тул ${fullToolName} выключен` }
     }
+    opts.signal?.throwIfAborted()
     const client = await this.ensureConnected(config)
+    opts.signal?.throwIfAborted()
     if (!client || client.status !== 'connected') {
       return { success: false, output: '', error: `MCP-сервер ${config.name} не подключён` }
     }
-    return client.callTool(toolShortName, args)
+    return client.callTool(toolShortName, args, this.getToolTimeout(config), opts.signal)
   }
 
   /**

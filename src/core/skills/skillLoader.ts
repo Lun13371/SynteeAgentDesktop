@@ -1,7 +1,6 @@
 /** Recursive discovery of skill packages and legacy standalone Markdown skills. */
 import { existsSync, statSync, readdirSync, readFileSync } from 'fs'
 import { join, relative, dirname, basename, resolve } from 'path'
-import { app } from 'electron'
 import type { Skill, SkillSource } from '../../shared/types'
 
 interface ParsedFrontmatter {
@@ -95,13 +94,11 @@ export function scanSkillDirectory(dir: string, source: SkillSource): Skill[] {
   return skills
 }
 
-export function loadAllSkills(projectWorkdir?: string, builtinDir?: string): Skill[] {
+export function loadAllSkills(userDataPath: string, projectWorkdir?: string, builtinDir?: string): Skill[] {
   const out: Skill[] = []
   const builtinPath = builtinDir ?? join(process.resourcesPath ?? '', 'skills')
   if (builtinPath && existsSync(builtinPath)) out.push(...scanSkillDirectory(builtinPath, 'builtin'))
-  try {
-    out.push(...scanSkillDirectory(join(app.getPath('userData'), 'skills'), 'user'))
-  } catch { /* app unavailable in headless tests */ }
+  out.push(...scanSkillDirectory(join(userDataPath, 'skills'), 'user'))
   if (projectWorkdir) out.push(...scanSkillDirectory(join(projectWorkdir, '.syntee', 'skills'), 'project'))
   return out
 }

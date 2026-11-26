@@ -1,0 +1,72 @@
+.pmap-settings-range {
+  width: 100%;
+  accent-color: var(--accent);
+}
+
+.pmap-settings-auto {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, transparent);
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.pmap-settings-table {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.pmap-settings-row {
+  display: grid;
+  /* Последняя колонка фиксирована (не auto): иначе пустая ячейка шапки и
+     кнопки в строках дают разную ширину → столбцы шапки съезжают. */
+  grid-template-columns: minmax(0, 2fr) 86px 80px 64px 76px minmax(0, 120px) 190px;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 12px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--text-muted) 5%, transparent);
+  font-size: 12px;
+}
+
+.pmap-settings-row--head {
+  background: transparent;
+  color: var(--text-muted);
+  opacity: 0.7;
+  font-size: 11px;
+  padding-bottom: 2px;
+}
+
+.pmap-settings-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pmap-settings-num {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
+
+.pmap-settings-state--ready { color: #4ade80; }
+.pmap-settings-state--building { color: var(--accent); }
+.pmap-settings-state--partial { color: #fbbf24; }
+.pmap-settings-state--error { color: #f87171; }
+.pmap-settings-state--idle { color: var(--text-muted); }
+
+.pmap-settings-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.pmap-settings-empty {
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+}

@@ -7,20 +7,19 @@
 import type Store from 'electron-store'
 import { resolve } from 'path'
 import { statSync, existsSync } from 'fs'
-import { createHash } from 'crypto'
 import {
   runCommand, readFile, writeFile, listDirectory,
   findFiles,
-  searchWeb, getSystemInfo, generateImage, analyzeImageFile, analyzeVideoFile, analyzeAudioFile,
-  readFiles, searchCode, analyzeProject,
+  searchWeb, generateImage, analyzeImageFile, analyzeVideoFile, analyzeAudioFile,
+  readFiles, searchCode,
   fetchPage, searchImages, getDiagnostics,
+  projectMapQuery,
   type SearchImagesOpts,
   type ToolResult, editFile,
 } from '../tools'
 import {
   getContextSettings,
 } from '../context/contextManager'
-import { runFastContext, type FastContextResult } from '../context/fastContext'
 import type { FileCacheEntry } from '../context/fileCacheTypes'
 import type { DiffEntry } from '../context/structuredMemory'
 import type { AgentCallbacks, AgentSummaryDetails } from './types'
@@ -62,6 +61,21 @@ export class ToolDispatcher {
   dirtyFileCacheKeys = new Set<string>()
   filesReadInSession = new Set<string>()
   readFileMaxLine = new Map<string, number>()
+  /** J3: Agent сообщает, лежит ли контент файла ещё в контексте. Если да и файл
+   *  не менялся — повторный read подавляется (экономия токенов без потери данных). */
+  rereadGuard?: (absPath: string) => boolean
+
+  /** Правка/запись файла инвалидирует кэш чтений. Быстрый путь read_file
+   *  (readFileCache) НЕ проверяет mtime — без сброса модель после правки
+   *  получала бы пре-едит контент, а с rereadGuard «вечно true» это
+   *  маскировалось подавлением перечитываний. fileCache проверяет mtime сам,
+   *  чистим для симметрии (ключи — сырой путь и абсолютный). */
+  private invalidateReadCaches(rawPath: string, absPath: string): void {
+    for (const prefix of [`${rawPath}:`, `${absPath}:`]) {
+      for (const key of [...this.readFileCache.keys()]) if (key.startsWith(prefix)) this.readFileCache.delete(key)
+      for (const key of [...this.fileCache.keys()]) if (key.startsWith(prefix)) this.fileCache.delete(key)
+    }
+  }
   commandsRun: Array<{ command: string; exitCode?: string; success: boolean; cwd?: string }> = []
   lastShellCwd: string | undefined
   pendingDiffEntries: DiffEntry[] = []
@@ -167,7 +181,8 @@ export class ToolDispatcher {
     args: Record<string, unknown>,
     callbacks?: AgentCallbacks,
     dryRun?: boolean,
-    callId?: string
+    callId?: string,
+    signal = callbacks?.signal,
   ): Promise<ToolResult> {
     // Подстановка ${{KEY}} → реальное значение в аргументах тула
     const resolvedArgs = this.substituteSecrets(args) as Record<string, unknown>
@@ -246,6 +261,9 @@ export class ToolDispatcher {
         if (this.readFileCacheEnabled && this.readFileCache.has(cacheKey)) {
           try { this.filesReadInSession.add(absPath) } catch { /* ok */ }
           this.updateReadFileMaxLine(absPath, this.readFileCache.get(cacheKey)!)
+          if (this.rereadGuard?.(absPath)) {
+            return { success: true, output: `[Re-read suppressed: ${filePath} is unchanged and its content is already in the context above. Reuse the earlier read; pass offset/limit or full=true only if you truly need it again.]` }
+          }
           return { success: true, output: this.readFileCache.get(cacheKey)! }
         }
 
@@ -259,6 +277,9 @@ export class ToolDispatcher {
                 this.readFileCache.set(cacheKey, cached.output)
                 try { this.filesReadInSession.add(absPath) } catch { /* ok */ }
                 this.updateReadFileMaxLine(absPath, cached.output)
+                if (this.rereadGuard?.(absPath)) {
+                  return { success: true, output: `[Re-read suppressed: ${filePath} is unchanged and its content is already in the context above. Reuse the earlier read; pass offset/limit or full=true only if you truly need it again.]` }
+                }
                 return { success: true, output: cached.output }
               }
             } catch { /* statSync упал — продолжаем */ }
@@ -332,6 +353,7 @@ export class ToolDispatcher {
         if (wfResult.success && !dryRun) {
           let absPath: string
           try { absPath = resolve(this.workdir ?? process.cwd(), resolvedArgs.path as string) } catch { absPath = resolvedArgs.path as string }
+          this.invalidateReadCaches(resolvedArgs.path as string, absPath)
           this.onFileChanged?.(absPath)
         }
         return wfResult
@@ -357,6 +379,7 @@ export class ToolDispatcher {
         if (editResult.success && !dryRun) {
           let absPath: string
           try { absPath = resolve(this.workdir ?? process.cwd(), editPath) } catch { absPath = editPath }
+          this.invalidateReadCaches(editPath, absPath)
           this.onFileChanged?.(absPath)
         }
         return editResult
@@ -373,8 +396,6 @@ export class ToolDispatcher {
           gatewayToken: this.gatewayToken,
           gatewayApiUrl: this.gatewayApiUrl ?? process.env.SYNTEE_API_URL,
         })
-      case 'get_system_info':
-        return getSystemInfo()
       case 'generate_image':
         // gatewayToken — JWT Syntee-Gateway для image-провайдера (worker-поток:
         // тул сам токен не достанет, electron-store недоступен). userDataPath —
@@ -419,46 +440,29 @@ export class ToolDispatcher {
             workdir: this.workdir,
           }
         )
-      case 'get_fast_context': {
-        const fcQuery = resolvedArgs.query as string
-        if (!fcQuery) return { success: false, output: '', error: 'query is required' }
-        if (!this.workdir) {
-          const fallback = await analyzeProject(this.workdir ?? '.', this.workdir)
-          return {
-            success: true,
-            output: JSON.stringify({
-              files: [],
-              summary: 'Fast context недоступен (нет workdir). Использован встроенный анализ проекта как fallback. ' + (fallback.output.slice(0, 200)),
-              ms: 0,
-              indexedFilesCount: 0,
-              fallback: true,
-            } as FastContextResult & { fallback: boolean }),
-          }
+      case 'project_map': {
+        const args = {
+          action: resolvedArgs.action as
+            | 'search' | 'semantic' | 'callers' | 'callees' | 'file' | 'overview'
+            | 'god' | 'communities' | 'path' | 'explain' | 'affected',
+          query: resolvedArgs.query as string | undefined,
+          // `to` — второй узел для action=path; depth/relations — обход;
+          // budget — потолок ответа в токенах. Раньше белый список их терял,
+          // и path всегда падал с «requires query and to».
+          to: resolvedArgs.to as string | undefined,
+          nodeId: resolvedArgs.nodeId as string | undefined,
+          path: resolvedArgs.path as string | undefined,
+          limit: resolvedArgs.limit as number | undefined,
+          depth: resolvedArgs.depth as number | undefined,
+          relations: resolvedArgs.relations as Array<'calls' | 'references' | 'imports'> | undefined,
+          budget: resolvedArgs.budget as number | undefined,
         }
-        const fcProjectId = this.projectId
-          ?? `fc:${createHash('sha1').update(resolve(this.workdir ?? process.cwd())).digest('hex').slice(0, 16)}`
-        const fcResult = await runFastContext(
-          fcProjectId,
-          this.workdir,
-          fcQuery,
-          this.store,
-          {
-            maxFiles: resolvedArgs.maxFiles as number | undefined,
-            maxTokens: resolvedArgs.maxTokens as number | undefined,
-            signal: callbacks?.signal,
-          },
-          (p) => {
-            callbacks?.onToolProgress?.({
-              toolName: 'get_fast_context',
-              stage: p.stage,
-              detail: p.detail,
-              filesProcessed: p.filesProcessed,
-              filesTotal: p.filesTotal,
-              filesFound: p.filesFound,
-            })
-          },
-        )
-        return { success: true, output: JSON.stringify(fcResult) }
+        // Worker-поток: БД там не инициализирована — round-trip в main (как
+        // recall_memory). В main-контекстах (chatSendEngine) колбэка нет —
+        // прямой вызов, БД доступна. projectId идёт в RPC отдельным полем:
+        // main сам не знает projectId воркера чата.
+        if (callbacks?.onProjectMap) return callbacks.onProjectMap({ ...args, projectId: this.projectId })
+        return projectMapQuery(args, this.projectId)
       }
       case 'spawn_agent': {
         if (!callbacks?.onSpawnAgent) {
@@ -469,7 +473,6 @@ export class ToolDispatcher {
           id: agentId,
           task: resolvedArgs.task as string,
           model: resolvedArgs.model as string | undefined,
-          approvalMode: resolvedArgs.approval_mode as 'auto' | 'ask' | 'full' | undefined,
           isolation: resolvedArgs.isolation as 'auto' | 'worktree' | 'none' | undefined,
           role: resolvedArgs.role as string | undefined,
           callId,
@@ -815,7 +818,7 @@ export class ToolDispatcher {
       }
       default:
         if (name.startsWith('mcp__') && callbacks?.onMcpCall) {
-          const result = await callbacks.onMcpCall(name, resolvedArgs)
+          const result = await callbacks.onMcpCall(name, resolvedArgs, signal)
           return result
         }
         if (name.startsWith('plugin__') && callbacks?.onPluginCall) {

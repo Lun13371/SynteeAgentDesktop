@@ -82,16 +82,6 @@ export function deleteProject(id: string, deleteChats = false): void {
       ).run(id)
     }
     db.prepare('DELETE FROM projects WHERE id = ?').run(id)
-    // Индексные строки проекта больше не нужны: без этой очистки тысячи
-    // записей (TS + Rust) остаются в БД навсегда и никем не читаются.
-    db.prepare('DELETE FROM fast_context_index WHERE project_id = ?').run(id)
-    db.prepare('DELETE FROM fast_context_index_history WHERE project_id = ?').run(id)
-    try {
-      db.prepare('DELETE FROM fast_context_sidecar_index WHERE project_id = ?').run(id)
-    } catch { /* таблица sidecar появляется только после первого Rust-индекса */ }
-    try {
-      db.prepare('DELETE FROM fast_context_sidecar_meta WHERE project_id = ?').run(id)
-    } catch { /* таблица meta появляется только после первого Rust-индекса */ }
   })()
 }
 
@@ -113,6 +103,12 @@ export function getProjectById(id: string): Project | undefined {
     autoDiscoverRaw: undefined,
     disabledDiscoveryFilesRaw: undefined,
   } as Project
+}
+
+/** Проект по рабочей папке (workdir UNIQUE). */
+export function getProjectByWorkdir(workdir: string): Project | undefined {
+  const row = getDB().prepare(`SELECT id FROM projects WHERE workdir = ?`).get(workdir) as { id: string } | undefined
+  return row ? getProjectById(row.id) : undefined
 }
 
 /** Парсит JSON-массив путей к .md файлам из БД. null/пусто → undefined. */

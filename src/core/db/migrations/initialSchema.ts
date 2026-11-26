@@ -187,10 +187,6 @@ export function runInitialSchema(db: Database.Database): void {
   // Включается вручную (плюс-меню) или через подтверждение request_access.
   if (!chatCols.find(c => c.name === 'browser_mode'))  db.prepare(`ALTER TABLE chats ADD COLUMN browser_mode INTEGER NOT NULL DEFAULT 0`).run()
   if (!chatCols.find(c => c.name === 'draft'))         db.prepare(`ALTER TABLE chats ADD COLUMN draft TEXT`).run()
-  // persona — single-select run mode (classic/architect/debugger/...).
-  // Orthogonal to planning_mode/image_mode/ask_mode toggles. TEXT, default
-  // 'classic' (no injection, full toolset) for back-compat with old rows.
-  if (!chatCols.find(c => c.name === 'persona')) db.prepare(`ALTER TABLE chats ADD COLUMN persona TEXT NOT NULL DEFAULT 'classic'`).run()
   // last_usage — JSON последнего реального usage от провайдера
   // {promptTokens, completionTokens, cacheReadTokens, cacheWriteTokens, ts}.
   // Переживает перезапуск: context:calculate читает его, чтобы показывать
@@ -302,39 +298,6 @@ export function runInitialSchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_rh_chat ON rewind_history(chat_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_rh_rewind ON rewind_history(rewind_message_id);
 
-    -- Fast Context: tree-sitter индекс символов проекта для быстрого
-    -- retrieval релевантных файлов по запросу (тулза get_fast_context).
-    -- Один ряд = один файл проекта с его символами и метаданными для
-    -- инвалидации по mtime+size. ranked_score — PageRank-style важность.
-    CREATE TABLE IF NOT EXISTS fast_context_index (
-      project_id      TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-      file_path       TEXT NOT NULL,
-      lang            TEXT,
-      symbols_json    TEXT,
-      mtime           INTEGER NOT NULL DEFAULT 0,
-      size            INTEGER NOT NULL DEFAULT 0,
-      ranked_score    REAL NOT NULL DEFAULT 0,
-      relevance_boost REAL NOT NULL DEFAULT 0,
-      embedding       BLOB,
-      updated_at      INTEGER NOT NULL,
-      PRIMARY KEY(project_id, file_path)
-    );
-    CREATE INDEX IF NOT EXISTS idx_fci_project ON fast_context_index(project_id);
-    CREATE INDEX IF NOT EXISTS idx_fci_score ON fast_context_index(project_id, ranked_score DESC);
-
-    -- История обновлений индекса (для модалки статуса проекта).
-    -- Храним последние ~50 событий на проект, старые пруним автоматически.
-    CREATE TABLE IF NOT EXISTS fast_context_index_history (
-      id            INTEGER PRIMARY KEY AUTOINCREMENT,
-      project_id    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-      event_type    TEXT NOT NULL,        -- 'full' | 'incremental' | 'manual' | 'clear'
-      files_count   INTEGER NOT NULL,     -- файлов в индексе после события
-      files_changed INTEGER NOT NULL,     -- сколько файлов переиндексировано
-      duration_ms   INTEGER NOT NULL,     -- сколько заняло
-      created_at    INTEGER NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_fcih_project ON fast_context_index_history(project_id, created_at DESC);
-
     -- === Advanced memory: унифицированная таблица памяти ===
     -- 5 типов памяти (kind): user_fact | project_decision | convention | conversation | agent_outcome
     -- 3 scope: global (сквозная) | project (привязана к проекту) | chat (только чат)
@@ -432,7 +395,7 @@ export function runInitialSchema(db: Database.Database): void {
       project_id       TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
       type             TEXT NOT NULL,  -- 'decision'|'concept'|'file'|'symbol'|'conversation'|'task'
       label            TEXT NOT NULL,  -- display name (filepath, concept name, decision summary)
-      source_kind      TEXT,           -- 'memory_item'|'fast_context'|'message'|'chat_summary'|'llm_extract'|'manual'
+      source_kind      TEXT,           -- 'memory_item'|'message'|'chat_summary'|'llm_extract'|'manual'
       source_id        TEXT,           -- ID источника (memory_items.id, file_path, msg.id)
       metadata         TEXT,           -- JSON (path, line range, kind, evidence, ...)
       weight           REAL NOT NULL DEFAULT 1.0,

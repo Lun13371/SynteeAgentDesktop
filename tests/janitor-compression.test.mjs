@@ -1,0 +1,522 @@
+/**
+ * Джанитор: точность сжатия контекста.
+ *
+ *  - Активный хвост: последние N ходов не трогаются ни в ране, ни в БД.
+ *  - Перечитывания сворачиваются диапазонно: перекрытые/устаревшие — целиком,
+ *    уникальные — в резюме с точной атрибуцией (что именно прочитано).
+ *  - Дедуп валиден только без мутаций между вызовами.
+ *  - Protected (diff/ошибка/визуал/уже сжатое) не трогается.
+ */
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import vm from 'node:vm'
+import ts from 'typescript'
+import path from 'node:path'
+import os from 'node:os'
+import { fileURLToPath } from 'node:url'
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+
+// ── Загрузчик TS-модулей с шимом require ─────────────────────────────────────
+const loadCache = new Map()
+
+function loadModule(rel) {
+  const norm = path.normalize(rel).replace(/\\/g, '/')
+  if (loadCache.has(norm)) return loadCache.get(norm)
+  const source = fs.readFileSync(path.join(root, norm), 'utf8')
+  const js = ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  }).outputText
+  const module = { exports: {} }
+  const requireShim = (spec) => {
+    if (spec === 'fs' || spec === 'node:fs') return fs
+    if (spec === 'path' || spec === 'node:path') return path
+    const resolved = path.join(path.dirname(norm), spec).replace(/\\/g, '/')
+    // type-only импорты стираются; шимим только живые зависимости
+    if (resolved.endsWith('tokens/usageTracker')) return {
+      estimateTokens: t => Math.ceil((t ?? '').length / 4),
+      // Калибровки в тестах нет — шкала совпадает с сырой оценкой.
+      estimateTokensCalibrated: t => Math.ceil((t ?? '').length / 4),
+    }
+    if (resolved.endsWith('context/contextManager')) return {}
+    return loadModule(resolved.endsWith('.ts') ? resolved : resolved + '.ts')
+  }
+  vm.runInNewContext(js, { module, exports: module.exports, require: requireShim })
+  loadCache.set(norm, module.exports)
+  return module.exports
+}
+
+const janitorMod = loadModule('src/core/context/janitor.ts')
+const compressorMod = loadModule('src/core/context/historyCompressor.ts')
+const { Janitor, computeTailBoundary, parseReadSections, rangesCover, summarizeToolResult } = janitorMod
+const { compressStoredMessages } = compressorMod
+
+const SETTINGS = {
+  enabled: true, janitorEnabled: true, janitorScanInterval: 8,
+  janitorTailSteps: 10, janitorMinSavingsTokens: 0,
+}
+
+// ── Фикстуры персистентного слоя ─────────────────────────────────────────────
+function readResult(path, from, to, total, lineChars = 60) {
+  const body = Array.from({ length: to - from + 1 }, (_, i) => `${from + i}|${'x'.repeat(lineChars)}`).join('\n')
+  return `[File: ${path} | Lines ${from}-${to} of ${total}]\n${body}`
+}
+
+function msg(id, steps) {
+  return { id, chatId: 'c', role: 'assistant', content: '', createdAt: 0, isPinned: 0, toolSteps: steps }
+}
+
+function callStep(i, name, args) {
+  return { id: `cs${i}`, type: 'tool_call', toolName: name, toolArgs: args, content: '', timestamp: 0, callId: `call${i}` }
+}
+
+function resultStep(i, content, extra = {}) {
+  return { id: `rs${i}`, type: 'tool_result', content, timestamp: 0, callId: `call${i}`, ...extra }
+}
+
+function stepOf(plan, callId) {
+  return plan.toolSteps.find(s => s.callId === callId && s.type === 'tool_result')
+}
+
+test('parseReadSections: full-mode / дефолт / read_files', () => {
+  const full = parseReadSections('read_file', `[File: C:/p/a.ts | Lines 12-40 of 900 | full mode]\n12|code`)
+  assert.equal(full.length, 1)
+  // объекты из vm-realm: сравниваем по полям
+  assert.equal(full[0].range.from, 12)
+  assert.equal(full[0].range.to, 40)
+  assert.equal(full[0].range.total, 900)
+  assert.equal(full[0].path, 'c:\\p\\a.ts')
+
+  const def = parseReadSections('read_file', `[File: C:/p/b.ts | 900 lines]\n1|a\n2|b\n...[shown 400 of 900 lines | use offset=401 to continue]`)
+  assert.equal(def[0].range.from, 1)
+  assert.equal(def[0].range.to, 400)
+  assert.equal(def[0].range.total, 900)
+
+  const multi = parseReadSections('read_files', `=== C:/p/x.ts | 300 lines ===\n1|a\n=== C:/p/y.ts | 900 lines ===\n1|b\n...[shown 250 of 900 lines | use read_file with offset to continue]`)
+  assert.equal(multi.length, 2)
+  assert.equal(multi[1].range.to, 250)
+  assert.equal(multi[1].range.total, 900)
+})
+
+test('mixed read_files diagnostics cannot disappear when successful sections are reread', () => {
+  const batch = '=== C:/test/a.ts | 30 lines ===\n' + Array.from({ length: 30 }, (_, i) => `${i + 1}|${'x'.repeat(80)}`).join('\n')
+    + '\n\n=== C:/test/b.ts ===\n[Read error: UNIQUE_PERMISSION_ERROR]'
+  assert.equal(parseReadSections('read_files', batch).length, 0)
+  const history = [
+    msg('mixed', [callStep(1, 'read_files', { paths: ['C:/test/a.ts', 'C:/test/b.ts'] }), resultStep(1, batch, { success: true })]),
+    msg('reread', [callStep(2, 'read_file', { path: 'C:/test/a.ts' }), resultStep(2, readResult('C:/test/a.ts', 1, 30, 30))]),
+  ]
+  assert.equal(compressStoredMessages(history, { tailKeep: 1 }).has('mixed'), false)
+})
+
+test('rangesCover: покрытие объединением, дыра не покрывает', () => {
+  assert.equal(rangesCover({ from: 1, to: 400 }, [{ from: 1, to: 200 }, { from: 201, to: 400 }]), true)
+  assert.equal(rangesCover({ from: 1, to: 400 }, [{ from: 500, to: 900 }]), false)
+  assert.equal(rangesCover({ from: 1, to: 400 }, [{ from: 1, to: 200 }, { from: 300, to: 500 }]), false)
+})
+
+test('summarizeToolResult: резюме чтения сохраняет путь и диапазон строк', () => {
+  const content = readResult('C:/p/a.ts', 1, 400, 900) + '\n...[shown 400 of 900 lines | use offset=401]'
+  const summary = summarizeToolResult('read_file', content, undefined, 'файл после чтения не менялся')
+  assert.ok(summary.includes('C:/p/a.ts'), summary)
+  assert.ok(summary.includes('строки 1-400 из 900'), summary)
+  assert.ok(summary.includes('файл после чтения не менялся'), summary)
+})
+
+test('summarizeToolResult: резюме поиска сохраняет запрос и топ-файлы', () => {
+  const content = `[search_code: 42 matches in 3 files (regex, smart-case)]\n\n● src/app.ts (20 matches, showing 5)\n  > 10: foo\n\n● src/lib/bar.ts`
+  const summary = summarizeToolResult('search_code', content, 'janitorTailSteps')
+  assert.ok(summary.includes('janitorTailSteps'), summary)
+  assert.ok(summary.includes('42 matches in 3 files'), summary)
+  assert.ok(summary.includes('src/app.ts'), summary)
+})
+
+// ── Персистентная компрессия ────────────────────────────────────────────────
+
+test('хвост: последние N ходов не трогаются', () => {
+  const messages = []
+  for (let i = 1; i <= 12; i++) {
+    const p = `C:/__janitor_test__/f${i}.ts`
+    messages.push(msg(`m${i}`, [callStep(i, 'read_file', { path: p }), resultStep(i, readResult(p, 1, 400, 400))]))
+  }
+  const plans = compressStoredMessages(messages, { minSavingsTokens: 0, tailKeep: 10 })
+  for (let i = 3; i <= 12; i++) assert.equal(plans.has(`m${i}`), false, `ход m${i} в хвосте не должен сжиматься`)
+})
+
+test('перечитывание перекрыто свежим чтением → свёрнуто; хвост не тронут', () => {
+  const p = 'C:/__janitor_test__/dup.ts'
+  const big = readResult(p, 1, 400, 400)
+  const messages = [
+    msg('m1', [callStep(1, 'read_file', { path: p }), resultStep(1, big)]),
+    msg('m2', [callStep(2, 'read_file', { path: p }), resultStep(2, readResult(p, 1, 400, 400))]),
+  ]
+  const plans = compressStoredMessages(messages, { minSavingsTokens: 0, tailKeep: 1 })
+  assert.ok(plans.has('m1'), 'старое чтение должно свёрнуться')
+  const collapsed = stepOf(plans.get('m1'), 'call1')
+  assert.ok(collapsed.content.includes('перекрыто свежим чтением'), collapsed.content)
+  assert.ok(collapsed.content.includes('dup.ts'), collapsed.content)
+  assert.equal(plans.has('m2'), false, 'хвост не трогается')
+})
+
+test('перечитывание НЕ перекрыто (диапазоны врозь) → свежее чтение не сжимается', () => {
+  const p = 'C:/__janitor_test__/gap.ts'
+  const messages = [
+    msg('m1', [callStep(1, 'read_file', { path: p }), resultStep(1, readResult(p, 1, 400, 900))]),
+    msg('m2', [callStep(2, 'read_file', { path: p }), resultStep(2, readResult(p, 500, 900, 900))]),
+  ]
+  const plans = compressStoredMessages(messages, { minSavingsTokens: 0, tailKeep: 1 })
+  // A: файл не правился, диапазон не перекрыт → контент актуален на 100%,
+  // агент опирается на его точные строки в следующих old_str. Не трогаем.
+  assert.equal(plans.has('m1'), false, 'свежее уникальное чтение должно остаться дословным')
+})
+
+test('правка файла между чтениями, перекрытия нет → старое чтение свёрнуто как устаревшее', () => {
+  const p = 'C:/__janitor_test__/edit-unique.ts'
+  const messages = [
+    msg('m1', [callStep(1, 'read_file', { path: p }), resultStep(1, readResult(p, 1, 400, 900))]),
+    msg('m2', [callStep(2, 'edit_file', { path: p }), resultStep(2, 'Updated 3 lines in ' + p)]),
+    // 500-900 не перекрывает 1-400 → единственная причина сноса — правка файла
+    msg('m3', [callStep(3, 'read_file', { path: p }), resultStep(3, readResult(p, 500, 900, 900))]),
+  ]
+  const plans = compressStoredMessages(messages, { minSavingsTokens: 0, tailKeep: 1 })
+  assert.ok(plans.has('m1'))
+  const collapsed = stepOf(plans.get('m1'), 'call1')
+  assert.ok(collapsed.content.includes('правился после чтения'), collapsed.content)
+  assert.equal(plans.has('m2'), false)
+})
+
+test('правка файла между чтениями → старое чтение устарело и свёрнуто', () => {
+  const p = 'C:/__janitor_test__/edit.ts'
+  const messages = [
+    msg('m1', [callStep(1, 'read_file', { path: p }), resultStep(1, readResult(p, 1, 400, 400))]),
+    msg('m2', [callStep(2, 'edit_file', { path: p }), resultStep(2, 'Updated 3 lines in ' + p)]),
+    msg('m3', [callStep(3, 'read_file', { path: p }), resultStep(3, readResult(p, 1, 400, 400))]),
+  ]
+  const plans = compressStoredMessages(messages, { minSavingsTokens: 0, tailKeep: 1 })
+  assert.ok(plans.has('m1'))
+  const collapsed = stepOf(plans.get('m1'), 'call1')
+  // m3 прочитан ПОСЛЕ правки и перекрывает диапазон → свежее чтение ниже,
+  // это точнее, чем «устарело»: актуальный контент в истории есть.
+  assert.ok(collapsed.content.includes('перекрыто свежим чтением'), collapsed.content)
+  // результат правки не тронут (короткий) и ход m3 в хвосте
+  assert.equal(plans.has('m2'), false)
+})
+
+test('дедуп: без мутаций между — свёрнуто; с run_command между — не «идентичен»', () => {
+  const bigSearch = (q) => `[search_code: 30 matches in 2 files]\n${Array.from({ length: 40 }, (_, i) => `● src/f${i}.ts\n  > ${i}: ${q} ${'y'.repeat(50)}`).join('\n')}`
+  const args = { pattern: 'janitorTest' }
+
+  const clean = [
+    msg('m1', [callStep(1, 'search_code', args), resultStep(1, bigSearch('a'))]),
+    msg('m2', [callStep(2, 'search_code', args), resultStep(2, bigSearch('a'))]),
+  ]
+  const plansClean = compressStoredMessages(clean, { minSavingsTokens: 0, tailKeep: 1 })
+  assert.ok(plansClean.has('m1'))
+  assert.ok(stepOf(plansClean.get('m1'), 'call1').content.includes('с теми же аргументами'), 'дедуп без мутаций работает')
+
+  const dirty = [
+    msg('m1', [callStep(1, 'search_code', args), resultStep(1, bigSearch('a'))]),
+    msg('m2', [callStep(2, 'run_command', { command: 'echo hi' }), resultStep(2, 'hi\n' + 'z'.repeat(1300))]),
+    msg('m3', [callStep(3, 'search_code', args), resultStep(3, bigSearch('c'))]),
+  ]
+  const plansDirty = compressStoredMessages(dirty, { minSavingsTokens: 0, tailKeep: 1 })
+  assert.equal(plansDirty.has('m1'), false, 'уникальный вывод нельзя безвозвратно удалять из БД')
+})
+
+test('protected: diff, ошибка, изображения, уже сжатое — не трогаются', () => {
+  const messages = [
+    msg('m1', [callStep(1, 'edit_file', { path: 'C:/__janitor_test__/d.ts' }), resultStep(1, `[DRY RUN] Edit for: d.ts\n${'a'.repeat(1500)}`, { diff: '+ big diff ' + 'a'.repeat(1400) })]),
+    msg('m2', [callStep(2, 'read_file', { path: 'C:/x.ts' }), resultStep(2, readResult('C:/x.ts', 1, 400, 400), { success: false })]),
+    msg('m3', [callStep(3, 'analyze_image', { path: 'C:/i.png' }), resultStep(3, 'image', { imagePaths: ['C:/i.png'] })]),
+    msg('m4', [callStep(4, 'read_file', { path: 'C:/y.ts' }), resultStep(4, '[Контекст оптимизирован локальным помощником] уже сжато ' + 'b'.repeat(1300))]),
+  ]
+  const plans = compressStoredMessages(messages, { minSavingsTokens: 0, tailKeep: 1 })
+  assert.equal(plans.size, 0)
+})
+
+test('idempotency: повторный прогон по сжатой истории не даёт планов', () => {
+  const p = 'C:/__janitor_test__/idem.ts'
+  const messages = [
+    msg('m1', [callStep(1, 'read_file', { path: p }), resultStep(1, readResult(p, 1, 400, 400))]),
+    msg('m2', [callStep(2, 'read_file', { path: p }), resultStep(2, readResult(p, 1, 400, 400))]),
+  ]
+  const plans1 = compressStoredMessages(messages, { minSavingsTokens: 0, tailKeep: 1 })
+  assert.ok(plans1.has('m1'))
+  messages[0].toolSteps = plans1.get('m1').toolSteps
+  const plans2 = compressStoredMessages(messages, { minSavingsTokens: 0, tailKeep: 1 })
+  assert.equal(plans2.size, 0)
+})
+
+test('minSavingsTokens: мелкая экономия не даёт UPDATE', () => {
+  const p = 'C:/__janitor_test__/tiny.ts'
+  const messages = [
+    msg('m1', [callStep(1, 'read_file', { path: p }), resultStep(1, readResult(p, 1, 50, 50, 20))]),
+    msg('m2', [callStep(2, 'read_file', { path: p }), resultStep(2, readResult(p, 1, 50, 50, 20))]),
+  ]
+  const plans = compressStoredMessages(messages, { minSavingsTokens: 10_000, tailKeep: 1 })
+  assert.equal(plans.size, 0)
+})
+
+test('анализ учитывает хвост: покрытие чтением из хвоста сворачивает старое чтение', () => {
+  const p = 'C:/__janitor_test__/tailcov.ts'
+  const messages = [
+    msg('m1', [callStep(1, 'read_file', { path: p }), resultStep(1, readResult(p, 1, 400, 400))]),
+    msg('m2', [callStep(2, 'read_file', { path: p }), resultStep(2, readResult(p, 1, 400, 400))]),
+    msg('m3', [callStep(3, 'read_file', { path: p }), resultStep(3, readResult(p, 1, 400, 400))]),
+  ]
+  const plans = compressStoredMessages(messages, { minSavingsTokens: 0, tailKeep: 2 })
+  assert.ok(plans.has('m1'), 'покрытие хвостовым чтением m2/m3 должно сворачивать m1')
+  assert.equal(plans.has('m2'), false)
+  assert.equal(plans.has('m3'), false)
+})
+
+// ── Джанитор рана (in-run) ───────────────────────────────────────────────────
+
+function runMsg(i, name, args, resultContent, extra = {}) {
+  return [
+    { role: 'assistant', content: '', tool_calls: [{ id: `call${i}`, type: 'function', function: { name, arguments: JSON.stringify(args) } }] },
+    { role: 'tool', tool_call_id: `call${i}`, name, content: resultContent, ...extra },
+  ]
+}
+
+function flatten(...turns) {
+  return turns.flat()
+}
+
+test('in-run: хвост по ходам — при 10 активных ходах сворачивается только старше', () => {
+  const turns = []
+  for (let i = 1; i <= 12; i++) {
+    const p = `C:/__janitor_test__/run${i}.ts`
+    turns.push(...runMsg(i, 'read_file', { path: p }, readResult(p, 1, 400, 400)))
+  }
+  const j = new Janitor(SETTINGS)
+  const report = j.scan(flatten(...turns), 8, 'deep')
+  for (const action of report.actions) {
+    for (const idx of action.messageIndices) {
+      assert.ok(idx < 4, `замена в хвосте (индекс ${idx}) запрещена`)
+    }
+  }
+  // ходы 11-12 (последние 10) не тронуты — их результаты без маркера
+  const messages = flatten(...turns)
+  const applied = j.apply(messages, report)
+  const tailResults = applied.filter(m => m.role === 'tool').slice(-10)
+  for (const t of tailResults) assert.ok(!t.content.includes('[Контекст оптимизирован'), 'хвост должен остаться сырым')
+})
+
+test('in-run: перечитывание перекрыто позже → свёрнуто, call+result структура цела', () => {
+  const p = 'C:/__janitor_test__/runReread.ts'
+  const messages = flatten(
+    runMsg(1, 'read_file', { path: p }, readResult(p, 1, 400, 400)),
+    runMsg(2, 'read_file', { path: p }, readResult(p, 1, 400, 400)),
+  )
+  const j = new Janitor({ ...SETTINGS, janitorTailSteps: 1 })
+  const report = j.scan(messages, 8, 'deep')
+  assert.equal(report.actions.length, 1)
+  assert.equal(report.actions[0].kind, 'collapse_reread')
+  const applied = j.apply(messages, report)
+  // assistant-сообщения с tool_calls не удалены, tool-сообщения на месте
+  assert.equal(applied.filter(m => m.role === 'assistant').length, 2)
+  assert.equal(applied.filter(m => m.role === 'tool').length, 2)
+  assert.ok(applied[1].content.includes('перекрыто свежим чтением'))
+  assert.equal(applied[3].content, readResult(p, 1, 400, 400), 'свежее чтение (хвост) не тронуто')
+})
+
+test('in-run: ходов меньше хвоста → ничего не сворачивается', () => {
+  const p = 'C:/__janitor_test__/small.ts'
+  const messages = flatten(
+    runMsg(1, 'read_file', { path: p }, readResult(p, 1, 400, 400)),
+    runMsg(2, 'read_file', { path: p }, readResult(p, 1, 400, 400)),
+  )
+  const j = new Janitor(SETTINGS) // tailSteps=10
+  const report = j.scan(messages, 8, 'deep')
+  assert.equal(report.actions.length, 0)
+})
+
+test('in-run: свежее уникальное чтение вне хвоста не сжимается (не emergency)', () => {
+  const p = 'C:/__janitor_test__/fresh.ts'
+  const messages = flatten(
+    runMsg(1, 'read_file', { path: p }, readResult(p, 1, 400, 900)),
+    runMsg(2, 'read_file', { path: p }, readResult(p, 500, 900, 900)), // диапазоны врозь
+  )
+  const j = new Janitor({ ...SETTINGS, janitorTailSteps: 1 })
+  const report = j.scan(messages, 8, 'deep')
+  // A: файл не правился и не перекрыт → контент актуален, old_str агент берёт
+  // из него. Экономия тут дороже потери точности.
+  assert.equal(report.actions.filter(a => a.kind === 'summarize_stale').length, 0)
+})
+
+test('in-run: summarize_stale архивирует оригинал и recall возвращает его', () => {
+  const p = 'C:/__janitor_test__/unique.ts'
+  const original = readResult(p, 1, 400, 900)
+  const messages = flatten(
+    runMsg(1, 'read_file', { path: p }, original),
+    runMsg(2, 'read_file', { path: p }, readResult(p, 500, 900, 900)), // не перекрывает 1-400
+  )
+  const j = new Janitor({ ...SETTINGS, janitorTailSteps: 1 })
+  // Свежее уникальное чтение сжимается только в emergency-скане (economist
+  // stage 2: tailStepsOverride — активный хвост вдвое короче, давление на окно).
+  const report = j.scan(messages, 8, 'deep', 1)
+  const stale = report.actions.find(a => a.kind === 'summarize_stale')
+  assert.ok(stale, 'уникальное чтение должно уйти в резюме')
+  assert.ok(stale.description.includes('−'), 'описание несёт экономию')
+  assert.ok(stale.archiveId, 'архивный id для recall')
+  const applied = j.apply(messages, report)
+  assert.ok(applied[1].content.includes('[recall:'))
+  assert.ok(applied[1].content.includes('строки 1-400 из 900'), 'атрибуция диапазона в резюме')
+  const recalled = j.recall(stale.archiveId)
+  assert.equal(recalled[0].content, original, 'оригинал восстановим из архива')
+})
+
+test('in-run: недетерминированные тулы не дедуплицируются', () => {
+  const cmdOut = (t) => `${t}\n${'w'.repeat(1400)}`
+  const messages = flatten(
+    runMsg(1, 'run_command', { command: 'git status' }, cmdOut('on branch a')),
+    runMsg(2, 'run_command', { command: 'git status' }, cmdOut('on branch b')),
+  )
+  const j = new Janitor({ ...SETTINGS, janitorTailSteps: 1 })
+  const report = j.scan(messages, 8, 'deep')
+  assert.equal(report.actions.filter(a => a.kind === 'dedup_tool_call').length, 0, 'run_command с одинаковыми аргументами может дать разный вывод')
+})
+
+test('in-run: результаты правок (diff в контенте) не сжимаются', () => {
+  const messages = flatten(
+    runMsg(1, 'edit_file', { path: 'C:/__janitor_test__/e.ts' }, `[DRY RUN] Edit for: e.ts\n${'q'.repeat(1500)}`),
+    runMsg(2, 'run_command', { command: 'echo ok' }, 'ok\n' + 's'.repeat(1400)),
+  )
+  const j = new Janitor({ ...SETTINGS, janitorTailSteps: 1 })
+  const report = j.scan(messages, 8, 'deep')
+  for (const a of report.actions) {
+    const content = messages[a.messageIndices[0]].content
+    assert.ok(!content.startsWith('[DRY RUN]'), 'diff-подобные результаты правок защищены')
+  }
+})
+
+test('computeTailBoundary: граница по ходам, не по сырым сообщениям', () => {
+  const p = 'C:/x.ts'
+  // ход = assistant с 3 параллельными тулами + 3 tool-результата = 4 сообщения
+  const messages = []
+  for (let i = 1; i <= 4; i++) {
+    messages.push({ role: 'assistant', content: '', tool_calls: [1, 2, 3].map(n => ({ id: `c${i}_${n}`, type: 'function', function: { name: 'read_file', arguments: '{"path":"C:/x.ts"}' } })) })
+    for (const n of [1, 2, 3]) messages.push({ role: 'tool', tool_call_id: `c${i}_${n}`, name: 'read_file', content: readResult(p, 1, 50, 50) })
+  }
+  // 4 хода по 4 сообщения; хвост 2 хода → граница = индекс 2-го хода с конца
+  const boundary = computeTailBoundary(messages, 2)
+  assert.equal(boundary, 8, 'ходы по 4 сообщения: граница на 3-м ходе (индекс 8)')
+})
+
+test('discarded scans do not allocate archives; accepted scans reuse the original', () => {
+  const messages = flatten(runMsg(1, 'mcp__rea__analysis', {}, 'unique output '.repeat(500)), runMsg(2, 'update_todo', {}, 'ok'))
+  const janitor = new Janitor({ ...SETTINGS, janitorTailSteps: 1 })
+  for (let round = 1; round <= 20; round++) janitor.scan(messages, round)
+  assert.equal(janitor.getArchiveSize(), 0, 'scan must not commit unaccepted plans')
+  const report = janitor.scan(messages, 21)
+  janitor.apply(messages, report)
+  assert.equal(janitor.getArchiveSize(), 1)
+  janitor.apply(messages, janitor.scan(messages, 22))
+  assert.equal(janitor.getArchiveSize(), 1, 'same call and original must not duplicate')
+})
+
+test('archive capacity preserves existing recalls and leaves new unique results intact', () => {
+  const janitor = new Janitor({ ...SETTINGS, janitorTailSteps: 1 })
+  const entries = Array.from({ length: janitorMod.MAX_JANITOR_ARCHIVE_ENTRIES }, (_, i) => ({
+    id: `jan-${i + 1}-1`, summary: 'kept', ts: 1,
+    originalMessages: [{ role: 'tool', tool_call_id: `old-${i}`, content: `original-${i}` }],
+  }))
+  janitor.hydrateArchive(entries)
+  const messages = flatten(runMsg(1, 'mcp__rea__analysis', {}, 'new unique output '.repeat(500)), runMsg(2, 'update_todo', {}, 'ok'))
+  messages.push({ role: 'tool', tool_call_id: 'refs', name: 'recall_context', content: entries.map(e => `[recall:${e.id}]`).join(' ') })
+  const applied = janitor.apply(messages, janitor.scan(messages, 8))
+  assert.equal(applied[1].content, messages[1].content)
+  assert.equal(janitor.recall(entries[0].id)[0].content, 'original-0')
+  const oversized = new Janitor({ ...SETTINGS, janitorTailSteps: 1 })
+  const large = flatten(runMsg(1, 'mcp__rea__analysis', {}, 'x'.repeat(janitorMod.MAX_JANITOR_ARCHIVE_CHARS + 1)), runMsg(2, 'update_todo', {}, 'ok'))
+  assert.equal(oversized.scan(large, 8).actions.length, 0)
+})
+
+test('committed summary and paginated original survive a state-file round trip', () => {
+  const { saveAssistantState, loadAssistantState } = loadModule('src/core/context/assistantState.ts')
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'syntee-janitor-test-'))
+  try {
+    const original = 'first line\n' + 'unique middle '.repeat(600) + '\nLAST ERROR: preserve me'
+    const messages = flatten(runMsg(1, 'mcp__rea__analysis', {}, original), runMsg(2, 'update_todo', {}, 'ok'))
+    const janitor = new Janitor({ ...SETTINGS, janitorTailSteps: 1 })
+    const report = janitor.scan(messages, 8)
+    const compressed = janitor.apply(messages, report)
+    const id = report.actions[0].archiveId
+    saveAssistantState(temp, 'restart-test', { janitorArchive: janitor.getArchiveEntries() })
+    const restarted = new Janitor(SETTINGS)
+    restarted.hydrateArchive(loadAssistantState(temp, 'restart-test').janitorArchive)
+    const rawHistory = JSON.parse(JSON.stringify(messages))
+    restarted.restoreSummaries(rawHistory)
+    assert.equal(rawHistory[1].content, compressed[1].content, 'next worker must not expand the raw DB output')
+    let recalled = ''
+    for (let offset = 0; offset < original.length; offset += 700) recalled += restarted.recallPage(id, offset, 700).split('\n').slice(1).join('\n')
+    assert.equal(recalled, original, 'all original bytes remain accessible via pagination')
+    const reusedId = JSON.parse(JSON.stringify(messages))
+    reusedId[1].content = 'different original'
+    restarted.restoreSummaries(reusedId)
+    assert.equal(reusedId[1].content, 'different original', 'a reused call id alone must not replace different data')
+  } finally {
+    fs.unlinkSync(path.join(temp, 'assistants-state', 'restart-test.json'))
+    fs.rmdirSync(path.join(temp, 'assistants-state'))
+    fs.rmdirSync(temp)
+  }
+})
+
+test('multifile sections never borrow line counts or truncation from the next file; POSIX case is distinct', () => {
+  const sections = parseReadSections('read_files', '=== /src/A.ts | 1 lines ===\n1|all A\n=== /src/b.ts | 1000 lines ===\n1|b\n...[shown 250 of 1000 lines]')
+  assert.equal(sections[0].range.to, 1)
+  assert.equal(sections[1].range.to, 250)
+  assert.notEqual(janitorMod.normalizePath('/src/A.ts'), janitorMod.normalizePath('/src/a.ts'))
+})
+
+test('one stale file in a read_files batch cannot delete another unique file', () => {
+  const batch = `=== C:/test/a.ts | 20 lines ===\n${'1|a\n'.repeat(20)}=== C:/test/b.ts | 300 lines ===\n${'1|unique b content\n'.repeat(250)}...[shown 250 of 300 lines]`
+  const rounds = [runMsg(1, 'read_files', { paths: ['C:/test/a.ts', 'C:/test/b.ts'] }, batch), runMsg(2, 'edit_file', { path: 'C:/test/a.ts' }, 'edited'), runMsg(3, 'update_todo', {}, 'ok')]
+  const janitor = new Janitor({ ...SETTINGS, janitorTailSteps: 1 })
+  assert.equal(janitor.scan(flatten(...rounds), 8).actions.length, 0)
+  const rows = rounds.map((round, i) => msg(`m${i}`, [callStep(i + 1, round[0].tool_calls[0].function.name, JSON.parse(round[0].tool_calls[0].function.arguments)), resultStep(i + 1, round[1].content)]))
+  assert.equal(compressStoredMessages(rows, { minSavingsTokens: 0, tailKeep: 1 }).has('m0'), false)
+})
+
+test('changed MCP responses with identical arguments are never deduplicated', () => {
+  const first = 'analysis state 1 '.repeat(300), second = 'analysis state 2 '.repeat(300)
+  const rounds = [runMsg(1, 'mcp__rea__status', {}, first), runMsg(2, 'mcp__rea__status', {}, second), runMsg(3, 'update_todo', {}, 'ok')]
+  const janitor = new Janitor({ ...SETTINGS, janitorTailSteps: 1 })
+  assert.equal(janitor.scan(flatten(...rounds), 8, 'light').actions.length, 0)
+  const rows = [msg('a', [callStep(1, 'mcp__rea__status', {}), resultStep(1, first)]), msg('b', [callStep(2, 'mcp__rea__status', {}), resultStep(2, second)])]
+  assert.equal(compressStoredMessages(rows, { minSavingsTokens: 0, tailKeep: 1 }).size, 0)
+})
+
+test('persistent tail counts tool rounds within one assistant message and preserves call arguments', () => {
+  const steps = [], iterations = []
+  for (let i = 1; i <= 12; i++) {
+    const round = [callStep(i, 'search_code', { pattern: 'same' }), resultStep(i, 'same result '.repeat(300))]
+    steps.push(...round)
+    iterations.push({ textBefore: '', steps: round })
+  }
+  const row = { ...msg('long-run', steps), iterations }
+  const plans = compressStoredMessages([row], { minSavingsTokens: 0, tailKeep: 2 })
+  assert.ok(plans.has(row.id), 'one long assistant row still contains twelve tool rounds')
+  const plan = plans.get(row.id)
+  assert.ok(stepOf(plan, 'call1').content.includes('[Контекст оптимизирован'))
+  assert.equal(stepOf(plan, 'call11').content, steps[21].content)
+  assert.equal(stepOf(plan, 'call12').content, steps[23].content)
+  assert.equal(plan.iterations[0].steps[0].content, '', 'call content must not be replaced with its result summary')
+})
+
+test('disabled Janitor ignores even emergency scans, and committed summaries persist across workers', () => {
+  const messages = flatten(runMsg(1, 'mcp__rea__analysis', {}, 'unique output '.repeat(500)), runMsg(2, 'update_todo', {}, 'ok'))
+  const disabled = new Janitor({ ...SETTINGS, janitorEnabled: false, janitorTailSteps: 1 })
+  assert.equal(disabled.scan(messages, 8, 'deep', 1).actions.length, 0)
+  const janitor = new Janitor({ ...SETTINGS, janitorTailSteps: 1 })
+  const report = janitor.scan(messages, 8)
+  const applied = janitor.apply(messages, report)
+  const summary = applied[1].content
+  const restarted = new Janitor(SETTINGS)
+  restarted.hydrateArchive(JSON.parse(JSON.stringify(janitor.getArchiveEntries())))
+  const history = JSON.parse(JSON.stringify(messages))
+  restarted.restoreSummaries(history)
+  assert.equal(history[1].content, summary)
+})

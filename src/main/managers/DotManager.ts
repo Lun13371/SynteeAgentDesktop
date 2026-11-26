@@ -115,7 +115,7 @@ class DotManager {
 
   constructor() {
     // Стабильная ссылка и this для add/delete слушателя без стрелочного
-    // поля класса: bytecodePlugin не умеет преобразовывать такие поля.
+    // поля класса: поля-стрелки создают новую функцию на каждый экземпляр.
     this.onRunStatus = this.onRunStatus.bind(this)
   }
 

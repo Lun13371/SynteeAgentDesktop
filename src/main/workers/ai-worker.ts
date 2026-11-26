@@ -4,24 +4,37 @@
  * Сохранение происходит в main thread через сообщение 'done'.
  */
 import { parentPort, workerData } from 'worker_threads'
-import { AIClient, setGatewayToken, setGatewayTokenRefresher } from '../../core/ai/AIClient'
+import { AIClient, setGatewayToken, setGatewayTokenRefresher, setCodexToken, setCodexTokenRefresher } from '../../core/ai/AIClient'
 import { Agent } from '../../core/agent/Agent'
 import { classifyTool } from '../../core/agent/commandSafety'
 import { writeFile, editFile } from '../../core/tools/index'
 import { buildPlanningInjection, buildAskInjection } from '../../core/prompts/buildSystemPrompt'
 import { getModelContextWindow } from '../../core/context/contextManager'
-import { recordSessionCost, buildSnapshotFromReal, estimateCost, getModelPriceInfo } from '../../core/tokens/usageTracker'
+import {
+  buildSnapshotFromReal, estimateCost, getModelPriceInfo, importCalibration, setCalibrationModel,
+} from '../../core/tokens/usageTracker'
+import {
+  buildContextUsagePayload, type ContextUsageBreakdown, type ContextUsagePayload,
+  type ContextUsageSnapshot, type ContextUsageSource,
+} from '../../shared/contextUsage'
+import { setAIUsageSink, setDefaultAIUsageContext } from '../../core/ai/requestUsage'
 import { initModelCatalog } from '../../core/tokens/modelCatalog'
 import { setGatewayModelsCache } from '../../core/tokens/gatewayModelsCache'
 import { getToolSchemas } from '../../core/tools/index'
 import { requestBrowserOperation } from '../../core/agent/browserWorkerBroker'
+import { requestMcpTool } from '../../core/mcp/mcpWorkerBroker'
 import { filterToolSchemas, getToolSettings } from '../../shared/toolSettings'
-import { teardownSidecar } from '../../core/context/fastContext/sidecarClient'
+import { teardownSidecar } from '../../core/sidecar/sidecarClient'
+import { log } from '../../core/logger'
 import { installRustTokenCounter } from '../../core/tokens/rustTokenCounter'
 import type { ModelMeta, McpToolRuntime, PluginToolRuntime } from '../../shared/types'
 
 const storeData: Record<string, unknown> = workerData.storeData
 const planningMode: boolean = !!(workerData as Record<string, unknown>).planningMode
+// §orchestration — снимок фазовых моделей (planning/executing/reviewing/
+// replanning). main снимает его на старте хода; undefined = обычный ран.
+const orchestration = (workerData as Record<string, unknown>).orchestration as
+  import('../../shared/orchestration').OrchestrationRun | undefined
 const askMode: boolean = !!(workerData as Record<string, unknown>).askMode
 // Тумблер «Управление браузером»: browser_* тулы в тулсете с самого старта
 // рана. Может быть включён ПОСРЕДИ рана (request_access → confirm) — тогда
@@ -32,8 +45,6 @@ const imageMode: boolean = !!(workerData as Record<string, unknown>).imageMode
 // the worker or its initial tool snapshot.
 let runBrowserMode = browserMode
 let runImageMode = imageMode
-const workerPersona = (workerData as Record<string, unknown>).persona as import('../../shared/modes').PersonaId | undefined
-const workerPersonaInjection = ((workerData as Record<string, unknown>).personaInjection as string | undefined) ?? ''
 const workerMode: 'code' | 'work' = ((workerData as Record<string, unknown>).mode as 'code' | 'work') ?? 'code'
 
 // Инициализируем каталог моделей из кэш-файла (записанного main-процессом)
@@ -69,8 +80,41 @@ let steerAgent: Agent | null = null
  * §steer — реплики, пришедшие ДО создания Agent'а (worst case: пользователь
  * зажал кнопку в тот момент, когда воркер ещё инициализируется). Храним и
  * переливаем в agent.pushSteer сразу после создания — иначе молча теряем.
+ * Форма совпадает с extra-аргументом pushSteer (displayText/imageParts/
+ * attachments) — переливаем запись целиком.
  */
-const earlySteers: Array<{ id: string; text: string }> = []
+type SteerEntry = { id: string; text: string; displayText?: string; imageParts?: import('../../core/agent/types').ContentPart[]; attachments?: import('../../shared/types').SteerAttachmentMeta[] }
+const earlySteers: SteerEntry[] = []
+const earlyHints: Array<import('../../shared/assistants').HintCandidate> = []
+let earlyAssistantsSettings: import('../../shared/assistants').AssistantsSettings | null = null
+
+/**
+ * Настройки мини-агентов для ЭТОГО воркера, известные с самого старта.
+ *
+ * Раньше единственным источником был postMessage 'assistants_settings' из
+ * attachAssistants — а он молча выходит, когда глобальный тумблер выключен
+ * (и вообще не вызывается для суб-агентов). Воркер стартовал с
+ * DEFAULT_ASSISTANTS_SETTINGS (enabled: true), и первый раунд успевал
+ * прогнать briefing/janitor/watcher, хотя мини-агенты выключены.
+ * Теперь снапшот приходит в workerData и применяется ДО первого раунда.
+ *
+ * Суб-агент: детерминированный janitor (свёртка tool-результатов, без LLM)
+ * остаётся, LLM-роли гасятся — у суб-агента нет UI и локальная модель ему
+ * не положена (onAssistantEvent ему тоже не ставим, см. ниже).
+ */
+function resolveWorkerAssistantsSettings(): import('../../shared/assistants').AssistantsSettings | null {
+  const data = workerData as Record<string, unknown>
+  const raw = data.assistantsSettings as import('../../shared/assistants').AssistantsSettings | undefined
+  if (!raw || typeof raw.enabled !== 'boolean') return null
+  if (!data.isSubAgent) return raw
+  return {
+    ...raw,
+    watcherEnabled: false,
+    navigatorEnabled: false,
+    archivistEnabled: false,
+    briefingEnabled: false,
+  }
+}
 
 // set() мутирует локальную копию storeData — иначе API key round-robin
 // (AIClient.getClientForRole -> getNextApiKey -> store.set('providers', ...))
@@ -84,6 +128,7 @@ const fakeStore = {
 } as never
 
 const aiClient = new AIClient(fakeStore)
+setAIUsageSink(event => send({ type: 'request_usage', event }))
 
 // Refresher gateway-токена для AIClient: worker сам рефрешить не может
 // (electron-store/tokenStore в worker_threads недоступны), поэтому просит
@@ -104,6 +149,27 @@ setGatewayTokenRefresher(() => new Promise<string | null>((resolve) => {
   })
   send({ type: 'gateway_token_refresh', replyId })
 }))
+
+// Refresher Codex-токена (ChatGPT-подписка): та же схема round-trip в main,
+// потому что codexAuth живёт в main-процессе (electron-store + safeStorage).
+setCodexTokenRefresher(() => new Promise<string | null>((resolve) => {
+  const replyId = `cx-refresh-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+  const timer = setTimeout(() => {
+    replyHandlers.delete(replyId)
+    resolve(null)
+  }, 15000)
+  replyHandlers.set(replyId, (reply) => {
+    clearTimeout(timer)
+    const token = (reply.token as string | null) ?? null
+    if (token) setCodexToken(token)
+    resolve(token)
+  })
+  send({ type: 'codex_token_refresh', replyId })
+}))
+
+// Стартовый Codex-токен из main (в worker нет доступа к codexAuth).
+const codexTokenAtStart = (workerData as Record<string, unknown>).codexToken as string | null | undefined
+if (codexTokenAtStart) setCodexToken(codexTokenAtStart)
 
 // Native analyze_image lifecycle (см. shared/types ToolStep.visualAnalysis).
 // Основная модель получает пиксели напрямую; исходный tool_result помечается
@@ -130,9 +196,22 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
   if (msg.type === 'steer') {
     const text = typeof msg.text === 'string' ? msg.text : ''
     const steerId = typeof msg.steerId === 'string' && msg.steerId ? msg.steerId : `steer-${Date.now()}`
-    if (!text.trim()) return
-    if (steerAgent) steerAgent.pushSteer(steerId, text)
-    else earlySteers.push({ id: steerId, text })
+    // §steer — вложения: text уже инлайнен main'ом (processAttachmentsAndStream),
+    // imageParts — пиксели для vision, displayText — как написал пользователь
+    // (с [[attach:id]]-токенами), attachments — мета для карточки/БД.
+    const imageParts = Array.isArray(msg.imageParts)
+      ? msg.imageParts as import('../../core/agent/types').ContentPart[]
+      : undefined
+    const attachments = Array.isArray(msg.attachments)
+      ? msg.attachments as import('../../shared/types').SteerAttachmentMeta[]
+      : undefined
+    if (!text.trim() && !imageParts?.length) return
+    const entry: SteerEntry = { id: steerId, text }
+    if (typeof msg.displayText === 'string' && msg.displayText.trim()) entry.displayText = msg.displayText
+    if (imageParts?.length) entry.imageParts = imageParts
+    if (attachments?.length) entry.attachments = attachments
+    if (steerAgent) steerAgent.pushSteer(steerId, text, entry)
+    else earlySteers.push(entry)
     return
   }
   // --- §steer: пользователь передумал, реплику снимаем до внедрения ---
@@ -142,6 +221,19 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
     if (steerAgent) steerAgent.cancelSteer(steerId)
     const idx = earlySteers.findIndex(s => s.id === steerId)
     if (idx >= 0) earlySteers.splice(idx, 1)
+    return
+  }
+  if (msg.type === 'hint') {
+    const hint = msg.hint as import('../../shared/assistants').HintCandidate | undefined
+    if (!hint?.id || !hint?.content) return
+    if (steerAgent) steerAgent.pushHint(hint)
+    else earlyHints.push(hint)
+    return
+  }
+  if (msg.type === 'assistants_settings') {
+    const settings = msg.settings as import('../../shared/assistants').AssistantsSettings | undefined
+    if (settings && steerAgent) steerAgent.setAssistantsSettings(settings)
+    else if (settings) earlyAssistantsSettings = settings
     return
   }
   // --- Reply от main (spawn_agent_reply, get_agent_status_reply) ---
@@ -194,7 +286,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
     agentSettings: {
       enableTools: boolean
       maxSteps: number
-      approvalMode: string
+      approvalMode: import('../../shared/types').ApprovalMode
       toolOutputMode: string
       enableThinking: boolean
       autoMemoryInterval?: number
@@ -204,6 +296,9 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
     }
   }
 
+  setDefaultAIUsageContext({ chatId, source: subagentRole ? 'subagent' : 'main' })
+  // Калибровка оценки — по фактической модели запроса (после резолва).
+  setCalibrationModel(resolvedProviderId ?? '', resolvedModelId ?? '')
   let fullText = ''
   let thinkingText = ''
   let thinkingStartMs = 0
@@ -254,9 +349,47 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
   const isSubAgentWorker = !!(workerData as Record<string, unknown>).isSubAgent
   const contextWindow = getModelContextWindow(storeData, isSubAgentWorker ? 'subagent' : 'main')
 
+  // Калибровка оценки контекста: коэффициенты приходят из main (worker не
+  // видит electron-store). Ключ модели выставляется ниже — по modelId из
+  // стартового сообщения, когда он уже резолвлен.
+  importCalibration((workerData as Record<string, unknown>).contextCalibration as Record<string, number> | undefined)
+
   // Последний breakdown для мерджа с реальным usage (buildSnapshotFromReal
   // масштабирует его пропорционально promptTokens вместо verbatim-наследования).
-  let lastBreakdown: Record<string, number> | undefined
+  let lastBreakdown: ContextUsageBreakdown | undefined
+
+  /**
+   * Единственный путь эмита context_usage из воркера.
+   *
+   * Раньше pct/status/формат payload собирались в пяти местах вручную
+   * (`Math.round(x / limit * 100)`, пороги 85/60) и без chatId — main не мог
+   * отбросить событие чужого чата, а renderer-фильтр не срабатывал никогда.
+   * Теперь арифметика живёт в shared/contextUsage, chatId уходит всегда.
+   * `extra` — поля поверх контракта (например raw* токены turn'а для main).
+   */
+  const emitContextUsage = (
+    snapshot: ContextUsageSnapshot,
+    source: ContextUsageSource,
+    extra: Partial<ContextUsagePayload> & Record<string, unknown> = {},
+  ): void => {
+    send({
+      type: 'context_usage',
+      ...buildContextUsagePayload({
+        chatId,
+        snapshot,
+        source,
+        scope: extra.scope,
+        compressed: extra.compressed,
+        historyMessages: extra.historyMessages,
+        toolCallsCount: extra.toolCallsCount,
+        pricing: extra.pricing,
+        estimatedCostCents: extra.estimatedCostCents,
+        providerId: extra.providerId,
+        modelId: extra.modelId,
+      }),
+      ...extra,
+    })
+  }
 
   const flushIter = () => {
     if (currentIterSteps.length > 0) {
@@ -328,7 +461,21 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
       // §steer — exposing the instance to the shared on('message') handler +
       // сливаем реплики, пришедшие пока воркер ещё не был готов.
       steerAgent = agent
-      for (const s of earlySteers.splice(0)) agent.pushSteer(s.id, s.text)
+      for (const s of earlySteers.splice(0)) agent.pushSteer(s.id, s.text, s)
+      for (const h of earlyHints.splice(0)) agent.pushHint(h)
+      if (earlyAssistantsSettings) { agent.setAssistantsSettings(earlyAssistantsSettings); earlyAssistantsSettings = null }
+      else {
+        // Снапшот из workerData — чтобы глобальный Off действовал с первого
+        // раунда (сообщение 'assistants_settings' от attachAssistants может
+        // не прийти вообще, если мини-агенты выключены).
+        const snapshotSettings = resolveWorkerAssistantsSettings()
+        if (snapshotSettings) agent.setAssistantsSettings(snapshotSettings)
+      }
+      // Briefing continuity (git log/status) — снапшот из main: воркер git не
+      // запускает, снапшот считается один раз на проект с кешем/коалесингом
+      // (src/main/assistants/gitBriefingCache.ts) и идёт прямо в стартовый
+      // briefing-блок, без отдельной подсказки посреди рана.
+      agent.continuitySnapshot = ((workerData as Record<string, unknown>).briefingContinuity as string | undefined) ?? ''
 
       // Мутабельный тулсет рана: request_access может включить browser-тулы
       // ПОСРЕДИ рана (подтверждение юзера) — Agent держит ссылку на массив
@@ -341,7 +488,6 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
           planningMode,
           askMode,
           imageMode,
-          persona: workerPersona,
           browserMode,
           mode: workerMode,
           mcpTools: ((workerData as Record<string, unknown>).mcpTools as McpToolRuntime[] | undefined) ?? [],
@@ -360,7 +506,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
       const enableCapabilityMidRun = (capability: 'browser_control' | 'image_generation'): number => {
         const names = new Set(runTools.map(t => t.function.name))
         const permitted = filterToolSchemas(getToolSchemas({
-          planningMode, askMode, imageMode: capability === 'image_generation' || runImageMode, persona: workerPersona,
+          planningMode, askMode, imageMode: capability === 'image_generation' || runImageMode,
           browserMode: capability === 'browser_control' || runBrowserMode, mode: workerMode, ...toolSettings,
         }), toolSettings)
         const capabilitySchemas = capability === 'browser_control'
@@ -381,6 +527,9 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
 
       // Прокидываем chatId и колбэки рабочей памяти
       agent.chatId = chatId
+      // Персист мини-агентов (конституция + recall-архив): main-чат, не
+      // инкогнито — инкогнито не должен оставлять след на диске.
+      agent.persistAssistantState = !incognito && !isSubAgent
       const runGoal = msg.goal as import('../../shared/types/goal').ChatGoal | undefined
       // §goal — активная (running) и приостановленная (paused) цель участвуют
       // в следующем ходе: отправка сообщения возобновляет цикл (как в [CC]).
@@ -443,6 +592,15 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
       agent.onFileSnapshot = (snapshot) => {
         send({ type: 'file_snapshot', chatId, msgId, snapshot })
       }
+      // Канал для LLM-зависимых мини-агентов (navigator/archivist) — main
+      // решает, запускать ли локальную модель. Суб-агенту он не ставится
+      // вовсе: у него нет своего UI-чата в main, а детерминированные роли
+      // (janitor-свёртка) работают и без LLM-событий.
+      if (!isSubAgent) {
+        agent.onAssistantEvent = (evt) => {
+          send({ type: 'assistant_event', chatId, ...evt })
+        }
+      }
 
       // Синхронизируем workdir/projectId/chatId/gateway/колбэки в ToolDispatcher —
       // они устанавливаются ПОСЛЕ конструктора Agent, но ToolDispatcher создаётся
@@ -455,15 +613,17 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
         {
           signal: runAbort.signal,
           onContextCounted: (info) => {
-            const pct = Math.min(100, Math.round(info.promptTokens / contextWindow * 100))
-            const status = pct >= 85 ? 'critical' : pct >= 60 ? 'warn' : 'ok'
-            lastBreakdown = info.breakdown as Record<string, number>
-            send({
-              type: 'context_usage',
-              pct, estimated: info.promptTokens, limit: contextWindow, status,
-              source: 'estimate',
-              breakdown: info.breakdown,
-            })
+            lastBreakdown = info.breakdown
+            emitContextUsage(
+              { estimated: info.promptTokens, limit: contextWindow, breakdown: info.breakdown },
+              'estimate',
+              { scope: 'request' },
+            )
+          },
+          // Живой трейс вложенных тулов execute_code — ephemeral, не пишется
+          // в collectedSteps/БД: карточка показывает «что выполняется сейчас».
+          onCodeTrace: (entry) => {
+            send({ type: 'code_trace', chatId, msgId, entry })
           },
           onStep: (step) => {
             // §rollback-live — снапшоты файлов стримим отдельным сообщением
@@ -588,6 +748,25 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
                 timestamp: Date.now(),
                 steerId: step.steerId,
                 steerApplied: step.steerApplied !== false,
+                attachments: (step as { attachments?: import('../../shared/types').SteerAttachmentMeta[] }).attachments,
+              }
+              collectedSteps.push(ts)
+              currentIterSteps.push(ts)
+              send({ type: 'step', chatId, msgId, step })
+            } else if (step.type === 'hint' || step.type === 'janitor') {
+              // Мини-агенты (watcher/constitution/briefing/navigator/
+              // economist/janitor): карточка в ленте + персист в toolSteps.
+              const ts = {
+                id: `${Date.now()}-${Math.random()}`,
+                type: step.type,
+                content: step.content,
+                timestamp: Date.now(),
+                hintSource: step.hintSource,
+                hintId: step.hintId,
+                janitorKind: step.janitorKind,
+                janitorTokensSaved: step.janitorTokensSaved,
+                janitorArchiveId: step.janitorArchiveId,
+                janitorActions: step.janitorActions,
               }
               collectedSteps.push(ts)
               currentIterSteps.push(ts)
@@ -636,15 +815,12 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
             void teardownSidecar()
           },
           onContextUpdate: (info) => {
-            const pct = Math.min(100, Math.round(info.promptTokens / contextWindow * 100))
-            const status = pct >= 85 ? 'critical' : pct >= 60 ? 'warn' : 'ok'
-            lastBreakdown = info.breakdown as Record<string, number>
-            send({
-              type: 'context_usage',
-              pct, estimated: info.promptTokens, limit: contextWindow, status,
-              source: 'estimate',
-              breakdown: info.breakdown,
-            })
+            lastBreakdown = info.breakdown
+            emitContextUsage(
+              { estimated: info.promptTokens, limit: contextWindow, breakdown: info.breakdown },
+              'estimate',
+              { scope: 'request' },
+            )
           },
           onUsage: (promptTokens: number, completionTokens: number, cacheReadTokens?: number, cacheWriteTokens?: number) => {
             // Реальные токены от провайдера — приоритет над оценкой
@@ -652,24 +828,14 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
             const snapshot = buildSnapshotFromReal(
               { promptTokens, completionTokens, cacheReadTokens, cacheWriteTokens },
               contextWindow,
-              lastBreakdown as { history: number; system: number; tools: number; current: number; toolResults?: number; cacheReadTokens?: number; cacheWriteTokens?: number },
+              lastBreakdown,
             )
             // Накапливаем стоимость сессии (cache-токены тарифицируются отдельно)
-            const sess = recordSessionCost(chatId, resolvedProviderId ?? '', resolvedModelId ?? '', promptTokens, completionTokens, cacheReadTokens, cacheWriteTokens)
-            send({
-              type: 'context_usage',
-              pct: snapshot.pct,
-              estimated: snapshot.estimated,
-              limit: snapshot.limit,
-              status: snapshot.status,
-              source: 'real',
-              breakdown: snapshot.breakdown,
+            emitContextUsage(snapshot, 'real', {
               pricing: getModelPriceInfo(resolvedProviderId ?? '', resolvedModelId ?? ''),
               estimatedCostCents: estimateCost(promptTokens, completionTokens, resolvedProviderId ?? '', resolvedModelId ?? ''),
               providerId: resolvedProviderId,
               modelId: resolvedModelId,
-              sessionCostCents: sess?.totalCents ?? null,
-              sessionRequests: sess?.requests ?? 0,
               // Сырые накопленные токены turn'а — main аккумулирует их в
               // run.bufferedUsage, чтобы статистика сохранилась при Стопе/
               // краше воркера (done/error при terminate() уже не приходят).
@@ -709,7 +875,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
               send({ type: 'rate_limit', chatId, waitSec })
             }
           },
-          approvalMode: agentSettings.approvalMode as never,
+          approvalMode: agentSettings.approvalMode,
           onConfirm: (toolName, args) => {
             return new Promise((resolve) => {
               const reqId = `confirm-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
@@ -763,8 +929,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
               replyHandlers.set(replyId, (reply) => {
                 resolve({ summary: reply.summary as string, error: reply.error as string | undefined })
               })
-              const { approvalMode, ...rest } = opts
-              send({ type: 'spawn_agent', chatId, msgId, replyId, ...rest, approval_mode: approvalMode, callId: opts.callId })
+              send({ type: 'spawn_agent', chatId, msgId, replyId, ...opts })
             })
           },
           onRenderPage: (url, renderOpts) => {
@@ -862,6 +1027,11 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
           onTodoUpdate: (items) => {
             send({ type: 'todo_update', chatId, msgId, items })
           },
+          // §orchestration — прогресс фаз. Одно событие на переход (running при
+          // входе в фазу, done/blocked при выходе); UI накапливает по startedAt.
+          onOrchestrationProgress: (progress) => {
+            send({ type: 'orchestration_progress', chatId, msgId, progress })
+          },
           onThinkingToken: (token) => {
             if (!thinkingStartMs) thinkingStartMs = Date.now()
             const tok = typeof token === 'string' ? token : ''
@@ -883,19 +1053,8 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
               send({ type: 'get_main_chat_messages', chatId, msgId, replyId, limit: params.limit, search: params.search })
             })
           },
-          onMcpCall: (fullToolName, args) => {
-            return new Promise((resolve) => {
-              const replyId = `mcp-call-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
-              replyHandlers.set(replyId, (reply) => {
-                resolve({
-                  success: (reply.success as boolean) ?? false,
-                  output: (reply.output as string) ?? '',
-                  error: reply.error as string | undefined,
-                })
-              })
-              send({ type: 'mcp_call', chatId, msgId, replyId, toolName: fullToolName, args })
-            })
-          },
+          onMcpCall: (fullToolName, args, signal) =>
+            requestMcpTool(fullToolName, args, replyHandlers, send, signal ?? runAbort.signal),
           onMcpRequiresApproval: (fullToolName) => {
             // Синхронный ответ из кэша workerData.mcpApprovalMap (заполняется main
             // при spawn-е: { [toolFullName]: boolean }). По умолчанию true (безопаснее).
@@ -983,8 +1142,39 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
               send({ type: 'recall_memory', chatId, msgId, replyId, ...params })
             })
           },
+          onProjectMap: (args) => {
+            // В worker-потоке БД нет (getDB бросает) — граф кода читает main.
+            // Таймаут 20с: потерянный reply не должен вешать тул до конца рана.
+            return new Promise((resolve) => {
+              const replyId = `pmap-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+              const started = Date.now()
+              let settled = false
+              const finish = (result: { success: boolean; output: string; error?: string }) => {
+                if (settled) return
+                settled = true
+                clearTimeout(timer)
+                replyHandlers.delete(replyId)
+                log('[ai-worker] project_map rpc %s in %dms', result.error && !result.output ? 'TIMEOUT/FAIL' : 'reply', Date.now() - started)
+                resolve(result)
+              }
+              const timer = setTimeout(() => finish({
+                success: false,
+                output: '',
+                error: 'project_map timed out after 20s (no reply from main) — try again, it usually means the map/index is still warming up',
+              }), 20_000)
+              replyHandlers.set(replyId, (reply) => {
+                finish({
+                  success: (reply.success as boolean) ?? false,
+                  output: (reply.output as string) ?? '',
+                  error: reply.error as string | undefined,
+                })
+              })
+              log('[ai-worker] project_map rpc send: action=%s project=%s', args.action, (args.projectId ?? '').slice(0, 8))
+              send({ type: 'project_map', chatId, msgId, replyId, ...args })
+            })
+          },
           onToolProgress: (p) => {
-            // Progress для долгих тулов (get_fast_context) — транслируем в main
+            // Progress для долгих тулов — транслируем в main
             // для live-индикации этапов в UI ToolChain
             send({
               type: 'tool_progress', chatId, msgId,
@@ -1001,15 +1191,10 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
         // новым user-сообщением) — максимальный вес у LLM. Раньше инъекция
         // стояла в начале history и при длинной истории «забывалась» моделью.
         // planning имеет приоритет над ask (он строже — требует <plan>).
-        // Persona — ортогональна: её injection добавляется после planning/ask
-        // (если есть), чтобы роль сохранялась в длинном чате после компакции.
-        // Дублируется в самом system prompt (buildSystemPrompt → buildPersonaInjection)
-        // для надёжности при компакции истории.
         (() => {
           let h = history
           if (planningMode) h = [...h, { role: 'system', content: buildPlanningInjection() }]
           else if (askMode) h = [...h, { role: 'system', content: buildAskInjection() }]
-          if (workerPersonaInjection) h = [...h, { role: 'system', content: workerPersonaInjection }]
           return h
         })(),
         runTools,        {
@@ -1019,8 +1204,8 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
           maxRepeatedErrors: agentSettings.maxRepeatedErrors ?? 2,
           fileCacheSnapshot: (workerData as Record<string, unknown>).fileCacheSnapshot as Record<string, import('../../core/context/fileCacheTypes').FileCacheEntry> | undefined,
           planningMode,
-          persona: workerPersona,
           subagentRole,
+          orchestration,
           imageParts: imageParts as Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string; detail?: string } }> | undefined,
         }
       )
@@ -1036,15 +1221,12 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
         contextMessages,
         {
           onContextCounted: (info) => {
-            const pct = Math.min(100, Math.round(info.promptTokens / contextWindow * 100))
-            const status = pct >= 85 ? 'critical' : pct >= 60 ? 'warn' : 'ok'
-            lastBreakdown = info.breakdown as Record<string, number>
-            send({
-              type: 'context_usage',
-              pct, estimated: info.promptTokens, limit: contextWindow, status,
-              source: 'estimate',
-              breakdown: info.breakdown,
-            })
+            lastBreakdown = info.breakdown
+            emitContextUsage(
+              { estimated: info.promptTokens, limit: contextWindow, breakdown: info.breakdown },
+              'estimate',
+              { scope: 'request' },
+            )
           },
           onToken: (token) => {
             fullText += token
@@ -1065,24 +1247,14 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
             // (non-tool стриминг не всегда несёт cache-токены — каст к wider-типу)
             const u = usage as { promptTokens: number; completionTokens: number; cacheReadTokens?: number; cacheWriteTokens?: number }
             accumulateUsage(u.promptTokens, u.completionTokens, u.cacheReadTokens, u.cacheWriteTokens)
-            const cw = getModelContextWindow(storeData)
-            const snapshot = buildSnapshotFromReal(usage, cw, lastBreakdown as { history: number; system: number; tools: number; current: number })
-            // Накапливаем стоимость сессии
-            const sess = recordSessionCost(chatId, resolvedProviderId ?? '', resolvedModelId ?? '', usage.promptTokens, usage.completionTokens)
-            send({
-              type: 'context_usage',
-              pct: snapshot.pct,
-              estimated: snapshot.estimated,
-              limit: snapshot.limit,
-              status: snapshot.status,
-              source: 'real',
-              breakdown: snapshot.breakdown,
+            // contextWindow уже посчитан на входе в run() — не пересчитываем
+            // лимит модели в каждом колбэке (был дубль getModelContextWindow).
+            const snapshot = buildSnapshotFromReal(usage, contextWindow, lastBreakdown)
+            emitContextUsage(snapshot, 'real', {
               pricing: getModelPriceInfo(resolvedProviderId ?? '', resolvedModelId ?? ''),
               estimatedCostCents: estimateCost(u.promptTokens, u.completionTokens, resolvedProviderId ?? '', resolvedModelId ?? ''),
               providerId: resolvedProviderId,
               modelId: resolvedModelId,
-              sessionCostCents: sess?.totalCents ?? null,
-              sessionRequests: sess?.requests ?? 0,
               // Сырые накопленные токены turn'а (см. агентный onUsage выше)
               rawPromptTokens: accPromptTokens || undefined,
               rawCompletionTokens: accCompletionTokens || undefined,

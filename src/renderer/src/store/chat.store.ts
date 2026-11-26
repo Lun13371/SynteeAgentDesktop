@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import type { Chat, Message, ChatMode, Project, ToolStep, QueueItemMeta, LastTurnChanges } from '../../../shared/types'
+import type { OrchestrationProgress } from '../utils/orchestrationProgress'
 
 // ── Per-chat live state ────────────────────────────────────────────────
 // Раньше всё live-состояние (стриминг-текст, шаги тулов, thinking, todo)
@@ -27,13 +28,18 @@ export interface ChatLiveState {
   rateLimitSec: number
   isTyping: boolean
   isAgentRunning: boolean
-  /** Live progress для долгих тулов (get_fast_context / run_command): {toolName → {stage, detail, sessionId, files...}} */
+  /** Live progress для долгих тулов (run_command / process_attachments): {toolName → {stage, detail, sessionId, files...}} */
   toolProgress: Record<string, { stage: string; detail?: string; sessionId?: string; filesProcessed?: number; filesTotal?: number; filesFound?: Array<{ path: string; score: number; why: string }>; ts: number }>
   /** Live-маппинг саб-агентов, запущенных в текущем стриме. Ключ — agentId.
    *  Заполняется событием agent:spawn (эмитится из main ДО запуска worker'а
    *  суб-агента). Renderer матчит запись с live-шагом tool_call spawn_agent
    *  по callId (или по task как fallback) и сразу рисует карточку саб-агента. */
   spawnedAgents: Array<{ agentId: string; callId?: string; task: string; msgId: string; model?: string; role?: string; ts: number }>
+  /** Live-прогресс оркестрации текущего рана (одна запись на фазу).
+   *  Приходит событием agent:orchestration_progress, гидрируется из
+   *  chat live state payload при возврате в чат. В истории тот же массив
+   *  лежит в Message.orchestration. Пусто — ран без оркестрации. */
+  orchestration: OrchestrationProgress[]
   /** Структурированный ретрай для UI-счётчика «повтор 3/5». Не затирается
    *  следующим onStatus (в отличие от agentStatus). Сбрасывается в null
    *  при успехе/новом раунде. */
@@ -70,6 +76,7 @@ export const EMPTY_LIVE: ChatLiveState = {
   isAgentRunning: false,
   toolProgress: {},
   spawnedAgents: [],
+  orchestration: [],
 }
 
 // ── Side chat (параллельный доп-чат в правой панели) ───────────────────

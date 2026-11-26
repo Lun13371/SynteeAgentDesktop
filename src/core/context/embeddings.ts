@@ -7,10 +7,10 @@
  *
  * Работает в main process и worker_threads (onnxruntime-node).
  *
- * Дополнительно: отдельный lazy E5-embedder (getE5Embedder) — multilingual
- * модель для фоновой semantic-индексации recall_memory (см. memory/semanticIndex.ts).
- * Полностью изолирован от getEmbedder/fast-context: свой pipeline, свои флаги,
- * свой dispose. Недоступность E5 НЕ влияет на TF-IDF/MiniLM поиск.
+ * Дополнительно: отдельный lazy E5-embedder — multilingual модель для фоновой
+ * semantic-индексации recall_memory (см. memory/semanticIndex.ts). Полностью
+ * изолирован от getEmbedder: свой pipeline, свои флаги, свой dispose.
+ * Недоступность E5 НЕ влияет на TF-IDF/MiniLM поиск.
  */
 
 // Embedding helpers are platform-independent; paths are normalized as strings below.
@@ -20,8 +20,6 @@ export type Embedding = Float32Array
 
 export interface Embedder {
   embed(text: string): Promise<Embedding>
-  stableEmbed?: (text: string) => Promise<Embedding>
-  stableDim?: number
   dim: number
   mode: 'neural' | 'tfidf'
 }
@@ -113,10 +111,7 @@ export function disposeEmbedder(): void {
 }
 
 const NEURAL_DIM = 384
-// Memory TF-IDF layout stays stable. Fast-context uses a separate dimension so
-// old vectors are invalidated without changing persisted memory embeddings.
 const TFIDF_DIM = 1024
-const FAST_TFIDF_DIM = 2048
 
 // ─── E5 multilingual embeddings — ПЕРЕНЕСЕНО В RUST SIDECAR ──────────────────
 // Модель Xenova/multilingual-e5-small (q8), токенизация и ONNX-инференс теперь
@@ -126,7 +121,7 @@ const FAST_TFIDF_DIM = 2048
 // 10 с, eventLoopP95 390–450 мс) — «фризил весь UI».
 //
 // Здесь остаются только MiniLM (getEmbedder, по умолчанию выключен) и TF-IDF
-// fallback: fast-context и memory TF-IDF работают как раньше.
+// fallback для memory-поиска.
 
 async function embedNeural(text: string): Promise<Embedding> {
   if (!_pipeline) await initNeural()
@@ -198,10 +193,6 @@ function embedTfidf(text: string): Embedding {
   return embedHashed(text, TFIDF_DIM, project?.idf, project?.docCount)
 }
 
-function embedFastContextTfidf(text: string): Embedding {
-  return embedHashed(text, FAST_TFIDF_DIM)
-}
-
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 export async function getEmbedder(): Promise<Embedder> {
@@ -210,13 +201,11 @@ export async function getEmbedder(): Promise<Embedder> {
   if (_useNeural && !_neuralInitFailed) {
     await initNeural()
     if (_pipeline) {
-      return { embed: embedNeural, stableEmbed: embedNeural, dim: NEURAL_DIM, stableDim: NEURAL_DIM, mode: 'neural' }
+      return { embed: embedNeural, dim: NEURAL_DIM, mode: 'neural' }
     }
   }
   return {
     embed: async (text: string) => embedTfidf(text),
-    stableEmbed: async (text: string) => embedFastContextTfidf(text),
-    stableDim: FAST_TFIDF_DIM,
     dim: TFIDF_DIM,
     mode: 'tfidf',
   }
@@ -240,37 +229,4 @@ export function embeddingToBuffer(emb: Embedding): Buffer {
 /** Десериализация embedding из Buffer. */
 export function bufferToEmbedding(buf: Buffer): Embedding {
   return new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4)
-}
-
-/**
- * Текст для embedding файла: путь + имена символов + kinds + сигнатуры + imports.
- * Компактное представление содержимого файла для semantic поиска.
- * ВАЖНО: путь файла включён — иначе auth.ts без символа "auth" не матчится.
- */
-export function fileToEmbeddingText(
-  defs: Array<{ name: string; kind: string; signature: string; parentName?: string }>,
-  imports: string[],
-  filePath?: string,
-): string {
-  const parts: string[] = []
-  // Путь файла — basename + директория (даёт сигнал для semantic match)
-  if (filePath) {
-    const normalized = filePath.replace(/\\/g, '/')
-    const segments = normalized.split('/')
-    const baseName = segments[segments.length - 1].replace(/\.[^.]+$/, '')
-    parts.push(baseName)
-    // Последние 2 директории — контекст (e.g. "auth/login" для src/auth/login.ts)
-    if (segments.length >= 3) {
-      parts.push(segments[segments.length - 2])
-    }
-  }
-  for (const d of defs.slice(0, 50)) {
-    if (d.parentName) parts.push(`${d.parentName}.${d.name} ${d.kind}`)
-    else parts.push(`${d.name} ${d.kind}`)
-    if (d.signature) parts.push(d.signature.slice(0, 80))
-  }
-  for (const imp of imports.slice(0, 20)) {
-    parts.push(imp)
-  }
-  return parts.join(' ')
 }

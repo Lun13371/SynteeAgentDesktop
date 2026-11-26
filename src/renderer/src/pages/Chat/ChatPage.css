@@ -438,26 +438,26 @@ border-top-color: var(--accent, #7c6cff);
   overflow-y: auto;
   overflow-x: hidden;
   position: relative;
-  /* content-visibility: auto — браузер пропускает rendering для off-screen
-     контента. Меньше paint/composite работы в idle. Chromium поддерживает. */
-  content-visibility: auto;
-  contain-intrinsic-size: auto 600px;
+  /* content-visibility ЗДЕСЬ НЕЛЬЗЯ. Свойство рассчитано на элементы-элементы
+     списка (каждое сообщение), а не на сам скроллер: на скроллере Chromium
+     пропускает rendering для невидимой части контейнера и подставляет
+     contain-intrinsic-size (было 600px) — отсюда гигантские пустые провалы
+     между сообщениями в ленте. Виртуализация списка и так ограничивает
+     работу по layout/paint, так что выигрыша от этого не было. */
   /* Scroll-компенсация при prepend делается вручную в ChatPage
      (useLayoutEffect на messages.length) — отключаем встроенный
      scroll-anchoring Chromium, чтобы он не дублировал компенсацию. */
   overflow-anchor: none;
-  /* ���������������� � �������� ������� .chat-input-wrap �����
-     ResizeObserver (ChatPage.tsx) � ����� ��� ��������� todo-����
-     ��� ������� (workdir/planning) ������������� 120px ������ ��
-     ������� � �����-��� ������� �� ��������� ("������" ������).
-     transition ����� ���������: ResizeObserver �������� ������ ����
-     �� ����� �������� todo, � CSS-transition �������� "�������"
-     ���������� �������� � ��������� feedback-����� � �����. */
+  /* Нижний отступ под плавающий .chat-input-wrap: его высоту меряет
+     ResizeObserver (ChatPage.tsx) и кладёт в --chat-input-h. Значение меняется
+     при появлении todo-панели (workdir/planning) и смене размера инпута —
+     поэтому transition выключен: ResizeObserver срабатывает уже после того,
+     как инпут отрисован, а CSS-transition давал бы «дрожание» контента. */
   padding: 16px 0 var(--chat-input-h, 120px) 0;
 }
 
-/* Floating-������ ����������� ���� � ����������, �� ������, ���� ����
-   �����-����. ���������� ����� ������������ ������ �� ���� (autoScroll=false). */
+/* Floating-кнопка прокрутки вниз: центрируется по горизонтали, не по низу, если
+   есть доп. панели. Компенсация делается через контейнер, а не через сдвиг. */
 .chat-scroll-down-btn {
   position: absolute;
   /* Аналогично chat-editor-bar: без translateX(-50%) — кнопка

@@ -6,7 +6,6 @@
  *                        чтобы включить проектные скиллы указанного проекта.
  *   skills:setState    — обновить состояние скилла (enabled + scope).
  *   skills:reload      — сбросить кэш и перечитать скиллы с диска.
- *   skills:getActive   — активные скиллы для конкретного чата (для бейджа).
  *
  * SkillManager — синглтон, инициализируется в main/index.ts через initSkillManager.
  */
@@ -97,16 +96,6 @@ export function registerSkillsIPC(store: Store): void {
   ipcMain.handle('skills:reload', () => {
     getSkillManager().invalidate()
     return { ok: true }
-  })
-
-  ipcMain.handle('skills:getActive', (_e, params: { chatId: string; isIncognito?: boolean }) => {
-    const mgr = getSkillManager()
-    const info = getChatProjectInfo(params.chatId)
-    return mgr.getActiveSkillsForChat({
-      projectWorkdir: info.workdir,
-      projectId: info.projectId,
-      isIncognito: params.isIncognito,
-    })
   })
 
   // Прямая установка скилла по URL — без агента.

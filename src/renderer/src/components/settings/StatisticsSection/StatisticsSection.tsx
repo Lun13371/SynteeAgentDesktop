@@ -688,7 +688,7 @@ const AttachmentsGrid = memo(function AttachmentsGrid({
               >
                 <span className="stats-chip__icon">
                   <AppIcon
-                    name={k.kind === 'image' ? 'image' : k.kind === 'skill' ? 'puzzle' : k.kind === 'command' ? 'command' : 'fileText'}
+                    name={k.kind === 'image' ? 'image' : k.kind === 'skill' ? 'puzzle' : k.kind === 'command' ? 'command' : k.kind === 'mcp' ? 'server' : 'fileText'}
                     size="xs"
                     tone={active ? 'accent' : 'muted'}
                   />

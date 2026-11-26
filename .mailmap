@@ -1,0 +1,9 @@
+# Переатрибуция авторов коммитов для GitHub и `git shortlog`.
+# GitHub читает .mailmap и объединяет перечисленные адреса под одним
+# аккаунтом, поэтому историю переписывать не нужно.
+#
+# cegor@syntee.local — служебный адрес из локального git config, не привязан
+# к GitHub; именно из-за него коммиты показывались как «cegor» без профиля.
+Lun13371 <109986398+Lun13371@users.noreply.github.com> cegor <cegor@syntee.local>
+Lun13371 <109986398+Lun13371@users.noreply.github.com> cegor <cegorty@gmail.com>
+Lun13371 <109986398+Lun13371@users.noreply.github.com> Luneex <cegorty@gmail.com>

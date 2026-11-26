@@ -27,8 +27,8 @@ async function run() {
     const { BrowserImporter } = require('../src/main/browser/browserImport.ts')
     const Database = require('better-sqlite3')
     const local = path.join(root, 'local'); const user = path.join(root, 'user')
-    const chrome = path.join(local, 'Google/Chrome/User Data/Default')
-    const edge = path.join(local, 'Microsoft/Edge/User Data/Profile 1')
+    const chrome = path.join(local, process.platform === 'linux' ? 'google-chrome/Default' : 'Google/Chrome/User Data/Default')
+    const edge = path.join(local, process.platform === 'linux' ? 'microsoft-edge/Profile 1' : 'Microsoft/Edge/User Data/Profile 1')
     fs.mkdirSync(chrome, { recursive: true }); fs.mkdirSync(edge, { recursive: true })
     const bookmarks = { roots: { bookmark_bar: { type: 'folder', name: 'Bar', children: [
       { type: 'url', name: 'Example', url: 'https://example.test/' },
@@ -115,6 +115,7 @@ async function run() {
       return originalLoad.call(this, request, parent, isMain)
     }
     const oldLocal = process.env.LOCALAPPDATA; process.env.LOCALAPPDATA = local
+    const oldConfig = process.env.XDG_CONFIG_HOME; process.env.XDG_CONFIG_HOME = local
     try {
       require('../src/main/ipc/browser.ipc.ts').registerBrowserIPC({ set() {} }, () => win)
       const event = { sender, senderFrame: frame }
@@ -124,10 +125,27 @@ async function run() {
         await assert.rejects(handlers.get(channel)({ sender, senderFrame: {} }))
       }
       console.log('PASS main-UI IPC allowed; guests, other windows and subframes denied')
-    } finally { if (oldLocal === undefined) delete process.env.LOCALAPPDATA; else process.env.LOCALAPPDATA = oldLocal }
+    } finally {
+      if (oldLocal === undefined) delete process.env.LOCALAPPDATA; else process.env.LOCALAPPDATA = oldLocal
+      if (oldConfig === undefined) delete process.env.XDG_CONFIG_HOME; else process.env.XDG_CONFIG_HOME = oldConfig
+    }
     // Rediscovery: a previously visible source disappears, stale ID must fail.
     fs.rmSync(edge, { recursive: true })
     assert.equal((await importer.importData({ ...options, sourceId: 'edge:Profile 1' })).ok, false)
+    if (process.platform === 'linux') {
+      const chromium = path.join(local, 'chromium', 'Default')
+      fs.mkdirSync(chromium, { recursive: true })
+      fs.writeFileSync(path.join(chromium, 'Bookmarks'), JSON.stringify(bookmarks))
+      assert.ok((await importer.importSources()).some(source => source.id === 'chromium:Default'))
+      assert.equal((await importer.importData({ ...options, sourceId: 'chromium:Default', history: false })).bookmarks, 2)
+      const differentCase = path.join(path.dirname(chrome), 'default')
+      fs.mkdirSync(differentCase, { recursive: true })
+      fs.writeFileSync(path.join(differentCase, 'Bookmarks'), JSON.stringify(bookmarks))
+      fs.unlinkSync(path.join(chrome, 'Bookmarks'))
+      fs.symlinkSync(path.join(differentCase, 'Bookmarks'), path.join(chrome, 'Bookmarks'))
+      assert.equal((await importer.importData({ ...options, history: false })).ok, false)
+      console.log('PASS Linux Chromium import and case-sensitive symlink containment')
+    }
     console.log('PASS rediscovery/stale source; all browser import smoke tests passed')
   } finally {
     if (db) db.close()

@@ -13,6 +13,7 @@ import { useStreamHandler } from './useStreamHandler'
 import { useToolProgress } from './useToolProgress'
 import { useRunStatus } from './useRunStatus'
 import { useAgentEvents } from './useAgentEvents'
+import { useOrchestrationProgress } from './useOrchestrationProgress'
 
 // ── Re-export module-level хелперы/состояние буферов ──────────────────
 // Используются ChatPage (initChatSend, hydrateFromMain, enqueuePendingUserMsg,
@@ -36,4 +37,6 @@ export function useChatRunSubscription() {
   useToolProgress()
   useRunStatus()
   useAgentEvents()
+  // Оркестрация (одна карточка прогресса рана, без сабагентов).
+  useOrchestrationProgress()
 }

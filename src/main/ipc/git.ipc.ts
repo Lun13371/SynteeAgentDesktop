@@ -1,6 +1,12 @@
 import { ipcMain } from 'electron'
 import { runGit } from '../git/runGit'
-import { readFile } from 'fs/promises'
+import { BRANCH_LIST_ALL_ARGS, BRANCH_LIST_LOCAL_ARGS, parseBranchList, parseLocalBranchList } from '../../shared/git/parseBranches'
+import { checkoutBranch } from '../git/checkout'
+import { isValidBranchName, normalizeLocalBranchName } from '../../shared/git/checkoutPlan'
+import { refreshBranches } from '../git/refresh'
+import { readGraph } from '../git/graph'
+import { generateCommitMessage } from '../git/commitMessage'
+import { readFile, stat } from 'fs/promises'
 import { join } from 'path'
 
 export interface GitFileStatus {
@@ -77,6 +83,50 @@ function parseLog(raw: string): GitLogEntry[] {
       message: msgParts.join('\n'),
     }
   })
+}
+
+/**
+ * Строки в новых (untracked) файлах ПОФАЙЛОВО: `git diff HEAD --numstat` их
+ * не показывает, из-за чего новые файлы оставались без +N и в «Проверке», и
+ * в «Обзоре». Потолки — чтобы один сгенерированный артефакт на 200k строк
+ * не подвесил статус. Пустые значения у файла (skip/бинарник/потолок) —
+ * ключа в карте нет.
+ */
+async function untrackedLineCounts(workdir: string, files: string[]): Promise<Map<string, number>> {
+  const MAX_FILES = 200
+  const MAX_FILE_BYTES = 512 * 1024
+  // Артефакты сборки/зависимостей новых файлов не должны раздувать счётчик.
+  const SKIP = /(^|\/)(node_modules|dist|build|out)\/|\.(lock|map|min\.js|min\.css)$|package-lock\.json$|pnpm-lock\.yaml$|yarn\.lock$/i
+  const counts = new Map<string, number>()
+  let counted = 0
+  for (const rel of files) {
+    if (counted >= MAX_FILES) break
+    if (SKIP.test(rel)) continue
+    counted++
+    try {
+      const full = join(workdir, rel)
+      const info = await stat(full)
+      if (!info.isFile() || info.size > MAX_FILE_BYTES) continue
+      const buf = await readFile(full)
+      // Бинарники не считаем — у них «строк» не существует.
+      if (buf.includes(0)) continue
+      let lines = 0
+      for (let i = 0; i < buf.length; i++) if (buf[i] === 10) lines++
+      if (buf.length > 0 && buf[buf.length - 1] !== 10) lines++
+      counts.set(rel, lines)
+    } catch {
+      /* файл исчез между вызовами — не повод падать */
+    }
+  }
+  return counts
+}
+
+/** Сумма пофайловых строк untracked — для totals «Обзора». */
+async function countUntrackedLines(workdir: string, files: string[]): Promise<number> {
+  const counts = await untrackedLineCounts(workdir, files)
+  let total = 0
+  for (const v of counts.values()) total += v
+  return total
 }
 
 export function registerGitIPC(): void {
@@ -216,6 +266,24 @@ export function registerGitIPC(): void {
           stats.push({ path: parts[2], added: parseInt(parts[0], 10) || 0, deleted: parseInt(parts[1], 10) || 0 })
         }
       }
+
+      // ── Untracked (новые) файлы: numstat их не видит, а в «Проверке» новый
+      // файл оставался без +N (расходился с чипами сообщения и «Сессией»).
+      // Считаем строки сами, с теми же потолками, что в repoSummary.
+      // staged-режим не трогаем: untracked по определению вне индекса.
+      if (!params.staged) {
+        const untrackedRaw = await runGit(params.workdir, ['ls-files', '--others', '--exclude-standard']).catch(() => '')
+        let untracked = untrackedRaw.split('\n').map(l => l.trim()).filter(Boolean)
+        if (params.file) {
+          const want = params.file.replace(/\\/g, '/')
+          untracked = untracked.filter(u => u === want)
+        }
+        const counts = await untrackedLineCounts(params.workdir, untracked)
+        for (const [path, added] of counts) {
+          stats.push({ path, added, deleted: 0 })
+        }
+      }
+
       return { success: true, stats }
     } catch (e) {
       return { success: false, error: String((e as Error)?.message ?? e), stats: [] }
@@ -336,49 +404,66 @@ export function registerGitIPC(): void {
     }
   })
 
-  // ── git branchList — список всех веток ───────────────────────────────
-  ipcMain.handle('git:branchList', async (_e, workdir: string) => {
+  // ── git branchList — список веток ────────────────────────────────────
+  // all=true → объекты { name, current, remote } (включая удалённые).
+  // Без all → только локальные строки, это дефолт для панелей переключения.
+  // Формат/парсинг — в src/shared/git/parseBranches.ts: там же объяснение, почему
+  // `%(refname:lstrip=2)`, а не `%(refname:short)` (алиасы origin/HEAD и
+  // «heads/…»/«remotes/…» при совпадении имён), и почему отсекается псевдо-ветка
+  // detached HEAD.
+  ipcMain.handle('git:branchList', async (_e, workdir: string, all?: boolean) => {
     if (!workdir) return { success: false, error: 'workdir is required', branches: [], current: null }
     try {
-      const out = await runGit(workdir, ['branch', '--list', '--format=%(HEAD)%(refname:short)'])
-      const branches: string[] = []
-      let current: string | null = null
-      for (const line of out.split('\n')) {
-        const trimmed = line.trim()
-        if (!trimmed) continue
-        if (trimmed.startsWith('*')) {
-          const name = trimmed.slice(1).trim()
-          current = name
-          branches.push(name)
-        } else {
-          branches.push(trimmed)
-        }
+      if (all) {
+        const out = await runGit(workdir, BRANCH_LIST_ALL_ARGS)
+        const { branches, current } = parseBranchList(out)
+        return { success: true, branches, current }
       }
+
+      const out = await runGit(workdir, BRANCH_LIST_LOCAL_ARGS)
+      const { branches, current } = parseLocalBranchList(out)
       return { success: true, branches, current }
     } catch (e) {
       return { success: false, error: String((e as Error)?.message ?? e), branches: [], current: null }
     }
   })
 
+  // ── git refreshBranches — фоновый `fetch --all --prune` ──────────────
+  // Дедуп по общему .git + rate limit живут в src/main/git/refresh.ts: панель,
+  // граф и чип дёргают обновление независимо, а fetch должен быть один.
+  ipcMain.handle('git:refreshBranches', async (_e, workdir: string) => {
+    if (!workdir) return { success: false, error: 'workdir is required' }
+    return refreshBranches(workdir)
+  })
+
   // ── git checkout — переключение ветки ────────────────────────────────
-  ipcMain.handle('git:checkout', async (_e, params: { workdir: string; branch: string }) => {
-    if (!params.workdir || !params.branch) return { success: false, error: 'workdir and branch are required' }
-    try {
-      const out = await runGit(params.workdir, ['checkout', params.branch])
-      return { success: true, output: out }
-    } catch (e) {
-      return { success: false, error: String((e as Error)?.message ?? e) }
-    }
+  // Обычное переключение, как в VS Code: один `git checkout <branch>`. Никакого
+  // авто-stash — он падал на большом дереве и подменял понятную ошибку сырым
+  // «Command failed: git … stash push». Не-конфликтующие правки git переносит
+  // сам, а при конфликте отдаём читаемую причину (buildCheckoutArgs/explain в
+  // src/shared/git/checkoutPlan.ts).
+  //
+  // remote=true — переключение на УДАЛЁННУЮ ветку: branch приходит без префикса
+  // refs/remotes/ (origin/feat/x), создаётся локальная tracking-ветка feat/x.
+  // Detached HEAD не возникает, существующая локальная ветка не перезаписывается
+  // (src/main/git/checkout.ts).
+  ipcMain.handle('git:checkout', async (_e, params: { workdir: string; branch: string; remote?: boolean }) => {
+    if (!params?.workdir || !params?.branch) return { success: false, error: 'workdir and branch are required' }
+    return checkoutBranch(params.workdir, { branch: params.branch, remote: params.remote })
   })
 
   // ── git branchCreate — создание новой ветки ──────────────────────────
   ipcMain.handle('git:branchCreate', async (_e, params: { workdir: string; branch: string; checkout?: boolean }) => {
     if (!params.workdir || !params.branch) return { success: false, error: 'workdir and branch are required' }
+    // Имя уходит в argv git: без проверки `-D`/`--orphan` стали бы опцией, а не
+    // веткой. Тот же валидатор, что у checkout (git-check-ref-format).
+    const branch = normalizeLocalBranchName(params.branch)
+    if (!isValidBranchName(branch)) return { success: false, error: 'Некорректное имя ветки' }
     try {
-      const args = ['branch', params.branch]
+      const args = ['branch', branch]
       const out = await runGit(params.workdir, args)
       if (params.checkout) {
-        await runGit(params.workdir, ['checkout', params.branch])
+        await runGit(params.workdir, ['checkout', branch, '--'])
       }
       return { success: true, output: out }
     } catch (e) {
@@ -438,6 +523,102 @@ export function registerGitIPC(): void {
       return { success: true, entries: parseLog(out) }
     } catch (e) {
       return { success: false, entries: [], error: String((e as Error)?.message ?? e) }
+    }
+  })
+
+  // ── git repoSummary — всё для панели «Обзор» одним вызовом ──
+  ipcMain.handle('git:repoSummary', async (_e, workdir: string) => {
+    const empty = {
+      success: false, branch: null as string | null, ahead: 0, behind: 0,
+      clean: true, files: 0, added: 0, deleted: 0, staged: 0, unstaged: 0, untracked: 0,
+    }
+    if (!workdir) return { ...empty, error: 'workdir is required' }
+    try {
+      const [statusRaw, numstatRaw, untrackedRaw] = await Promise.all([
+        runGit(workdir, ['status', '--porcelain=v1', '-b']),
+        runGit(workdir, ['diff', 'HEAD', '--numstat']).catch(() => ''),
+        runGit(workdir, ['ls-files', '--others', '--exclude-standard']).catch(() => ''),
+      ])
+      const status = parseStatus(statusRaw)
+
+      let added = 0
+      let deleted = 0
+      for (const line of numstatRaw.split('\n')) {
+        const parts = line.split('\t')
+        if (parts.length < 3) continue
+        if (parts[0] !== '-') added += parseInt(parts[0], 10) || 0
+        if (parts[1] !== '-') deleted += parseInt(parts[1], 10) || 0
+      }
+
+      let staged = 0
+      let unstaged = 0
+      for (const f of status.files) {
+        if (f.indexStatus === '?' && f.worktreeStatus === '?') continue
+        if (f.indexStatus !== ' ' && f.indexStatus !== '?') staged++
+        if (f.worktreeStatus !== ' ' && f.worktreeStatus !== '?') unstaged++
+      }
+
+      const untrackedList = untrackedRaw.split('\n').map(l => l.trim()).filter(Boolean)
+      const untracked = untrackedList.length
+      // `git diff HEAD --numstat` не видит новые файлы (они вне индекса), из-за
+      // чего «Изменения» показывали +350 вместо +3767. Считаем строки сами,
+      // с потолком на файл и на общий объём — чтобы не читать гигабайты.
+      added += await countUntrackedLines(workdir, untrackedList)
+
+      return {
+        success: true,
+        branch: status.branch,
+        ahead: status.ahead,
+        behind: status.behind,
+        clean: status.clean,
+        files: status.files.length,
+        added,
+        deleted,
+        staged,
+        unstaged,
+        untracked,
+      }
+    } catch (e) {
+      const msg = String((e as Error)?.message ?? e)
+      if (msg.includes('not a git repository')) return { ...empty, notARepo: true }
+      return { ...empty, error: msg }
+    }
+  })
+
+  // ── git graph — коммиты всех веток + раскладка дорожек ──────────────────
+  ipcMain.handle('git:graph', async (_e, params: { workdir: string; limit?: number }) => {
+    if (!params?.workdir) return { success: false, commits: [], maxLanes: 1, error: 'workdir is required' }
+    try {
+      const graph = await readGraph(params.workdir, params.limit ?? 200)
+      return { success: true, ...graph }
+    } catch (e) {
+      const msg = String((e as Error)?.message ?? e)
+      if (msg.includes('does not have any commits yet') || msg.includes('unknown revision')) {
+        return { success: true, commits: [], maxLanes: 1 }
+      }
+      return { success: false, commits: [], maxLanes: 1, error: msg }
+    }
+  })
+
+  // ── git generateCommitMessage — сообщение коммита локальной моделью ─────
+  ipcMain.handle('git:generateCommitMessage', async (_e, params: { workdir: string; lang?: 'ru' | 'en' }) => {
+    if (!params?.workdir) {
+      return { success: false, message: '', source: 'fallback', error: 'workdir is required', stats: { files: 0, added: 0, deleted: 0, untracked: 0 } }
+    }
+    return generateCommitMessage(params.workdir, params.lang === 'en' ? 'en' : 'ru')
+  })
+
+  // ── git commitAndPush — один клик «Коммит и push» ───────────────────────
+  ipcMain.handle('git:commitAndPush', async (_e, params: { workdir: string; message: string; includeUnstaged?: boolean; push?: boolean }) => {
+    if (!params?.workdir) return { success: false, error: 'workdir is required' }
+    if (!params.message?.trim()) return { success: false, error: 'message is required' }
+    try {
+      if (params.includeUnstaged) await runGit(params.workdir, ['add', '-A'])
+      await runGit(params.workdir, ['commit', '-m', params.message])
+      if (params.push !== false) await runGit(params.workdir, ['push'])
+      return { success: true }
+    } catch (e) {
+      return { success: false, error: String((e as Error)?.message ?? e) }
     }
   })
 }

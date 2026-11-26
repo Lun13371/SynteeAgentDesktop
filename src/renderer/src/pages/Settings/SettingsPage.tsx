@@ -15,8 +15,9 @@ import SoundsPanel from '../../components/settings/SoundsPanel/SoundsPanel'
 import Popover from '../../components/ui/Popover/Popover'
 import AISettingsTab from '../../components/settings/AISettingsTab/AISettingsTab'
 import ContextSettingsTab from '../../components/settings/ContextSettingsTab/ContextSettingsTab'
-import IndexingSettingsTab from '../../components/settings/IndexingSettingsTab/IndexingSettingsTab'
 import ToolsSettingsTab from '../../components/settings/ToolsSettingsTab/ToolsSettingsTab'
+import AssistantsSettingsTab from '../../components/settings/AssistantsSettingsTab/AssistantsSettingsTab'
+import ProjectMapSettingsTab from '../../components/settings/ProjectMapSettingsTab/ProjectMapSettingsTab'
 import ChangelogSettingsTab from '../../components/settings/ChangelogSettingsTab/ChangelogSettingsTab'
 import ProfileSection from '../../components/settings/ProfileSection/ProfileSection'
 import ModelStatusSection from '../../components/settings/ModelStatusSection/ModelStatusSection'
@@ -57,8 +58,8 @@ import './SettingsPage.css'
 
 type Section =
   | 'profile' | 'general' | 'ai' | 'voice' | 'hotkeys' | 'modelStatus'
-  | 'agent' | 'security' | 'data' | 'appearance' | 'integrations' | 'context' | 'indexing'
-|  'changelog' | 'notifications' | 'stats' | 'tools'
+  | 'agent' | 'security' | 'data' | 'appearance' | 'integrations' | 'context'
+|  'changelog' | 'notifications' | 'stats' | 'tools' | 'assistants' | 'projectMap'
 
 interface SectionDef { id: Section; label: string; icon: IconName; keywords?: string[] }
 interface SectionGroup { title: string; items: SectionDef[] }
@@ -86,9 +87,10 @@ const SECTION_GROUPS: SectionGroup[] = [
       { id: 'ai',         label: 'ИИ и Модели',    icon: 'brain',  keywords: ['модели', 'провайдер', 'api', 'ключ', 'llm'] },
       { id: 'modelStatus', label: 'Статус моделей', icon: 'server', keywords: ['статус', 'сервер', 'доступность'] },
       { id: 'context',    label: 'Контекст',       icon: 'layers', keywords: ['компакция', 'токены', 'лимит'] },
-      { id: 'indexing',   label: 'Индексация',     icon: 'cpu',    keywords: ['индексация', 'поиск', 'файлы'] },
       { id: 'tools',      label: 'Инструменты',    icon: 'wrench', keywords: ['tools', 'тулы', 'встроенные', 'дополнительные'] },
       { id: 'agent',      label: 'Агент',          icon: 'bot',    keywords: ['агент', 'инструменты', 'суб-агент', 'циклы'] },
+      { id: 'assistants', label: 'Мини-агенты',   icon: 'bot',    keywords: ['мини-агенты', 'помощники', 'watcher', 'janitor', 'локальная', 'llm', 'подсказки', 'сжатие'] },
+      { id: 'projectMap', label: 'Карта проекта', icon: 'gauge',  keywords: ['карта', 'граф', 'код', 'зависимости', 'индексация', 'скорость', 'символы', 'вызовы'] },
       { id: 'security',   label: 'Безопасность',   icon: 'shield', keywords: ['безопасность', 'права', 'подтверждение', 'approval', 'запрещённые', 'опасные'] },
     ],
   },
@@ -123,7 +125,7 @@ const SECTION_LOOKUP = Object.fromEntries(
 const FIELD_INDEX: { section: Section; id: string; label: string; keywords?: string[] }[] = [
   // Общие
   { section: 'general', id: 'userName', label: 'Имя пользователя', keywords: ['имя', 'ник', 'nickname'] },
-  { section: 'general', id: 'autostart', label: 'Запуск с Windows', keywords: ['автозапуск', 'автостарт', 'старт'] },
+  { section: 'general', id: 'autostart', label: 'Запуск при входе в систему', keywords: ['автозапуск', 'автостарт', 'старт'] },
   { section: 'general', id: 'gitSyncEnabled', label: 'Git Sync Monitor', keywords: ['git', 'github', 'fetch', 'репозиторий', 'коммиты', 'синхронизация'] },
   { section: 'general', id: 'language', label: 'Язык интерфейса', keywords: ['язык', 'english', 'русский', 'language'] },
   { section: 'general', id: 'closeAction', label: 'При закрытии окна', keywords: ['трей', 'закрытие', 'выход', 'quit'] },
@@ -204,17 +206,6 @@ const FIELD_INDEX: { section: Section; id: string; label: string; keywords?: str
   { section: 'context', id: 'ctx-diffJournal', label: 'Diff журнал правок', keywords: ['diff', 'журнал', 'правки'] },
   { section: 'context', id: 'ctx-fileMap', label: 'File Map', keywords: ['карта', 'файлы'] },
   { section: 'context', id: 'ctx-readFileCache', label: 'Кэш файлов внутри запроса', keywords: ['кэш', 'файлы'] },
-  // Индексация
-  { section: 'indexing', id: 'idx-enabled', label: 'Индексация проекта', keywords: ['индекс', 'tree-sitter', 'fast context'] },
-  { section: 'indexing', id: 'idx-neural', label: 'Neural embeddings', keywords: ['эмбеддинги', 'minilm', 'семантика', 'onnx'] },
-  { section: 'indexing', id: 'idx-maxFiles', label: 'Макс. файлов в проекте', keywords: ['лимит', 'файлы'] },
-  { section: 'indexing', id: 'idx-maxFileSize', label: 'Макс. размер файла', keywords: ['лимит', 'размер', 'kb'] },
-  { section: 'indexing', id: 'idx-watch', label: 'Фоновый watcher', keywords: ['watcher', 'chokidar', 'мониторинг', 'изменения'] },
-  { section: 'indexing', id: 'idx-debounce', label: 'Debounce watcher', keywords: ['watcher', 'задержка', 'debounce'] },
-  { section: 'indexing', id: 'idx-prewarm', label: 'Pre-warm при старте', keywords: ['prewarm', 'старт', 'прогрев'] },
-  { section: 'indexing', id: 'idx-prewarmDelay', label: 'Задержка pre-warm', keywords: ['prewarm', 'задержка'] },
-  { section: 'indexing', id: 'idx-ignoreDirs', label: 'Игнорируемые директории', keywords: ['ignore', 'директории', 'папки', 'исключить'] },
-  { section: 'indexing', id: 'idx-actions', label: 'Реиндексировать проект', keywords: ['реиндекс', 'действия', 'очистить индекс'] },
 ]
 
 export default function SettingsPage() {
@@ -692,10 +683,9 @@ export default function SettingsPage() {
             {section === 'context' && (
               <ContextSettingsTab />
             )}
-            {section === 'indexing' && (
-              <IndexingSettingsTab />
-            )}
             {section === 'tools' && <ToolsSettingsTab />}
+            {section === 'assistants' && <AssistantsSettingsTab />}
+            {section === 'projectMap' && <ProjectMapSettingsTab />}
             {section === 'appearance' && (
               <AppearanceSection settings={settings} onSet={handleSet} />
             )}
@@ -750,23 +740,25 @@ export default function SettingsPage() {
 // Примитивы (SectionTitle, GroupHeader, Field, Group, ConfirmButton) —
 // в components/settings/SettingsPrimitives.tsx, общие с саб-табами.
 
-const GeneralSection = memo(function GeneralSection({ settings, onSet }: { settings: Record<string, unknown>; onSet: (k: string, v: unknown) => void }) {
-  // Автозагрузка: чекбокс показывает РЕАЛЬНОЕ состояние ОС (реестр Windows),
-  // а не значение из config.json — они могут расходиться (Диспетчер задач,
-  // сброс настроек, ручное редактирование Run-ключа).
+const GeneralSection = memo(function GeneralSection({ settings, onSet }: { settings: Record<string, unknown>; onSet: (k: string, v: unknown) => Promise<void> }) {
+  const { add: toast } = useToast()
   const [autostart, setAutostart] = useState<boolean>(!!settings['autostart'])
+  const [autostartBusy, setAutostartBusy] = useState(false)
 
   useEffect(() => {
-    // Живой опрос при монтировании секции (один registry read — дёшево)
     window.syntee.settings.getAutostartStatus().then(setAutostart).catch(() => {})
   }, [])
 
-  const toggleAutostart = (v: boolean) => {
-    setAutostart(v) // оптимистично
-    onSet('autostart', v) // settings:set → main применяет в реестр
-    // Перечитываем реальное состояние: если apply не удался (main вернулся
-    // без сохранения настройки) — чекбокс откатится к правде.
-    window.syntee.settings.getAutostartStatus().then(setAutostart).catch(() => {})
+  const toggleAutostart = async (v: boolean) => {
+    setAutostartBusy(true)
+    try {
+      await onSet('autostart', v)
+      setAutostart(await window.syntee.settings.getAutostartStatus())
+    } catch (error) {
+      toast(error instanceof Error ? error.message : 'Не удалось изменить автозапуск', 'error')
+    } finally {
+      setAutostartBusy(false)
+    }
   }
 
   return (
@@ -784,8 +776,8 @@ const GeneralSection = memo(function GeneralSection({ settings, onSet }: { setti
             placeholder="Введите имя..."
           />
         </Field>
-        <Field id="autostart" label="Запуск с Windows">
-          <Toggle value={autostart} onChange={toggleAutostart} />
+        <Field id="autostart" label="Запуск при входе в систему">
+          <Toggle value={autostart} onChange={toggleAutostart} disabled={autostartBusy} />
         </Field>
         <Field id="gitSyncEnabled" label="Git Sync Monitor" description="Проверять Git-репозитории при запуске и каждые 15 минут; показывать новые remote-коммиты над полем ввода">
           <Toggle value={(settings['gitSyncEnabled'] as boolean) ?? true} onChange={v => onSet('gitSyncEnabled', v)} />

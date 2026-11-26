@@ -16,7 +16,7 @@ function load(path) {
   return module.exports
 }
 const settings = load('src/shared/toolSettings.ts')
-const { getToolSchemas } = load('src/core/tools/schemas/index.ts')
+const { getToolSchemas } = load('src/shared/toolSchemas/index.ts')
 const names = options => getToolSchemas(options).map(s => s.function.name)
 
 test('Master off preserves standard schemas and default settings enable optional tools', () => {
@@ -46,7 +46,7 @@ test('request_access stays available until browser and image capabilities are bo
   assert.ok(!names({ imageMode: true, browserMode: true }).includes('request_access'))
   assert.ok(names({ imageMode: true }).includes('generate_image'))
   assert.ok(names({ browserMode: true }).includes('browser_navigate'))
-  const schema = load('src/core/tools/schemas/browser.ts').REQUEST_ACCESS_SCHEMA
+  const schema = load('src/shared/toolSchemas/browser.ts').REQUEST_ACCESS_SCHEMA
   assert.deepEqual(schema.function.parameters.properties.capability.enum, ['browser_control', 'image_generation'])
 })
 
@@ -66,21 +66,13 @@ test('execute_code is a normal registered tool: available in every mode, individ
   assert.ok(!names({ customToolsEnabled: true, disabledTools: ['execute_code'] }).includes('execute_code'))
   assert.ok(settings.OPTIONAL_TOOL_GROUPS.some(group => group.tools.some(tool => tool.name === 'execute_code')))
 })
-test('execute_code description lists the tools available inside the script but excludes get_fast_context', () => {
+test('execute_code refers to exposed tools without duplicating their catalog', () => {
   const schema = options => getToolSchemas(options).find(s => s.function.name === 'execute_code')
   const normal = schema({}).function.description
-  assert.match(normal, /Tools available inside this run: /)
-  assert.ok(normal.includes('read_file') && normal.includes('run_command'))
-  assert.ok(!normal.includes('get_fast_context'))
-  // Ordinary get_fast_context remains available as a direct tool in normal runs.
-  assert.ok(names({}).includes('get_fast_context'))
-  // Read-only run must not advertise mutation tools — the bridge would reject them.
-  const ask = schema({ askMode: true }).function.description
-  assert.ok(!ask.includes('run_command'), ask)
-  assert.ok(!ask.includes('write_file,'), ask)
-  assert.ok(!ask.includes('get_fast_context'), ask)
-  // Long families are grouped, not enumerated (otherwise ~550 extra tokens per request).
-  assert.ok(schema({ browserMode: true }).function.description.includes('browser_* (45)'))
+  assert.match(normal, /exposed tools/)
+  assert.match(normal, /tools\.call\(name, args\)/)
+  assert.equal(schema({ askMode: true }).function.description, normal)
+  assert.equal(schema({ browserMode: true }).function.description, normal)
 })
 test('Agent preserves worker array identity for live browser access and forwards media cancellation', () => {
   const source = readFileSync('src/core/agent/Agent.ts', 'utf8')

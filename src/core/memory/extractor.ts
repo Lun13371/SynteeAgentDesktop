@@ -18,14 +18,14 @@
  *   - Skip в инкогнито
  *   - Skip если user-msg <20 симв или slash-command
  *   - Skip если диалог уже экстрагировался (metadata->last_extracted_turn)
- *   - Бесплатная fast-модель (роль 'fastContext' → ling / opencode-free)
+ *   - Бесплатная fast-модель (роль 'memory' → ling / opencode-free)
  */
 
 import type Store from 'electron-store'
 import { getGlobalMemoryEnabled, getMemorySettings } from './globalMemorySettings'
 import { AIClient } from '../ai/AIClient'
 import { saveMemoryItem, type MemoryKind } from './MemoryStore'
-import { extractJsonFromLlmResponse } from '../context/fastContext/annotator'
+import { extractJsonFromLlmResponse } from '../ai/llmJson'
 
 // ─── Типы ────────────────────────────────────────────────────────────────────
 
@@ -109,7 +109,7 @@ export async function extractFactsFromTurn(
   }
 
   // LLM-вызов по паттерну summarizeWithLLM (annotator.ts:92)
-  const aiClient = new AIClient(store)
+  const aiClient = new AIClient(store, { chatId: params.chatId, source: 'memory' })
   const prompt = buildExtractPrompt(params.userMessage, params.assistantMessage)
 
   let raw = ''
@@ -121,7 +121,7 @@ export async function extractFactsFromTurn(
         onDone: () => {},
         onError: () => {},
       },
-      'fastContext', // бесплатная fast-модель (ling / opencode-free)
+      'memory', // бесплатная fast-модель (ling / opencode-free)
       EXTRACT_SYSTEM_PROMPT,
       undefined,
       0.1, // low temperature for deterministic extraction

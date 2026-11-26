@@ -43,6 +43,7 @@ let deviceMonitorUnsubStopped: (() => void) | null = null
 let deviceMonitorRunning = false
 let frameUnsub: (() => void) | null = null
 let frameStoppedUnsub: (() => void) | null = null
+let captureGeneration = 0
 let demoFrameId = 0
 let demoStartedAt = 0
 
@@ -168,6 +169,7 @@ function cleanupCapture() {
 }
 
 export async function startSystemAudioVisualizer(deviceId?: string): Promise<void> {
+  const generation = ++captureGeneration
   cleanupCapture()
   const api = window.syntee.audioVisualizer
   if (!api) throw new Error('Аудиозахват недоступен в этой сборке')
@@ -184,12 +186,14 @@ export async function startSystemAudioVisualizer(deviceId?: string): Promise<voi
   try {
     await api.start(id)
   } catch (error) {
-    cleanupCapture()
+    // A superseded Linux device lookup may reject after a newer start subscribed.
+    if (generation === captureGeneration) cleanupCapture()
     throw error
   }
 }
 
 export function stopSystemAudioVisualizer() {
+  captureGeneration++
   cleanupCapture()
   void window.syntee.audioVisualizer?.stop()
 }

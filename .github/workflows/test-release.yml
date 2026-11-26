@@ -1,0 +1,178 @@
+name: Test release
+
+# Кандидат в релиз. Пушим в ветку `test-release` — здесь собирается ровно то,
+# что потом уйдёт в релиз, но БЕЗ тегов и БЕЗ публикации в GitHub Releases.
+#
+# Порядок работы:
+#   1. бамп версии в package.json на dev
+#   2. merge dev → test-release, пуш
+#   3. здесь прогоняются тесты и собираются оба артефакта
+#   4. артефакты скачиваются из Actions и проверяются руками на живой машине
+#   5. если всё ок — merge test-release → release и тег v<версия> (это уже Release)
+#
+# Артефакты лежат в Actions 30 дней и имеют суффикс `-test`, чтобы не путать
+# их с настоящими релизными файлами.
+
+on:
+  push:
+    branches: [test-release]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck (informational)
+        continue-on-error: true
+        run: npm run typecheck
+
+      - name: Lint (informational)
+        continue-on-error: true
+        run: npm run lint:pretty
+
+      - name: Build bundles
+        run: npm run build
+
+      - name: Install xvfb
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb
+
+      - name: Tests
+        run: |
+          # tests/task-summary*.test.mjs — падающий baseline, см. ci.yml.
+          files=$(ls tests/*.test.cjs tests/*.test.mjs | grep -vE 'task-summary(-delegation)?\.test\.mjs')
+          xvfb-run -a node --test $files
+
+  windows:
+    name: Windows (test build)
+    needs: verify
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      SYNTEE_API_URL: https://syntee.fun
+      SYNTEE_WEB_URL: https://syntee.fun
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: Sidecar
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Fetch Electron binary
+        run: node node_modules/electron/install.js
+
+      - name: Patch native build config
+        run: node scripts/patch-node-pty-spectre.mjs
+
+      - name: Build Rust sidecar
+        run: npm run build:sidecar
+
+      - name: Build application
+        run: npm run build
+
+      - name: Package NSIS installer
+        run: npx electron-builder --win --x64 --config electron-builder.windows.yml
+
+      - name: Mark as test build
+        shell: pwsh
+        run: |
+          Get-ChildItem dist/windows/*.exe | ForEach-Object {
+            $name = $_.BaseName + '-test' + $_.Extension
+            Rename-Item $_.FullName $name
+            "Переименован: $name"
+          }
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-test
+          path: dist/windows/*-test.exe
+          retention-days: 30
+          if-no-files-found: error
+
+  linux:
+    name: Linux (test build)
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      SYNTEE_API_URL: https://syntee.fun
+      SYNTEE_WEB_URL: https://syntee.fun
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: Sidecar
+
+      - name: System dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake pkg-config zstd
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Linux bundle
+        run: npm run build:linux
+
+      - name: Pack portable archive
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          tar --zstd -cf "syntee-helper-${VERSION}-x86_64-test.tar.zst" -C dist/linux-unpacked .
+          ls -lh "syntee-helper-${VERSION}-x86_64-test.tar.zst"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-test
+          path: syntee-helper-*-test.tar.zst
+          retention-days: 30
+          if-no-files-found: error

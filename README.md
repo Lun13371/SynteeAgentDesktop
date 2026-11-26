@@ -1,76 +1,180 @@
-<h1 align="center">electron-app</h1>
+# Syntee Helper
 
-<p align="center">An Electron application with Vue3 and TypeScript</p>
+**Русский** · [English](README.en.md)
 
-<p align="center">
-<img src="https://img.shields.io/github/package-json/dependency-version/alex8088/electron-vite-boilerplate/dev/electron" alt="electron-version">
-<img src="https://img.shields.io/github/package-json/dependency-version/alex8088/electron-vite-boilerplate/dev/electron-vite" alt="electron-vite-version" />
-<img src="https://img.shields.io/github/package-json/dependency-version/alex8088/electron-vite-boilerplate/dev/electron-builder" alt="electron-builder-version" />
-<img src="https://img.shields.io/github/package-json/dependency-version/alex8088/electron-vite-boilerplate/dev/vite" alt="vite-version" />
-<img src="https://img.shields.io/github/package-json/dependency-version/alex8088/electron-vite-boilerplate/dev/vue" alt="vue-version" />
-<img src="https://img.shields.io/github/package-json/dependency-version/alex8088/electron-vite-boilerplate/dev/typescript" alt="typescript-version" />
-</p>
+Персональный AI-ассистент для Windows и Linux: чат с любыми LLM, агент с доступом к файлам и терминалу, MCP-серверы, плагины, память и работа с голосом.
 
-<p align='center'>
-<img src='./build/electron-vite-vue-ts.png'/>
-</p>
+> Версия `1.1.5` · Electron 44 · TypeScript · React · Rust sidecar
 
-## Features
+---
 
-- 💡 Optimize asset handling
-- 🚀 Fast HMR for renderer processes
-- 🔥 Hot reloading for main process and preload scripts
-- 🔌 Easy to debug
-- 🔒 Compile to v8 bytecode to protect source code
+## Что умеет
 
-## Getting Started
+### Чат и модели
+- Несколько провайдеров в одном окне: OpenAI, Anthropic, Google, xAI, DeepSeek, Mistral, Groq, Cerebras, Cohere, Together, Fireworks, OpenRouter и локальные модели через Ollama.
+- Любой совместимый endpoint добавляется как кастомный провайдер.
+- Ветвление чатов, режимы **Plan** (сначала план, потом правки), **Ask** (только чтение) и **Auto**.
+- Вложения: изображения, документы, аудио. Анализ медиа встроенными инструментами.
+- Подсчёт стоимости и токенов по каждому запросу, сводка задачи в правой панели.
 
-Read [documentation](https://electron-vite.org/) for more details.
+### Агент
+- Инструменты: чтение и правка файлов, поиск по коду (`search_code`), карта проекта (`project_map`), запуск команд, диагностика, работа с документами.
+- **Code Mode** — выполнение TypeScript-скриптов, которые батчат десятки вызовов инструментов за один шаг.
+- Под-агенты с изолированным контекстом и делегированные чаты для параллельной работы.
+- **Dots** — фоновые агенты, которые просыпаются по расписанию, по изменению файлов или по вебхуку.
+- Карта кода проекта на tree-sitter: кто кого вызывает, без чтения файлов целиком.
 
-- [Configuring](https://electron-vite.org/config/)
-- [Development](https://electron-vite.org/guide/dev.html)
-- [Asset Handling](https://electron-vite.org/guide/assets.html)
-- [HMR](https://electron-vite.org/guide/hmr.html) & [Hot Reloading](https://electron-vite.org/guide/hot-reloading.html)
-- [Debugging](https://electron-vite.org/guide/debugging.html)
-- [Source code protection](https://electron-vite.org/guide/source-code-protection.html)
-- [Distribution](https://electron-vite.org/guide/distribution.html)
-- [Troubleshooting](https://electron-vite.org/guide/troubleshooting.html)
+### Расширения
+- **MCP-серверы** — локальные и удалённые, с таймаутами и правами.
+- **Плагины** — JS-модули, добавляющие инструменты, панели и уведомления.
+- **Скиллы** — markdown-инструкции, подключаемые по описанию.
+- Встроенные плагины: работа с Office-документами, разработка плагинов.
 
-You can also use the [create-electron](https://github.com/alex8088/quick-start/tree/master/packages/create-electron) tool to scaffold your project for other frameworks (e.g. `React`, `Svelte` or `Solid`).
+### Рабочее окружение
+- Память между сессиями: факты о вас, решения проекта, конвенции, итоги диалогов.
+- Семантический поиск и эмбеддинги через Rust-сайдкар (`syntee-sidecar`, ONNX Runtime).
+- Автоматизация встроенного браузера, оверлей поверх окон, Spotlight-поиск, горячие клавиши, трей.
+- Голосовой ввод и озвучка.
 
-## Recommended IDE Setup
+---
 
-- [VSCode](https://code.visualstudio.com/) + [ESLint](https://marketplace.visualstudio.com/items?itemName=dbaeumer.vscode-eslint) + [Prettier](https://marketplace.visualstudio.com/items?itemName=esbenp.prettier-vscode) + [Volar](https://marketplace.visualstudio.com/items?itemName=Vue.volar) + [TypeScript Vue Plugin (Volar)](https://marketplace.visualstudio.com/items?itemName=Vue.vscode-typescript-vue-plugin)
+## Установка
 
-## Project Setup
+| Платформа | Файл |
+|---|---|
+| Windows | `Syntee-Helper-Setup-<версия>-x64.exe` — инсталлятор, обновляется сам |
+| Linux | `syntee-helper-<версия>-x86_64.tar.zst` — переносимый архив |
 
-### Install
+Готовые сборки — в разделе [Releases](../../releases). Все файлы продублированы в `SHA256SUMS`.
+
+Для Arch Linux в репозитории лежит `packaging/arch/PKGBUILD` — собрать пакет можно через `makepkg -si` в этой папке.
+
+Windows-версия обновляется сама: скачивает установщик в фоне, закрывает приложение и ставит новую версию.
+Linux-версия обновляется сама, если установлена распаковкой архива; пакет из pacman обновляется через `pacman -Syu`.
+
+---
+
+## Сборка из исходников
+
+### Требования
+
+| | Версия |
+|---|---|
+| Node.js | 20+ (в CI — 24) |
+| Rust | stable (`cargo`) |
+| Windows | Visual Studio Build Tools (C++), Python 3 |
+| Linux | `cmake`, `pkg-config`, `zstd`, `libnss3`, `libgtk-3` |
+
+### Шаги
 
 ```bash
-$ npm install
+git clone https://github.com/Lun13371/SynteeAgentDesktop.git
+cd SynteeAgentDesktop
+npm ci
 ```
 
-### Development
+Собрать Rust-сайдкар (обязательно — без него не работают эмбеддинги):
 
 ```bash
-$ npm run dev
+npm run build:sidecar          # Windows
+bash Sidecar/scripts/build-linux.sh   # Linux
 ```
 
-### Build
+Собрать приложение:
 
 ```bash
-# For windows
-$ npm run build:win
-
-# For macOS
-$ npm run build:mac
-
-# For Linux
-$ npm run build:linux
+npm run dev        # режим разработки с hot reload
+npm run build      # бандл в out/
 ```
 
-## Examples
+Упаковать:
 
-- [electron-vite-bytecode-example](https://github.com/alex8088/electron-vite-bytecode-example), source code protection
-- [electron-vite-decorator-example](https://github.com/alex8088/electron-vite-decorator-example), typescipt decorator
-- [electron-vite-worker-example](https://github.com/alex8088/electron-vite-worker-example), worker and fork
+```bash
+npm run build:win            # Windows NSIS-инсталлятор
+npm run build:win:installer  # то же, с проверкой окружения
+npm run build:linux          # Linux
+```
+
+### Скрипты
+
+| Команда | Что делает |
+|---|---|
+| `npm run dev` | запуск в режиме разработки |
+| `npm run build` | сборка бандлов |
+| `npm run typecheck` | проверка типов |
+| `npm run lint` | ESLint |
+| `npm run build:sidecar` | сборка Rust-сайдкара |
+| `npm test` | тесты (Node test runner) |
+
+---
+
+## Архитектура
+
+```
+src/
+  main/        главный процесс Electron: окна, IPC, трей, обновления, менеджеры
+  core/        логика без привязки к UI: агент, LLM-клиенты, БД, память,
+               MCP, плагины, скиллы, Code Mode, карта проекта
+  preload/     мост IPC → рендерер
+  renderer/    интерфейс (React)
+  shared/      типы и схемы инструментов, общие для всех слоёв
+Sidecar/       Rust-сервис: эмбеддинги, семантический поиск, ONNX Runtime
+packaging/     упаковка для Arch Linux (PKGBUILD)
+```
+
+**Потоки данных.** Рендерер общается с главным процессом только через preload-мост. Агент живёт в `core/agent` и вызывает инструменты через единый реестр; LLM-запросы уходят в отдельный worker, чтобы не блокировать интерфейс. Тяжёлая семантика вынесена в Rust-сайдкар по HTTP.
+
+**Обновления.** Единственный источник — GitHub Releases (`src/main/updater/releaseFeed.ts`). Приложение раз в 30 минут проверяет фид, качает новый артефакт в фоне, сверяет SHA256 и по команде пользователя запускает установщик (`src/main/updater/InstallerUpdater.ts`).
+
+---
+
+## Разработка
+
+```mermaid
+flowchart LR
+  dev[dev<br/>разработка] -->|merge| test[test-release<br/>сборка без тега]
+  test -->|проверено вручную| release[release<br/>релизная ветка]
+  release -->|тег v*| rel[GitHub Release<br/>exe · tar.zst]
+  rel --> upd[автообновление]
+```
+
+- `dev` — основная ветка. На каждый пуш: проверка типов, линтер, тесты, компиляция под Windows и Linux.
+- `test-release` — кандидат в релиз. Пуш сюда собирает артефакты без тега и без публикации: их скачивают из Actions и проверяют руками.
+- `release` — только релизы. Мерж из `test-release`, затем тег `v<версия>` — CI соберёт и опубликует всё сам.
+
+Версия берётся из `package.json` и должна совпадать с тегом, иначе релиз не начнётся.
+
+### Тесты
+
+```bash
+node --test "tests/*.test.cjs" "tests/*.test.mjs"
+```
+
+Часть тестов работает с нативными модулями и требует `xvfb` на Linux.
+
+---
+
+## Структура документации
+
+| Файл | О чём |
+|---|---|
+| `Sidecar/README.md`, `Sidecar/PROTOCOL.md` | Rust-сайдкар и его протокол |
+| `docs/browser-automation.md` | автоматизация встроенного браузера |
+| `docs/agent-tools-media.md` | инструменты агента и анализ медиа |
+| `docs/task-summary.md` | сводка задачи в интерфейсе |
+| `docs/GOAL_CONTEXT.md` | цели и управление контекстом |
+| `resources/builtin-plugins/plugin-dev/docs/` | API для разработки плагинов |
+
+---
+
+## Обратная связь
+
+Нашли баг или есть идея — создайте [issue](../../issues). Пул-реквесты приветствуются: сначала откройте issue, чтобы обсудить направление.
+
+---
+
+## Лицензия
+
+[MIT](LICENSE) © 2026 Lun13371
+
+Код можно использовать, изменять и распространять свободно, в том числе в коммерческих проектах, при условии сохранения текста лицензии и указания авторства.

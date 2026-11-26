@@ -5,9 +5,13 @@
 // Стили oneDark применяются как inline-стили (точная репликация createStyleObject
 // из react-syntax-highlighter/create-element.js) — визуально пиксель-в-пиксель.
 
-// refractor 5: именованный экспорт { refractor } (в v4 был default).
-import { refractor } from 'refractor/core'
+// Единый инстанс refractor + регистрация языков — из одного модуля.
+// Импорт 'refractor/core' напрямую здесь давал ВТОРОЙ инстанс (ESM vs CJS
+// пре-бандл Vite): языки регистрировались в одном, highlight() читал другой
+// → «Unknown language» → escapeHtml → все код-блоки без подсветки.
+import { refractor, isLanguageRegistered } from './codeLanguages'
 import oneDark from 'react-syntax-highlighter/dist/esm/styles/prism/one-dark'
+import oneLight from 'react-syntax-highlighter/dist/esm/styles/prism/one-light'
 
 // Тип HAST-ноды (упрощённый, от refractor — без внешних типов)
 interface HastNode {
@@ -116,7 +120,8 @@ function hastToHtml(
   let styleStr = ''
   if (isToken) {
     // CSS-кэш: токен 'token keyword' всегда даёт одинаковый CSS.
-    const clsKey = classNames.join(' ')
+    // Ключ включает палитру: тот же токен в светлой теме красится иначе.
+    const clsKey = (stylesheet === lightStyleOverride ? 'l\x01' : 'd\x01') + classNames.join(' ')
     const cachedCss = cssCache.get(clsKey)
     if (cachedCss !== undefined) {
       styleStr = cachedCss
@@ -155,7 +160,7 @@ function hastToHtml(
 const htmlCache = new Map<string, string>()
 const CACHE_MAX = 100
 
-function evictOldest(map: Map<string, unknown>, keep: number): void {
+function evictOldest(map: Map<unknown, unknown>, keep: number): void {
   let toDelete = map.size - keep
   for (const key of map.keys()) {
     if (toDelete <= 0) break
@@ -176,6 +181,8 @@ interface StreamCache {
   stableHtml: string  // HTML для raw[0..stableEnd] — кэширован, не пересвечивается
 }
 const streamCache = new Map<string, StreamCache>()
+// Одноразовый warn, чтобы «подсветка молча отключилась» не повторялось.
+let highlightWarned = false
 
 // Стили из codeStyle в MessageBubble.tsx (переопределённый oneDark)
 // lineHeight в пикселях (а не 1.6) — чтобы номера строк и код имели
@@ -188,7 +195,10 @@ const codeStyleOverride: Record<string, Record<string, string>> = {
     ...((oneDark as Record<string, Record<string, string>>)['pre[class*="language-"]']),
     margin: '0',
     padding: '14px 16px',
-    background: '#0d0d0f',
+    // Фон задаёт CSS (.code-block → var(--overlay-*)), чтобы блок подстраивался
+    // под тему. Раньше тут был жёсткий #0d0d0f: на светлых темах он выглядел
+    // чужеродным чёрным прямоугольником.
+    background: 'transparent',
     borderRadius: '0 0 8px 8px',
     fontSize: '13px',
     lineHeight: CODE_LH,
@@ -201,12 +211,45 @@ const codeStyleOverride: Record<string, Record<string, string>> = {
   },
 }
 
+// Светлая версия того же стиля: палитра токенов из oneLight, а фон/отступы —
+// те же самые. Выбор палитры делает highlightCodeToHtml по флагу isLight.
+const lightStyleOverride: Record<string, Record<string, string>> = {
+  ...(oneLight as unknown as Record<string, Record<string, string>>),
+  'pre[class*="language-"]': {
+    ...((oneLight as unknown as Record<string, Record<string, string>>)['pre[class*="language-"]']),
+    margin: '0',
+    padding: '14px 16px',
+    background: 'transparent',
+    borderRadius: '0 0 8px 8px',
+    fontSize: '13px',
+    lineHeight: CODE_LH,
+  },
+  'code[class*="language-"]': {
+    ...((oneLight as unknown as Record<string, Record<string, string>>)['code[class*="language-"]']),
+    background: 'transparent',
+    fontSize: '13px',
+    lineHeight: CODE_LH,
+  },
+}
+
+/** Палитра токенов по базе темы. */
+function sheetFor(isLight: boolean): Record<string, Record<string, string>> {
+  return isLight ? lightStyleOverride : codeStyleOverride
+}
+
+/** Ключ палитры для кэшей: один и тот же код в тёмной и светлой теме
+ *  даёт разный HTML, поэтому кэшировать его под одним ключом нельзя. */
+function paletteTag(isLight: boolean): string {
+  return isLight ? 'l\x01' : 'd\x01'
+}
+
 // ── Module-level: allClasses Set и CSS-кэш ────────────────────────────
 // allClasses — все классы из stylesheet. Вычисляется ОДИН раз (раньше
 // пересоздавался для КАЖДОЙ ноды в hastToHtml — тысячи Set-конструкций
-// на один код-блок).
+// на один код-блок). Берём объединение обеих палитр: набор классов,
+// которые вырезаются из className, должен быть одинаковым в любой теме.
 const ALL_CLASSES = new Set<string>()
-for (const sel of Object.keys(codeStyleOverride)) {
+for (const sel of [...Object.keys(codeStyleOverride), ...Object.keys(lightStyleOverride)]) {
   sel.split('.').forEach(c => { if (c) ALL_CLASSES.add(c.trim()) })
 }
 
@@ -219,14 +262,15 @@ const cssCache = new Map<string, string>()
 // При стриме lineCount растёт. Номера 1..N не меняются, но HTML
 // пересоздавался каждый флеш. Кэш: lineCount → готовый HTML.
 const lineNumberCache = new Map<number, string>()
-function getLineNumbersHtml(lineCount: number): string {
-  const cached = lineNumberCache.get(lineCount)
+function getLineNumbersHtml(lineCount: number, start = 1): string {
+  const cacheKey = start === 1 ? lineCount : start * 100000 + lineCount
+  const cached = lineNumberCache.get(cacheKey)
   if (cached) return cached
   const html = Array.from({ length: lineCount }, (_, i) =>
-    '<span style="display:block">' + (i + 1) + '</span>',
+    '<span style="display:block">' + (i + start) + '</span>',
   ).join('')
   if (lineNumberCache.size > 200) evictOldest(lineNumberCache, 150)
-  lineNumberCache.set(lineCount, html)
+  lineNumberCache.set(cacheKey, html)
   return html
 }
 
@@ -234,31 +278,57 @@ function getLineNumbersHtml(lineCount: number): string {
 // При стриме raw растёт. Вместо полной Prism-токенизации каждый раз —
 // кэшируем HTML для полных строк (до последнего \n). При следующем вызове
 // догоняем только новые строки. Результат идентичен полному highlight.
-function highlightWithCache(raw: string, lang: string): string {
-  if (!lang || lang === 'text') {
+// refractor 5 отдаёт Root-ноду ({type:'root', children:[…]}), а не массив
+// нод (в v4 был массив). Прямой tree.map() бросал «tree.map is not a
+// function», catch молча отдавал escapeHtml — подсветка отсутствовала во
+// ВСЁМ приложении (сообщения, карточки тулов), хотя языки зарегистрированы.
+function hastNodes(tree: unknown): HastNode[] {
+  if (Array.isArray(tree)) return tree as HastNode[]
+  const root = tree as HastNode | null
+  if (root && Array.isArray(root.children)) return root.children
+  return []
+}
+
+function renderTree(tree: unknown, sheet: Record<string, Record<string, string>>): string {
+  return hastNodes(tree).map(node => hastToHtml(node, sheet)).join('')
+}
+
+function highlightWithCache(raw: string, lang: string, isLight: boolean): string {
+  const sheet = sheetFor(isLight)
+  // Регистрация языков — лениво и явно (идемпотентно). Без этого в прод-сборке
+  // ни один язык не был зарегистрирован → «Unknown language» → escapeHtml.
+  // Незарегистрированный язык (или text/plain) — plain-text без исключения:
+  // раньше refractor.highlight() бросал, catch молча отдавал escapeHtml,
+  // и блок выглядел «неподсвеченным» без следов ошибки.
+  if (!lang || lang === 'text' || lang === 'plain' || !isLanguageRegistered(lang)) {
     return escapeHtml(raw)
   }
 
-  const streamKey = lang + '\x01'
+  const streamKey = paletteTag(isLight) + lang + '\x01'
   const cached = streamCache.get(streamKey)
 
   // Если нет кэша или кэш не префикс текущего raw — полная подсветка
   if (!cached || !raw.startsWith(cached.raw)) {
     try {
-      const tree = refractor.highlight(raw, lang) as unknown as HastNode[]
-      const html = tree.map(node => hastToHtml(node, codeStyleOverride)).join('')
+      const tree = refractor.highlight(raw, lang)
+      const html = renderTree(tree, sheet)
       // Кэшируем стабильный префикс (до последнего \n) для следующих флешей
       const lastNl = raw.lastIndexOf('\n')
       const stableEnd = lastNl + 1 // 0 если нет \n
       let stableHtml = ''
       if (stableEnd > 0) {
         const stableRaw = raw.slice(0, stableEnd)
-        const stableTree = refractor.highlight(stableRaw, lang) as unknown as HastNode[]
-        stableHtml = stableTree.map(node => hastToHtml(node, codeStyleOverride)).join('')
+        stableHtml = renderTree(refractor.highlight(stableRaw, lang), sheet)
       }
       streamCache.set(streamKey, { raw, stableEnd, stableHtml })
       return html
-    } catch {
+    } catch (err) {
+      // Диагностика: молчаливый fallback раньше прятал реальную причину
+      // (например «Unknown language» из-за второго инстанса refractor).
+      if (!highlightWarned) {
+        highlightWarned = true
+        console.warn('[codeHighlight] подсветка недоступна для', lang, '-', err instanceof Error ? err.message : err)
+      }
       return escapeHtml(raw)
     }
   }
@@ -276,8 +346,7 @@ function highlightWithCache(raw: string, lang: string): string {
 
   let tailHtml: string
   try {
-    const tailTree = refractor.highlight(tailRaw, lang) as unknown as HastNode[]
-    tailHtml = tailTree.map(node => hastToHtml(node, codeStyleOverride)).join('')
+    tailHtml = renderTree(refractor.highlight(tailRaw, lang), sheet)
   } catch {
     tailHtml = escapeHtml(tailRaw)
   }
@@ -295,8 +364,7 @@ function highlightWithCache(raw: string, lang: string): string {
     const newStableTail = raw.slice(cached.stableEnd, newStableEnd)
     let newStableTailHtml: string
     try {
-      const newStableTailTree = refractor.highlight(newStableTail, lang) as unknown as HastNode[]
-      newStableTailHtml = newStableTailTree.map(node => hastToHtml(node, codeStyleOverride)).join('')
+      newStableTailHtml = renderTree(refractor.highlight(newStableTail, lang), sheet)
     } catch {
       newStableTailHtml = escapeHtml(newStableTail)
     }
@@ -318,21 +386,23 @@ function highlightWithCache(raw: string, lang: string): string {
 }
 
 // ── Главный экспорт: code → HTML-строка с подсветкой ─────────────────────
-export function highlightCodeToHtml(raw: string, lang: string): string {
-  const key = lang + '\0' + raw
+// lineNumberStart — с какого номера начинать нумерацию (выдача read_file
+// показывает реальные номера строк файла, а не 1..N от начала вырезки).
+export function highlightCodeToHtml(raw: string, lang: string, isLight = false, lineNumberStart = 1): string {
+  const key = paletteTag(isLight) + lang + '\x01' + lineNumberStart + '\0' + raw
   const cached = htmlCache.get(key)
   if (cached) return cached
 
   // Инкрементальная подсветка: при стриме кэшируем по строкам.
   // highlightWithCache возвращает готовую HTML-строку — стабильный
   // префикс берётся из кэша, подсвечивается только хвост.
-  const highlightedHtml = highlightWithCache(raw, lang)
+  const highlightedHtml = highlightWithCache(raw, lang, isLight)
 
   // Стиль для <pre> и <code> (из codeStyleOverride)
   // При наличии номеров строк — pre становится flex-контейнером, чтобы
   // колонка номеров и код всегда были рядом (float:left ломается при
   // длинном коде — код проваливается под колонку номеров).
-  const codeStyle = codeStyleOverride['code[class*="language-"]'] || {}
+  const codeStyle = sheetFor(isLight)['code[class*="language-"]'] || {}
 
   // Номера строк (если > 4 строк)
   const lineCount = raw.replace(/\n$/, '').split('\n').length
@@ -345,7 +415,7 @@ export function highlightCodeToHtml(raw: string, lang: string): string {
     // flex-shrink:0 на колонке номеров — не сжимается при длинном коде.
     // overflow:auto на коде — горизонтальный скролл вместо переноса.
 
-    const largestNum = lineCount
+    const largestNum = lineCount + lineNumberStart - 1
     const minWidth = largestNum.toString().length + '.25em'
 
     // Колонка номеров строк
@@ -354,7 +424,7 @@ export function highlightCodeToHtml(raw: string, lang: string): string {
       paddingRight: '12px',
       textAlign: 'right',
       userSelect: 'none',
-      color: '#4a4a5a',
+      color: isLight ? '#9aa0a6' : '#4a4a5a',
       fontSize: '11px',
       lineHeight: CODE_LH,
       minWidth,
@@ -362,13 +432,15 @@ export function highlightCodeToHtml(raw: string, lang: string): string {
     const lnColStyleStr = styleToCss(lineNumberColStyle)
 
     // Номера строк из кэша (по lineCount) — не пересоздаём каждый флеш
-    const lineNumbersHtml = getLineNumbersHtml(lineCount)
+    const lineNumbersHtml = getLineNumbersHtml(lineCount, lineNumberStart)
 
-    // Колонка кода: flex:1, overflow-x:auto для горизонтального скролла
+    // Колонка кода: без overflow! `overflow-x: auto` на code при
+    // `overflow-y: visible` по спецификации превращается в overflow-y: auto —
+    // внутренняя колонка скроллилась САМА, а колонка номеров стояла на месте
+    // («листаю код — строки стоят»). Скролл делает сам <pre> (overflow:auto),
+    // поэтому номер и код всегда едут вместе.
     const codeColStyle = {
       ...codeStyle,
-      flex: '1',
-      overflowX: 'auto',
       whiteSpace: 'pre',
     }
 

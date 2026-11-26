@@ -12,8 +12,6 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"
-walkdir = "2.5"
-notify = "6.1"
 tiktoken-rs = "0.12"
 tree-sitter = "0.25"
 tree-sitter-javascript = "0.25.0"
@@ -33,14 +31,19 @@ tree-sitter-json = "0.24.8"
 # ── Semantic (E5 embeddings) ─────────────────────────────────────────────────
 # ort — ONNX Runtime. Тот же движок, что у @huggingface/transformers в main,
 # поэтому векторы совпадают с JS-эталоном (важно для паритета индекса).
-# download-binaries тянет prebuilt onnxruntime при сборке, copy-dylibs кладёт
-# DLL рядом с exe (build.ps1 копирует её в resources/sidecar).
+# download-binaries тянет prebuilt onnxruntime при сборке; для Windows pyke
+# раздаёт сразу directml-флейвор (ORT статически вшивается в exe, а рядом с exe
+# остаётся только DirectML.dll — build.ps1 копирует её в resources/sidecar).
+# Linux uses the CPU build of ONNX Runtime. DirectML is only available on Windows.
 ort = { version = "2.0.0-rc.15", default-features = false, features = ["std", "download-binaries", "copy-dylibs", "tls-native"] }
 # tokenizers — XLM-R SentencePiece (unigram) для E5; читает тот же tokenizer.json,
 # что использует JS-пайплайн, поэтому токенизация идентична.
 tokenizers = { version = "0.23", default-features = false, features = ["onig"] }
 # sha2 — content_hash для semantic_embeddings (в TS был node:crypto).
 sha2 = "0.10"
+
+[target.'cfg(windows)'.dependencies]
+ort = { version = "2.0.0-rc.15", default-features = false, features = ["directml"] }
 
 [profile.release]
 lto = "thin"

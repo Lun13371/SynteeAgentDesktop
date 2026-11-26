@@ -180,8 +180,7 @@ function ensureMemoryIdf(): void {
 
 /**
  * Embedding текста в namespace памяти. Синхронно для TF-IDF, async для neural.
- * Важно: setActiveProjectId переключает global IDF cache — FastContext после
- * этого выставит свой projectId, так что конфликтов нет (JS single-threaded).
+ * setActiveProjectId переключает global IDF cache на namespace памяти.
  */
 export async function embedText(text: string): Promise<Embedding> {
   ensureMemoryIdf()

@@ -1,7 +1,7 @@
 // CDP-проба состояния рендерера для smoke-теста приложения.
 // Подключается к первому page-target, проверяет: preload (window.electron),
 // наличие BootScreen и заголовок страницы. Используется при тестировании
-// защищённых сборок (SYNTEE_PROTECT) с изолированным userData.
+// сборок с изолированным userData.
 const base = 'http://127.0.0.1:9222'
 
 const list = await (await fetch(base + '/json/list')).json()

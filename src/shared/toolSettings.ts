@@ -1,60 +1,98 @@
 // Shared, renderer-safe builtin tool preferences. External tools retain their own controls.
+//
+// Списки для настроек ВЫВОДЯТСЯ ИЗ СХЕМ (единственный источник истины —
+// toolSchemas/*.ts): новый тул, добавленный в схемы, автоматически появляется
+// во вкладке «Инструменты» — править настройки руками не нужно. Нужны только
+// точечные переопределения: группа (если домен схем ≠ смысловой группе UI) и
+// лейбл (если человекочитаемое имя ≠ лейблу из toolMeta).
+import { TOOL_META } from './toolMeta'
+import { READ_TOOL_SCHEMAS } from './toolSchemas/read'
+import { EDIT_TOOL_SCHEMAS } from './toolSchemas/edit'
+import { COMMAND_TOOL_SCHEMAS } from './toolSchemas/command'
+import { CODE_TOOL_SCHEMAS } from './toolSchemas/code'
+import { SEARCH_TOOL_SCHEMAS } from './toolSchemas/search'
+import { AGENT_TOOL_SCHEMAS } from './toolSchemas/agent'
+import { PLAN_TOOL_SCHEMAS } from './toolSchemas/plan'
+import { MEMORY_TOOL_SCHEMAS } from './toolSchemas/memory'
+import { EXTENSIONS_TOOL_SCHEMAS } from './toolSchemas/extensions'
+import { VISION_TOOL_SCHEMAS } from './toolSchemas/vision'
+import { MEDIA_TOOL_SCHEMAS } from './toolSchemas/media'
+import { DOTS_TOOL_SCHEMAS } from './toolSchemas/dots'
+import { CHAT_TOOL_SCHEMAS } from './toolSchemas/chats'
+import { BROWSER_TOOL_SCHEMAS } from './toolSchemas/browser'
+
 export interface ToolSettings {
   customToolsEnabled: boolean
   disabledTools: string[]
 }
 export const DEFAULT_TOOL_SETTINGS: ToolSettings = { customToolsEnabled: false, disabledTools: [] }
+
+/**
+ * Основные инструменты — защищены от отключения (продуктовое решение: без них
+ * агент не работает). Явный список, не выводится автоматически.
+ */
 export const PROTECTED_CORE_TOOLS = [
-  'read_file', 'read_files', 'find_files', 'search_code', 'list_directory',
+  'read_file', 'read_files', 'find_files', 'search_code', 'project_map', 'list_directory',
   'edit_file', 'write_file', 'run_command', 'get_diagnostics',
   'update_todo', 'update_working_memory', 'ask_user', 'request_access',
+  'recall_context',
 ] as const
 const coreTools = new Set<string>(PROTECTED_CORE_TOOLS)
-const tools = (entries: Array<[string, string]>) => entries.map(([name, label]) => ({ name, label }))
-export const OPTIONAL_TOOL_GROUPS = [
-  { label: 'Исследование проекта', tools: tools([
-    ['get_fast_context', 'Быстрый контекст проекта'],
-  ]) },
-  { label: 'Оркестрация', tools: tools([
-    ['execute_code', 'Скрипт вместо серии вызовов (Code Mode)'],
-  ]) },
-  { label: 'Интернет', tools: tools([
-    ['search_web', 'Поиск в интернете'], ['fetch_page', 'Чтение веб-страниц'], ['search_images', 'Поиск изображений'],
-  ]) },
-  { label: 'Память', tools: tools([
-    ['save_memory', 'Сохранение долгосрочной памяти'], ['recall_memory', 'Поиск в памяти'],
-  ]) },
-  { label: 'Агенты и чаты', tools: tools([
-    ['spawn_agent', 'Запуск суб-агента'], ['get_agent_status', 'Статус суб-агента'],
-    ['manage_chats', 'Делегирование в чаты'], ['manage_dots', 'Фоновые агенты Dots'],
-  ]) },
-  { label: 'Расширения', tools: tools([
-    ['list_extensions', 'Список расширений'], ['get_skill', 'Чтение инструкций навыка'],
-  ]) },
-  { label: 'Медиа', tools: tools([
-    ['analyze_image', 'Анализ изображений'], ['generate_image', 'Генерация изображений'],
-    ['analyze_video', 'Анализ видео'], ['analyze_audio', 'Анализ и расшифровка аудио'],
-  ]) },
-  { label: 'Браузер', tools: tools([
-    ['browser_navigate', 'Открытие страницы'], ['browser_back', 'Назад'], ['browser_forward', 'Вперёд'],
-    ['browser_reload', 'Обновление страницы'], ['browser_snapshot', 'Чтение страницы'],
-    ['browser_click', 'Нажатие'], ['browser_type', 'Ввод текста'], ['browser_press_key', 'Клавиши'],
-    ['browser_scroll', 'Прокрутка'], ['browser_screenshot', 'Снимок страницы'],
-    ['browser_tabs_list', 'Список вкладок'], ['browser_tab_new', 'Новая вкладка'],
-    ['browser_tab_select', 'Выбор вкладки'], ['browser_tab_close', 'Закрытие вкладки'], ['browser_wait', 'Ожидание'],
-    ['browser_fill', 'Замена текста'], ['browser_double_click', 'Двойной клик'], ['browser_right_click', 'Правый клик'],
-    ['browser_hover', 'Наведение'], ['browser_focus', 'Фокус'], ['browser_select_option', 'Выбор опции'],
-    ['browser_check', 'Включение флажка'], ['browser_uncheck', 'Выключение флажка'], ['browser_drag', 'Перетаскивание'],
-    ['browser_wait_for', 'Ожидание условия'], ['browser_frames', 'Фреймы'], ['browser_accessibility', 'Дерево доступности Chromium'],
-    ['browser_evaluate', 'Выполнение JavaScript'], ['browser_add_script', 'Инжект скрипта'], ['browser_add_style', 'Инжект CSS'],
-    ['browser_console', 'Консоль'], ['browser_errors', 'Ошибки страницы'], ['browser_network', 'Сетевые события'],
-    ['browser_dialog', 'Диалоги'], ['browser_downloads', 'Скачивания'], ['browser_upload', 'Загрузка файлов'],
-    ['browser_cookies', 'Cookies'], ['browser_storage', 'Хранилище страницы'],
-    ['browser_set_user_agent', 'User agent'], ['browser_zoom', 'Масштаб'],
-    ['browser_trace_start', 'Начало трассировки'], ['browser_trace_stop', 'Завершение трассировки'],
-    ['browser_performance', 'Производительность'], ['browser_permissions', 'Разрешения сайта'], ['browser_clear_cache', 'Очистка кэша'],
-  ]) },
+
+// ── Автовывод опциональных групп из схем ─────────────────────────────────────
+
+/** Домены схем → смысловые группы UI. Порядок = порядок групп в настройках. */
+const DOMAIN_GROUPS: Array<{ label: string; schemas: ReadonlyArray<{ function: { name: string } }> }> = [
+  { label: 'Оркестрация', schemas: CODE_TOOL_SCHEMAS },
+  { label: 'Интернет', schemas: SEARCH_TOOL_SCHEMAS },
+  { label: 'Память', schemas: MEMORY_TOOL_SCHEMAS },
+  { label: 'Агенты и чаты', schemas: [...AGENT_TOOL_SCHEMAS, ...CHAT_TOOL_SCHEMAS, ...DOTS_TOOL_SCHEMAS] },
+  { label: 'Расширения', schemas: EXTENSIONS_TOOL_SCHEMAS },
+  { label: 'Медиа', schemas: [...VISION_TOOL_SCHEMAS, ...MEDIA_TOOL_SCHEMAS] },
+  { label: 'Браузер', schemas: BROWSER_TOOL_SCHEMAS },
+  { label: 'Файлы и команды', schemas: [...READ_TOOL_SCHEMAS, ...EDIT_TOOL_SCHEMAS, ...COMMAND_TOOL_SCHEMAS] },
+  { label: 'Исследование', schemas: PLAN_TOOL_SCHEMAS },
 ]
+
+/** Тул живёт не в «своей» доменной группе — например, generate_image лежит
+ *  в edit.ts, а проектная карта — в search.ts рядом с веб-поиском. */
+const GROUP_OVERRIDES: Record<string, string> = {
+  generate_image: 'Медиа',
+  project_map: 'Карта кода',
+}
+
+/** Лейбл насыщеннее, чем в toolMeta (там — короткие подписи для цепочек тулов). */
+const LABEL_OVERRIDES: Record<string, string> = {
+  execute_code: 'Скрипт вместо серии вызовов (Code Mode)',
+  manage_dots: 'Фоновые агенты Dots',
+}
+
+export interface ToolEntry { name: string; label: string }
+export interface ToolGroup { label: string; tools: ToolEntry[] }
+
+/**
+ * Опциональные тулы = все тулы из схем минус защищённые, сгруппированные по
+ * домену (+ переопределения). Новые доменные тулы появляются здесь сами.
+ */
+function deriveOptionalGroups(): ToolGroup[] {
+  const byGroup = new Map<string, ToolEntry[]>()
+  for (const { label, schemas } of DOMAIN_GROUPS) {
+    for (const schema of schemas) {
+      const name = schema.function.name
+      if (coreTools.has(name)) continue
+      const group = GROUP_OVERRIDES[name] ?? label
+      const list = byGroup.get(group) ?? []
+      list.push({ name, label: LABEL_OVERRIDES[name] ?? TOOL_META[name]?.label ?? name })
+      byGroup.set(group, list)
+    }
+  }
+  return [...byGroup.entries()]
+    .map(([label, tools]) => ({ label, tools }))
+    .filter(group => group.tools.length > 0)
+}
+
+export const OPTIONAL_TOOL_GROUPS: ToolGroup[] = deriveOptionalGroups()
+
 export function normalizeDisabledTools(value: unknown): string[] {
   return Array.isArray(value) ? [...new Set(value.filter((name): name is string =>
     typeof name === 'string' && name.length > 0 && !coreTools.has(name)

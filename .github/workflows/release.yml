@@ -1,0 +1,196 @@
+name: Release
+
+# Релиз собирается в CI и публикуется в GitHub Releases этого репозитория.
+# Само приложение обновляется из этих же релизов
+# (src/main/updater/releaseFeed.ts → InstallerUpdater.ts):
+#   Windows — NSIS-установщик, ставится молча
+#   Linux   — переносимый архив .tar.zst
+
+on:
+  push:
+    tags: ['v[0-9]*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Версия из package.json (например 1.1.5). Создаст draft-релиз.'
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate tag against package.json
+        id: meta
+        run: |
+          set -euo pipefail
+          pkg=$(node -p "require('./package.json').version")
+          if [ "${{ github.event_name }}" = "push" ]; then
+            tag="${GITHUB_REF_NAME}"
+          else
+            tag="v${{ inputs.version }}"
+          fi
+          ver="${tag#v}"
+          if [ "$ver" != "$pkg" ]; then
+            echo "::error::Тег $tag не совпадает с версией $pkg в package.json"
+            exit 1
+          fi
+          if ! printf '%s' "$ver" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Версия $ver не semver (нужен вид MAJOR.MINOR.PATCH)"
+            exit 1
+          fi
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Релиз $tag (версия $ver)"
+
+  windows:
+    name: Windows (NSIS installer)
+    needs: prepare
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      SYNTEE_API_URL: https://syntee.fun
+      SYNTEE_WEB_URL: https://syntee.fun
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: Sidecar
+
+      # node-pty и better-sqlite3 приходят с NAPI-prebuild'ами под win32-x64,
+      # поэтому electron-rebuild в CI не нужен.
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Fetch Electron binary
+        run: node node_modules/electron/install.js
+
+      - name: Patch native build config
+        run: node scripts/patch-node-pty-spectre.mjs
+
+      - name: Build Rust sidecar
+        run: npm run build:sidecar
+
+      - name: Build application
+        run: npm run build
+
+      # Имя файла фиксировано в electron-builder.windows.yml:
+      # Syntee-Helper-Setup-<version>-x64.exe — его ищет releaseFeed.ts.
+      - name: Package NSIS installer
+        run: npx electron-builder --win --x64 --config electron-builder.windows.yml
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/windows/*.exe
+          retention-days: 7
+          if-no-files-found: error
+
+  linux:
+    name: Linux (tar.zst)
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      SYNTEE_API_URL: https://syntee.fun
+      SYNTEE_WEB_URL: https://syntee.fun
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: Sidecar
+
+      - name: System dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake pkg-config zstd
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Linux bundle
+        run: npm run build:linux
+
+      - name: Pack portable archive
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          tar --zstd -cf "syntee-helper-${VERSION}-x86_64.tar.zst" -C dist/linux-unpacked .
+          ls -lh "syntee-helper-${VERSION}-x86_64.tar.zst"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: syntee-helper-*-x86_64.tar.zst
+          retention-days: 7
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs: [prepare, windows, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          cd release
+          ls -lh
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          name: Syntee Helper ${{ needs.prepare.outputs.version }}
+          generate_release_notes: true
+          # Ручной запуск публикует черновик — его проверяют и выпускают руками.
+          draft: ${{ github.event_name == 'workflow_dispatch' }}
+          prerelease: false
+          files: |
+            release/*.exe
+            release/*.tar.zst
+            release/SHA256SUMS

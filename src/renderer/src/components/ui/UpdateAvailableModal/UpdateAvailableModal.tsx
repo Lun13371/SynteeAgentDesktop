@@ -1,21 +1,25 @@
 /**
- * UpdateAvailableModal — shown when the user clicks the blue update badge in
- * the titlebar. Presents the changelog and offers three actions:
+ * UpdateAvailableModal — открывается по клику на синий бейдж обновления.
  *
- *   1. "Restart now"      → quitAndInstall() (app.quit → launcher applies)
- *   2. "On next launch"   → close modal, update applied on next launcher cycle
- *   3. "Skip this version" → dismiss(version), badge disappears until next release
+ * Показывает changelog и прогресс фонового скачивания. Скачивание стартует
+ * сразу после обнаружения версии (в main-процессе), поэтому обычно к моменту
+ * открытия модалки файл уже готов.
  *
- * Esc / click-outside close the modal without dismissing (the badge stays).
- * This is intentionally non-blocking: the user can keep working and decide later.
+ * Действия:
+ *   1. «Перезапустить и обновить» — ставит скачанный файл, закрывает
+ *      приложение; установщик открывает новую версию сам.
+ *   2. «Позже»                  — закрыть; обновление встанет при выходе.
+ *   3. «Пропустить эту версию»  — скрыть бейдж до следующего релиза.
+ *
+ * Esc / клик мимо закрывают модалку без отказа от обновления.
  */
 import { useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { AnimatePresence, motion } from 'framer-motion'
-import { RotateCcw, X } from 'lucide-react'
+import { Check, Download, Loader2, RotateCcw, X } from 'lucide-react'
 import AppIcon from '../AppIcon/AppIcon'
 import ChangelogMarkdown from '../ChangelogMarkdown/ChangelogMarkdown'
-import { useUpdateStore } from '../../../store/update.store'
+import { selectDownloadProgress, useUpdateStore } from '../../../store/update.store'
 import './UpdateAvailableModal.css'
 
 interface Props {
@@ -38,31 +42,42 @@ function formatSize(bytes: number): string {
 
 export default function UpdateAvailableModal({ open, onClose }: Props) {
   const available = useUpdateStore((s) => s.available)
+  const install = useUpdateStore((s) => s.install)
+  const progress = useUpdateStore(selectDownloadProgress)
   const quitAndInstall = useUpdateStore((s) => s.quitAndInstall)
   const dismiss = useUpdateStore((s) => s.dismiss)
   const [installError, setInstallError] = useState<string | null>(null)
+  const [applying, setApplying] = useState(false)
 
-  // Restart-now: the app exits only when the updater actually spawned — on
-  // failure we stay open and show why, instead of dying silently.
-  const handleRestartNow = async () => {
+  const downloading = install.phase === 'downloading'
+  const ready = install.phase === 'ready'
+  const applyingPhase = applying || install.phase === 'installing'
+
+  // Ставим обновление: приложение закроется само, установщик откроет новую
+  // версию. Если запустить не удалось — остаёмся открытыми и показываем причину.
+  const handleInstall = async () => {
     setInstallError(null)
+    setApplying(true)
     const res = await quitAndInstall()
     if (!res.ok) {
+      setApplying(false)
       setInstallError(res.error ?? 'Неизвестная ошибка')
     }
   }
 
-  // Esc closes (without dismissing — the badge stays so the user can come back).
+  // Esc закрывает (без отказа от обновления — бейдж остаётся).
   useEffect(() => {
     if (!open) return
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
+      if (e.key === 'Escape' && !applyingPhase) onClose()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [open, onClose])
+  }, [open, onClose, applyingPhase])
 
   if (!open || !available) return null
+
+  const error = installError ?? install.error
 
   return createPortal(
     <AnimatePresence>
@@ -72,7 +87,7 @@ export default function UpdateAvailableModal({ open, onClose }: Props) {
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
         transition={{ duration: 0.15 }}
-        onClick={onClose}
+        onClick={() => { if (!applyingPhase) onClose() }}
       >
         <motion.div
           className="update-modal"
@@ -87,7 +102,12 @@ export default function UpdateAvailableModal({ open, onClose }: Props) {
               <AppIcon name="downloadCloud" size="md" />
               <span>Доступна новая версия <strong>v{available.version}</strong></span>
             </h2>
-            <button className="update-modal-close" onClick={onClose} title="Закрыть (Esc)">
+            <button
+              className="update-modal-close"
+              onClick={onClose}
+              disabled={applyingPhase}
+              title="Закрыть (Esc)"
+            >
               <X size={16} />
             </button>
           </div>
@@ -106,27 +126,59 @@ export default function UpdateAvailableModal({ open, onClose }: Props) {
           </div>
 
           <div className="update-modal-actions">
-            {installError && (
-              <div className="update-modal-error">Не удалось запустить обновление: {installError}</div>
+            {downloading && (
+              <div className="update-modal-progress">
+                <div className="update-modal-progress-label">
+                  <span>Скачивается в фоне…</span>
+                  <span>
+                    {formatSize(install.received)} / {formatSize(install.total || available.zip_size)}
+                  </span>
+                </div>
+                <div className="update-modal-progress-track">
+                  <div
+                    className="update-modal-progress-fill"
+                    style={{ width: `${Math.round(progress * 100)}%` }}
+                  />
+                </div>
+              </div>
             )}
+
+            {ready && !applyingPhase && (
+              <div className="update-modal-ready">
+                <Check size={13} />
+                <span>Скачано и проверено — можно устанавливать</span>
+              </div>
+            )}
+
+            {error && (
+              <div className="update-modal-error">Не удалось обновить: {error}</div>
+            )}
+
             <button
               className="update-modal-btn update-modal-btn--ghost"
               onClick={() => { dismiss(); onClose() }}
+              disabled={applyingPhase}
             >
               Пропустить эту версию
             </button>
             <button
               className="update-modal-btn update-modal-btn--secondary"
               onClick={onClose}
+              disabled={applyingPhase}
             >
-              При следующем запуске
+              Позже
             </button>
             <button
               className="update-modal-btn update-modal-btn--primary"
-              onClick={handleRestartNow}
+              onClick={handleInstall}
+              disabled={applyingPhase || downloading}
             >
-              <RotateCcw size={15} />
-              Перезапустить сейчас
+              {applyingPhase
+                ? <Loader2 size={15} className="spin" />
+                : ready ? <RotateCcw size={15} /> : <Download size={15} />}
+              {applyingPhase
+                ? 'Устанавливается…'
+                : downloading ? 'Скачивание…' : 'Перезапустить и обновить'}
             </button>
           </div>
         </motion.div>

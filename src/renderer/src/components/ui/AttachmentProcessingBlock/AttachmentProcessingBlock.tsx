@@ -19,8 +19,7 @@ interface Props {
   }
 }
 
-// Стадии обработки — показываются как roadmap в live-режиме.
-// index → retrieving/summarizing в FastContext; тут свои:
+// Стадии обработки — показываются как roadmap в live-режиме:
 //   start → processing → analyzing_image → done
 const STAGES = [
   { id: 'start', label: 'Старт', icon: Paperclip },

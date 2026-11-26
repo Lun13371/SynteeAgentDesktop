@@ -65,21 +65,6 @@
   overflow: hidden;
 }
 
-/* Полная команда run_command: без обрезки по высоте (120px мало для длинных
-   PowerShell-однострочников), pre + кнопка копирования в ряд. */
-.trr-arg-cmd {
-  display: flex;
-  align-items: flex-start;
-  gap: 6px;
-  flex: 1;
-  min-width: 0;
-}
-.trr-arg-val--full {
-  flex: 1;
-  min-width: 0;
-  max-height: none;
-  overflow: visible;
-}
 .trr-copy-btn {
   flex-shrink: 0;
   font-size: 10px;
@@ -98,18 +83,284 @@
   color: var(--text-primary);
 }
 
-/* Code блок */
-.trr-code-wrap {
+
+/* ── Единая «поверхность» кода: чтение файла, поиск, вывод ────────────
+   Один фрейм для всех код-тулов. Тёмный фон, тонкая рамка, шапка с путём,
+   копированием и бейджами. Всё остальное (Prism/plain) внутри живёт по
+   одним и тем же правилам. */
+/* Фон/текст — из темы, без собственной рамки: блок не «обводится», а просто
+   лежит поверх фона переписки чуть плотнее. */
+.trr-code {
+  background: var(--overlay-2, rgba(255, 255, 255, 0.04));
+  border: none;
   border-radius: 8px;
   overflow: hidden;
 }
 
-/* Terminal */
-.trr-terminal {
-  background: #0d1117;
+.trr-code-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px 5px 10px;
+  background: var(--overlay-3, rgba(255, 255, 255, 0.06));
+  border-bottom: 1px solid var(--overlay-3, rgba(255, 255, 255, 0.06));
+}
+
+.trr-code-title {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.trr-code-head-spacer {
+  flex: 1;
+  min-width: 4px;
+}
+
+.trr-code-head .trr-copy-btn {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-muted);
+  padding: 2px 6px;
+}
+
+.trr-code-head .trr-copy-btn:hover {
+  background: var(--overlay-5, rgba(255, 255, 255, 0.12));
+  border-color: transparent;
+  color: var(--text-primary);
+}
+
+/* Бейдж диапазона строк (выдача read_file: «568–607 / 631»). */
+.trr-code-range {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+  background: var(--overlay-4, rgba(255, 255, 255, 0.08));
+  border-radius: 4px;
+  padding: 1px 6px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* Подсветка приходит готовой HTML-строкой (refractor), pre — flex-контейнер
+   из двух колонок (номера строк + код) с горизонтальным скроллом.
+   Колонка кода НЕ имеет своего overflow (иначе overflow-y становится auto и
+   код скроллится отдельно от номеров). Скроллит сам pre. */
+.trr-code-pre {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  background: transparent;
+  border: none;
+  white-space: pre;
+}
+
+.trr-code-pre > code {
+  flex: 0 0 auto;
+}
+
+.trr-code-pre code {
+  background: transparent !important;
+  text-shadow: none !important;
+}
+
+/* read_file: несколько блоков (read_files) и примечание обрезки под кодом. */
+.trr-read {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.trr-read-note {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+  padding: 0 2px 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trr-code-lines {
+  overflow: auto;
+  padding: 6px 0;
+}
+
+.trr-code-line {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.65;
+  color: var(--text-primary);
+  padding: 0 12px;
+  white-space: pre;
+}
+
+.trr-code-line.is-match {
+  color: var(--text-primary);
+  background: var(--accent-subtle, rgba(129, 140, 248, 0.14));
+  box-shadow: inset 2px 0 0 #818cf8;
+}
+
+.trr-code-line.is-context {
+  color: var(--text-secondary);
+}
+
+.trr-code-line.is-gap {
+  color: var(--text-muted);
+  padding: 0 12px;
+}
+
+/* plain-режим (совпадения поиска, произвольный вывод) — без номеров строк,
+   строки чуть плотнее, горизонтальный скролл вместо переноса. */
+.trr-code--plain .trr-code-line {
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.trr-code-more,
+.trr-term-more {
+  display: block;
+  width: 100%;
+  border-radius: 0;
+  border: none;
+  border-top: 1px solid var(--overlay-4, rgba(255, 255, 255, 0.08));
+  background: rgba(255, 255, 255, 0.03);
+}
+
+/* ── Терминал: команда + вывод в одной карточке ───────────────────────── */
+.trr-term {
+  background: var(--overlay-2, rgba(255, 255, 255, 0.04));
+  border: none;
   border-radius: 8px;
   overflow: hidden;
-  border: 1px solid var(--overlay-4);
+}
+
+.trr-term--fail {
+  border-color: rgba(248, 113, 113, 0.35);
+}
+
+.trr-term-cmd {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 7px 10px;
+  background: var(--overlay-3, rgba(255, 255, 255, 0.06));
+  border-bottom: 1px solid var(--overlay-3, rgba(255, 255, 255, 0.06));
+}
+
+.trr-term-prompt {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.55;
+  color: #4ade80;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.trr-term-cmd-text {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.trr-term-cmd .trr-copy-btn {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-muted);
+  padding: 2px 6px;
+}
+
+.trr-term-cmd .trr-copy-btn:hover {
+  background: var(--overlay-5, rgba(255, 255, 255, 0.12));
+  border-color: transparent;
+  color: var(--text-primary);
+}
+
+.trr-term-out {
+  margin: 0;
+  padding: 9px 12px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+/* ── Файловая операция (write_file / edit_file) ───────────────────────── */
+.trr-file-op {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px 6px 10px;
+  background: rgba(74, 222, 128, 0.06);
+  border: 1px solid rgba(74, 222, 128, 0.2);
+  border-radius: 8px;
+}
+
+.trr-file-op-icon {
+  color: #4ade80;
+  font-size: 12px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.trr-file-op-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+
+.trr-file-op-note {
+  font-size: 10.5px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 0;
+}
+
+.trr-file-op--fail {
+  background: rgba(248, 113, 113, 0.07);
+  border-color: rgba(248, 113, 113, 0.28);
+}
+
+.trr-file-op--fail .trr-file-op-icon {
+  color: #f87171;
+}
+
+.trr-file-op .trr-copy-btn {
+  background: transparent;
+  border-color: transparent;
+  color: rgba(74, 222, 128, 0.75);
+}
+
+.trr-file-op .trr-copy-btn:hover {
+  background: rgba(74, 222, 128, 0.12);
+  border-color: transparent;
+  color: #4ade80;
+}
+
+/* Terminal */
+.trr-terminal {
+  background: var(--overlay-2);
+  border-radius: 8px;
+  overflow: hidden;
+  border: none;
 }
 
 .trr-terminal-pre {
@@ -117,7 +368,7 @@
   padding: 10px 12px;
   font-size: 12px;
   font-family: var(--font-mono);
-  color: #e2e8f0;
+  color: var(--text-primary);
   white-space: pre-wrap;
   word-break: break-all;
   max-height: 320px;
@@ -219,45 +470,6 @@
   word-break: break-all;
 }
 
-/* Code matches */
-.trr-code-matches {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  background: #0d1117;
-  border-radius: 8px;
-  overflow: hidden;
-  border: 1px solid var(--overlay-4);
-}
-
-.trr-code-matches-stats {
-  padding: 5px 10px;
-  border-bottom: 1px solid var(--overlay-4);
-  background: rgba(129, 140, 248, 0.08);
-}
-
-.trr-code-matches-badge {
-  font-size: 10px;
-  font-weight: 600;
-  color: #818cf8;
-  font-family: var(--font-mono);
-  letter-spacing: 0.02em;
-}
-
-.trr-code-match-line {
-  padding: 2px 10px;
-}
-
-.trr-code-match-line:hover { background: var(--overlay-2); }
-
-.trr-code-match-line pre {
-  margin: 0;
-  font-size: 11px;
-  font-family: var(--font-mono);
-  color: #e2e8f0;
-  white-space: pre-wrap;
-}
-
 /* Quote */
 .trr-quote {
   margin: 0;
@@ -270,19 +482,6 @@
   font-style: italic;
 }
 
-/* File written */
-.trr-file-written {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  font-size: 12px;
-  color: #4ade80;
-  padding: 6px 10px;
-  background: rgba(74, 222, 128, 0.08);
-  border: 1px solid rgba(74, 222, 128, 0.2);
-  border-radius: 8px;
-  font-family: var(--font-mono);
-}
 
 /* Error block — показывается при success=false вместо tool-специфичного рендера */
 .trr-error-block {

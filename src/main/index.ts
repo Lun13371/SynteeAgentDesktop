@@ -8,12 +8,13 @@ import { join, relative, isAbsolute } from 'path'
 // выполниться ДО импорта tokenStore/gatewayClient (они создают Store при
 // импорте). Поэтому setPath — первое что выполняется в модуле.
 app.setName('SynteeHelper')
+if (process.platform === 'linux') app.setDesktopName('com.synteehelper.app.desktop')
 // SYNTEE_USER_DATA_DIR — изоляция профиля для тестов запусков (QA/CI):
 // позволяет поднять второй инстанс с отдельным userData, не конфликтуя
 // с singleton-lock и данными живого инстанса юзера.
 app.setPath('userData', process.env.SYNTEE_USER_DATA_DIR || join(app.getPath('appData'), 'SynteeHelper'))
-// Fast Context Sidecar получает тот же путь через env: его клиент также
-// используется из worker_threads, где импорт Electron ненадёжен.
+// The Rust sidecar gets the same path via env: its client is also used
+// from worker_threads, where importing Electron is unreliable.
 process.env.SYNTEE_DB_PATH = join(app.getPath('userData'), 'syntee.db')
 
 // Кэш моделей @huggingface/transformers (E5 для semantic-поиска, whisper для
@@ -43,6 +44,9 @@ import { initOverlayManager, OverlayManager } from './overlay/OverlayManager'
 import { TrayManager } from './tray/TrayManager'
 import { HotkeyManager } from './hotkeys/HotkeyManager'
 import { registerAllIPC } from './ipc'
+import { initAssistants } from './assistants/bridge'
+import { getDB } from '../core/db/handle'
+import { localModels } from './localModels/LocalModelManager'
 import { registerChatIPC, flushAllActiveRuns } from './ipc/chat.ipc'
 import { registerOverlayIPC } from './ipc/overlay.ipc'
 import { registerVoiceIPC } from './ipc/voice.ipc'
@@ -56,12 +60,12 @@ import { registerMemoryIPC } from './ipc/memory.ipc'
 import { registerProviderIPC } from './ipc/providers.ipc'
 import { registerDebugIPC } from './ipc/debug.ipc'
 import { registerImageIPC } from './ipc/image.ipc'
-import { stopAllWatchers as stopAllFastContextWatchers } from '../core/context/fastContextWatcher'
 import {
   shutdownSidecar, sidecarHealth, addSidecarFailureHandler,
-} from '../core/context/fastContext/sidecarClient'
+} from '../core/sidecar/sidecarClient'
 import { installRustTokenCounter } from '../core/tokens/rustTokenCounter'
 import { stopSemanticIndexer } from '../core/memory/semanticIndex'
+import { projectMapManager } from '../core/projectMap/mapBuilder'
 import { registerFsIPC } from './ipc/fs.ipc'
 import { registerGitIPC } from './ipc/git.ipc'
 import { registerSkillsIPC } from './ipc/skills.ipc'
@@ -69,11 +73,12 @@ import { registerMcpIPC } from './ipc/mcp.ipc'
 import { registerPluginsIPC } from './ipc/plugins.ipc'
 import { registerMarketplaceIPC } from './ipc/marketplace.ipc'
 import { registerPtyIPC } from './ipc/pty.ipc'
-import { registerFastContextIPC } from './ipc/fastContext.ipc'
+import { registerExtensionsIPC } from './ipc/extensions.ipc'
 import { registerCommandsIPC } from './ipc/commands.ipc'
 import { registerMentionsIPC, shutdownMentions } from './ipc/mentions.ipc'
 import { registerProtectedVarsIPC } from './ipc/protectedVars.ipc'
 import { registerAuthIPC, registerDeepLinks } from './ipc/auth.ipc'
+import { registerCodexAuthIPC } from './ipc/codexAuth.ipc'
 import { registerGatewayIPC } from './ipc/gateway.ipc'
 import { registerBillingIPC } from './ipc/billing.ipc'
 import { registerStatsIPC } from './ipc/stats.ipc'
@@ -85,8 +90,7 @@ import { registerNotificationIPC } from './ipc/notification.ipc'
 import { initNotificationManager } from './managers/NotificationManager'
 import { initActivityManager } from './managers/ActivityManager'
 import { initGitSyncManager, registerGitSyncIPC } from './managers/GitSyncManager'
-import { startUpdatePolling, stopUpdatePolling } from './updater/UpdateChecker'
-import { ensureUpdater } from './updater/LauncherBridge'
+import { installPendingOnQuit, startUpdatePolling, stopUpdatePolling } from './updater/UpdateChecker'
 import { initModelCatalog, refreshCatalog } from '../core/tokens/modelCatalog'
 import { initSkillManager } from '../core/skills/skillManager'
 import { initCommandManager } from '../core/commands/commandManager'
@@ -274,12 +278,12 @@ function maybeRestartForSidecarFailure(): void {
   ) return
   sidecarAppRestarted = true
   process.env.SYNTEE_SIDECAR_RESTARTED = '1'
-  log('[fast-context] restarting Electron once after Rust sidecar failure')
+  log('[sidecar] restarting Electron once after Rust sidecar failure')
   try {
     app.relaunch({ args: process.argv.slice(1) })
     app.exit(0)
   } catch (error) {
-    log('[fast-context] Electron restart failed: %s', error instanceof Error ? error.message : String(error))
+    log('[sidecar] Electron restart failed: %s', error instanceof Error ? error.message : String(error))
   }
 }
 
@@ -342,7 +346,7 @@ app.whenReady().then(async () => {
   setInterval(() => { refreshCatalog(catalogCachePath).catch(() => {}) }, 86_400_000)
 
   // Skills-менеджер (загрузка .md-скиллов, состояние вкл/выкл, scope).
-  initSkillManager(store)
+  initSkillManager(store, app.getPath('userData'))
 
   // Commands-менеджер (загрузка .md-кастомных slash-команд).
   initCommandManager()
@@ -383,6 +387,24 @@ app.whenReady().then(async () => {
   hotkeyManager.registerAll()
 
   registerAllIPC({ store, mainWindow, overlayWindow, voiceWindow, spotlightWindow, trayMenuWindow, hotkeyManager })
+  initAssistants({
+    load: () => store.get('assistantsSettings') as Record<string, unknown> | undefined,
+    persist: (s: unknown) => store.set('assistantsSettings', s),
+    dbPath: () => join(app.getPath('userData'), 'syntee.db'),
+    loadStats: () => store.get('assistantsStats') as import('../shared/assistants').AgentStatsMap | undefined,
+    persistStats: (s) => store.set('assistantsStats', s),
+    loadWeights: () => store.get('assistantsWeights') as import('../shared/assistants').AssistantsWeights | undefined,
+    persistWeights: (w) => store.set('assistantsWeights', w),
+    // Archivist пишет память уже после завершения рана и после удаления чата:
+    // существование строки chat — единственный надёжный признак «не воскрешать».
+    chatAlive: (chatId: string): boolean | undefined => {
+      try {
+        return !!getDB().prepare('SELECT 1 AS ok FROM chats WHERE id = ?').get(chatId)
+      } catch {
+        return undefined
+      }
+    },
+  })
   registerChatIPC(store, mainWindow)
   registerOverlayIPC(store, overlayWindow)
   registerVoiceIPC(store, () => mainWindow.getWindow())
@@ -404,6 +426,7 @@ app.whenReady().then(async () => {
     .catch(err => console.warn('[browser:ext] boot load failed:', err))
   registerMemoryIPC(store)
   registerProviderIPC(store)
+  registerCodexAuthIPC()
   registerDebugIPC(store)
   registerImageIPC(store, mainWindow)
   registerFsIPC()
@@ -413,11 +436,11 @@ app.whenReady().then(async () => {
   registerPluginsIPC(store, () => mainWindow.getWindow())
   registerMarketplaceIPC(store)
   registerPtyIPC(mainWindow)
-  registerFastContextIPC(store, () => mainWindow.getWindow())
-  // Fast Context runs exclusively on the Rust sidecar; a failure is reported,
-  // never silently replaced by another backend.
+  registerExtensionsIPC(() => mainWindow.getWindow())
+  // The Rust sidecar serves token counting, symbols and semantic memory;
+  // a failure is reported, never silently replaced by another backend.
   addSidecarFailureHandler(error => {
-    log('[fast-context] Rust sidecar unavailable (%s): %s', error.code, error.message)
+    log('[sidecar] Rust sidecar unavailable (%s): %s', error.code, error.message)
     maybeRestartForSidecarFailure()
   })
   // Token counting for the whole app runs on the sidecar's native cl100k_base
@@ -426,9 +449,9 @@ app.whenReady().then(async () => {
   try {
     const health = await sidecarHealth()
     if (!health.ok) throw new Error('Rust sidecar health check returned not-ok')
-    log('[fast-context] Rust sidecar ready')
+    log('[sidecar] Rust sidecar ready')
   } catch (error) {
-    log('[fast-context] Rust sidecar startup unavailable: %s', error instanceof Error ? error.message : String(error))
+    log('[sidecar] Rust sidecar startup unavailable: %s', error instanceof Error ? error.message : String(error))
   }
   registerCommandsIPC()
   registerMentionsIPC()
@@ -556,8 +579,6 @@ app.whenReady().then(async () => {
   }, trayMenuWindow)
   trayManager.init()
 
-  // Ensure updater.exe exists next to the client; download from website if missing.
-  ensureUpdater().catch((e) => console.error('[updater] ensureUpdater failed:', e))
 
   // PTY-менеджер: фиксируем sender для стриминга данных в renderer.
   ptyManager.setSender(mainWindow.getWindow())
@@ -618,28 +639,32 @@ process.on('uncaughtException', (err) => {
 })
 
 app.on('before-quit', () => {
+  mainWindow?.allowCloseOnQuit()
   // Флешим все активные стримящиеся ответы в БД — ПЕРВЫМ, до любых cleanup,
   // чтобы частичный ответ ассистента не потерялся при резком выходе.
   try { flushAllActiveRuns() } catch { /* ok — best-effort */ }
   mainWindow?.flushBounds()
   ptyManager.killAll()
+  localModels.shutdown()
   // Останавливаем опрос обновлений и Git Sync Monitor.
   stopUpdatePolling()
+  // Если обновление уже скачано и проверено — ставим его при выходе.
+  try { installPendingOnQuit() } catch { /* ok — best-effort */ }
   gitSyncManager?.stop()
   stopAudioDevicesIPC()
   stopAudioVisualizerIPC()
-  // Останавливаем все fast context watchers (chokidar) — иначе process может зависеть.
-  stopAllFastContextWatchers().catch(() => { /* watchers опциональны */ })
   // Останавливаем фоновую semantic E5-индексацию (semantic_embeddings):
   // снимаем таймеры, останавливаем текущий цикл, освобождаем ONNX pipeline.
   try { stopSemanticIndexer() } catch { /* ok — best-effort */ }
+  // Останавливаем менеджер карт проектов (снимает подписки на fileIndexer).
+  try { projectMapManager.stop() } catch { /* ok — best-effort */ }
   // Останавливаем file indexer для @mention-пикера.
   shutdownMentions().catch(() => { /* indexer опционален */ })
   // Уничтожаем пул SPA-renderer BrowserWindow — чтобы не было утечки.
   import('./tools/spaRenderer')
     .then(({ destroySpaPool }) => destroySpaPool())
     .catch(() => { /* spaRenderer опционален */ })
-  // Optional Fast Context sidecar: ask it to exit cleanly before Electron
+  // Optional Rust sidecar: ask it to exit cleanly before Electron
   // tears down stdio; an absent/crashed sidecar is harmless.
   void shutdownSidecar()
 })

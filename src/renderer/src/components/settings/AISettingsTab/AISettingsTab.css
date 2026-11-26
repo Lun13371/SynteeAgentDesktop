@@ -1076,3 +1076,64 @@
     flex-basis: 100%;
   }
 }
+
+/* ── ChatGPT-подписка (Codex OAuth) ───────────────────────────────────────── */
+.codex-auth-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+.codex-auth-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.codex-auth-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.codex-auth-dot.is-on {
+  background: #22c55e;
+  box-shadow: 0 0 0 3px color-mix(in srgb, #22c55e 25%, transparent);
+}
+.codex-auth-dot.is-off {
+  background: #ef4444;
+  box-shadow: 0 0 0 3px color-mix(in srgb, #ef4444 20%, transparent);
+}
+.codex-auth-actions {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+}
+.codex-auth-manual {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.codex-auth-manual summary {
+  cursor: pointer;
+}
+.codex-auth-url {
+  margin: 6px 0 0;
+  padding: 8px;
+  border-radius: 8px;
+  background: var(--bg-secondary, rgba(255, 255, 255, 0.04));
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  word-break: break-all;
+  user-select: all;
+}
+.codex-auth-manual-input {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.codex-auth-manual-actions {
+  display: flex;
+  gap: 8px;
+}

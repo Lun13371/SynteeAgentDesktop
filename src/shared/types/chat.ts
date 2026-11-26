@@ -1,5 +1,7 @@
 // ── Chat core types: Chat, Project, Message, ToolStep, Checkpoints ──
 
+import type { SteerAttachmentMeta } from './attachment'
+
 export type ChatMode = 'code' | 'work'
 
 export interface Chat {
@@ -66,6 +68,9 @@ export interface ToolStep {
   /** true — агент уже вставил реплику в messages (дошёл до границы раунда).
    *  false/undefined — карточка «ждёт границы раунда». */
   steerApplied?: boolean
+  /** §steer — вложения реплики (чипы/миниатюры в карточке). id совпадает с
+   *  токенами [[attach:id]] в content; путь к файлу ведёт в draft-attachments. */
+  attachments?: SteerAttachmentMeta[]
   /** Native analyze_image lifecycle (основная модель получает пиксели напрямую).
    *  Исходный tool_result помечается 'pending' — пиксели уже отданы модели, но
    *  визуальный ответ ещё не пришёл. Позже приходит отдельный tool_result_update
@@ -84,6 +89,9 @@ export interface ToolStep {
       args: unknown
       result: string
       status: 'success' | 'failure'
+      /** unified diff вложенной правки: у edit_file/write_file это и есть
+       *  вывод, без него карточка вложенного вызова оставалась пустой. */
+      diff?: string
     }>
   }
 }
@@ -164,6 +172,13 @@ export interface Message {
    *  (затемнено, с пометкой), но модель не получает — getLiveMessages
    *  фильтрует. 1 = скрыто, 0/undefined = обычное. */
   hiddenFromContext?: number
+  /** §orchestration — прогресс фаз one-turn оркестрации (/orchestrate).
+   *  Одна запись на фазу (planning/executing/reviewing/replanning), слитая
+   *  по фазе и подсушенная (см. main/ipc/orchestrationRun.slimOrchestrationPhases).
+   *  Live-события идут отдельным каналом (agent:orchestration_progress);
+   *  здесь — персистентный снапшот для карточки после перезахода в чат.
+   *  Заполняется только у assistant-сообщений оркестрированного рана. */
+  orchestration?: import('../orchestration').OrchestrationProgress[]
 }
 
 // ── Checkpoint / Rewind ──────────────────────────────────────────────────
@@ -198,6 +213,13 @@ export interface LastTurnFileChange {
   path: string
   added: number
   deleted: number
+  /** Файл создан этим запросом (contentBefore=null в снапшоте). */
+  created?: boolean
+  /** Файла нет на диске в момент подсчёта — удалён в ходе/после запроса.
+   *  «Создан и удалён» (created && removed): кумулятивный дифф снапшотов для
+   *  такого файла пуст (до=пусто, после=пусто), цифры достаются из шагов
+   *  сообщения — те же, что у чипов в конце ответа. */
+  removed?: boolean
 }
 export interface LastTurnChanges {
   files: LastTurnFileChange[]

@@ -249,6 +249,57 @@
   cursor: default;
 }
 
+/* ── Ветки: заметки/ошибки, обновление списка ──────────────────────── */
+.git-panel__branch-item-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-panel__branch-note {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  font-size: 11px;
+  color: var(--text-tertiary, #777);
+  min-width: 0;
+}
+
+.git-panel__branch-note span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-panel__branch-note--error {
+  color: #f5b041;
+}
+
+.git-panel__branch-refresh {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  margin-top: 4px;
+  padding: 4px 8px;
+  background: transparent;
+  border: none;
+  border-top: 1px solid var(--border);
+  color: var(--text-tertiary, #777);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.git-panel__branch-refresh:hover:not(:disabled) {
+  color: var(--accent);
+}
+
+.git-panel__branch-refresh:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .git-panel__sync-btn {
   display: flex;
   align-items: center;

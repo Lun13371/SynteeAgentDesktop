@@ -11,8 +11,6 @@
 
 export interface ProtectedVarPromptInfo {
   key: string
-  /** @deprecated Value is no longer rendered in the prompt. Kept for type compat. */
-  value?: string
   description?: string
   group?: string
   /** Keys of linked vars — helps the model understand relations. */

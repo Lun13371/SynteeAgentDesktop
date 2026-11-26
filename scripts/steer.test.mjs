@@ -25,9 +25,37 @@ const attachmentMarkdown = load('src/shared/attachmentMarkdown.ts')
 const { convertMessagesToAnthropic } = load('src/core/ai/anthropicConverters.ts', {
   '../prompts/buildSystemPrompt': { SYSTEM_PROMPT_CACHE_BREAK: '<CACHE_BREAK>' },
 })
-const { messageToContextMessages } = load('src/main/ipc/chatContextHelpers.ts', {
+const { buildContextHistory, messageToContextMessages } = load('src/main/ipc/chatContextHelpers.ts', {
   '../../shared/attachmentMarkdown': attachmentMarkdown,
   '../../shared/steer': { STEER_MARKER },
+})
+
+test('context history keeps the latest visible plan and intact earlier tool pairs', () => {
+  const history = [
+    { id: 'u1', role: 'user', content: 'Check configuration' },
+    {
+      id: 'a1', role: 'assistant', content: 'Located the config',
+      todo: [{ text: 'Outdated plan item', status: 'pending' }],
+      toolSteps: [
+        { type: 'tool_call', callId: 'c1', toolName: 'read_file', toolArgs: { path: 'config.ts' } },
+        { type: 'tool_result', callId: 'c1', toolName: 'read_file', content: 'config content' },
+      ],
+    },
+    {
+      id: 'a2', role: 'assistant', content: 'One check remains',
+      todo: [{ text: 'Run verification', status: 'pending' }],
+    },
+    { id: 'a3', role: 'assistant', content: 'Ready to continue' },
+  ]
+  const result = buildContextHistory(history)
+  const plans = result.filter(m => m.content.startsWith('[CURRENT TASK PLAN]'))
+  assert.deepEqual(plans.map(m => [m.messageId, m.content]), [
+    ['a2', '[CURRENT TASK PLAN]\n[ ] Run verification'],
+  ])
+  const callIndex = result.findIndex(message => message.tool_calls?.length)
+  assert.equal(result[callIndex + 1].tool_call_id, result[callIndex].tool_calls[0].id)
+  assert.equal(result[callIndex + 1].content, 'config content')
+  assert.equal(history[1].todo[0].text, 'Outdated plan item')
 })
 
 // ── Anthropic: реплика посреди рана не должна давать 400 ────────────────
@@ -144,7 +172,7 @@ test('IPC: имена steer-каналов совпадают в main и preload
   const preload = readFileSync('src/preload/index.ts', 'utf8')
   assert.ok(ipc.includes("ipcMain.handle('chat:steer'"), 'main: нет обработчика chat:steer')
   assert.ok(ipc.includes("ipcMain.handle('chat:steer:cancel'"), 'main: нет обработчика chat:steer:cancel')
-  assert.ok(preload.includes("ipcRenderer.invoke('chat:steer', chatId, text, steerId)"), 'preload: chat:steer')
+  assert.ok(preload.includes("ipcRenderer.invoke('chat:steer', chatId, text, steerId, attachments)"), 'preload: chat:steer')
   assert.ok(preload.includes("ipcRenderer.invoke('chat:steer:cancel', chatId, steerId)"), 'preload: chat:steer:cancel')
 })
 

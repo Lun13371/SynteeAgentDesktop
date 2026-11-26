@@ -4,11 +4,12 @@ import ApprovalModeSelector from '../ApprovalModeSelector/ApprovalModeSelector'
 import ContextRing from '../ContextRing/ContextRing'
 import AttachmentPreviewModal from '../AttachmentPreviewModal/AttachmentPreviewModal'
 import { ProtectedVarsModal } from '../ProtectedVarsModal/ProtectedVarsModal'
-import { filterCommands } from '../../../../../shared/slashCommands'
+import { filterCommands, resolveSlashContext, getCommandArguments } from '../../../../../shared/slashCommands'
 import type { SlashCommand } from '../../../../../shared/slashCommands'
 import { findMentionTokenNearCaret, mentionToAttachment } from '../../../../../shared/mentions'
 import type { Attachment, MentionItem, ApprovalMode, AutoModeSettings, LastTurnChanges, ProjectPermissionOverride } from '../../../../../shared/types'
-import { DEFAULT_PERSONA, type PersonaId } from '../../../../../shared/modes'
+import type { OrchestrationModel, OrchestrationSelection } from '../../../../../shared/orchestration'
+import { validateOrchestration, type OrchestrationIssueText } from '../../../utils/orchestration'
 import type { ContextInfo } from '../../../hooks/useContextCounter'
 import { useUIStore } from '../../../store/ui.store'
 import { useSettingsStore } from '../../../store/settings.store'
@@ -22,8 +23,10 @@ import { ChatInputPlusMenu } from './ChatInputPlusMenu'
 import { ChatInputActionButton, STEER_HOLD_MS } from './ChatInputActionButton'
 import { ChatInputEditor, type EditorApi } from './ChatInputEditor'
 import { ChatInputMenus } from './ChatInputMenus'
+import OrchestrationBar from './OrchestrationBar'
 import { AudioVisualizerLayer } from './AudioVisualizerLayer'
 import { PluginInputActions } from './PluginInputActions'
+import ChatActivityStrip from '../ActivityStrip/ChatActivityStrip'
 import { getPluginsExt, type PluginAutoResult } from '../../../utils/pluginExtApi'
 import { ATTACH_TOKEN_RE, stripAttachTokens } from '../../../../../shared/attachmentMarkdown'
 import './ChatInput.css'
@@ -35,8 +38,10 @@ interface ChatInputProps {
   /**
    * §steer — внедрить текст в контекст РАБОТАЮЩЕГО агента (long-press кнопки
    * отправки 0,5с). Без колбэка удержание выключено, клик работает как раньше.
+   * Второй аргумент — вложения чипов (текст с [[attach:id]]-токенами уходит
+   * как есть: main чистит токены и инлайнит файлы в контекст).
    */
-  onSteer?: (text: string) => void
+  onSteer?: (text: string, attachments: Attachment[]) => void
   disabled?: boolean
   isIncognito?: boolean
   /** Реплаи в инпуте: Message[] из state чата (роль шире — 'system' тоже
@@ -77,10 +82,6 @@ interface ChatInputProps {
   /** Тумблер «Управление браузером»: browser_* тулы для AI (правая панель). */
   browserMode?: boolean
   onBrowserModeChange?: (v: boolean) => void
-  /** Single-select persona run mode (classic/architect/debugger/...).
-   *  Orthogonal to the three toggles above — a radio choice, not a boolean. */
-  persona?: PersonaId
-  onPersonaChange?: (v: PersonaId) => void
   rateLimitSec?: number
   /** Рабочая директория текущего чата (режим "Код"). Показывается как
     *  бейдж над инпутом — как cwd-indicator в Codex CLI. */
@@ -115,6 +116,25 @@ interface ChatInputProps {
   onGitSyncApply?: (projectId: string) => Promise<void>
   onGitSyncLater?: (projectId: string) => void
   onGitSyncOpenGit?: (projectId: string) => void
+  /**
+   * One-turn оркестрация (`/orchestrate` или «+» → Оркестрация).
+   * null/undefined — выключена. Это НЕ режим: выбор живёт один ход и
+   * снимается после принятой отправки (ChatPage).
+   */
+  orchestration?: OrchestrationSelection | null
+  /** Включить оркестрацию (плюс-меню, /orchestrate). Сид выбора строит ChatPage. */
+  onOrchestrationActivate?: () => void
+  /** Изменить выбор в блоке / снять его (null — выключить). */
+  onOrchestrationChange?: (next: OrchestrationSelection | null) => void
+  /** Отказ отправки оркестрации (валидация/плагин/ошибка) — показываем в блоке. */
+  orchestrationIssue?: OrchestrationIssueText | null
+  /**
+   * Сигнал «очисти поле» (растущий счётчик). Нужен one-turn оркестрации:
+   * ChatInput в этом режиме не чистит ввод оптимистично, а ChatPage снимает
+   * черновик только после принятой отправки — и только если пользователь не
+   * начал печатать заново (иначе сигнал не приходит вовсе).
+   */
+  clearDraftToken?: number
 }
 
 // memo: ChatPage ре-рендерится ~20×/сек при стриминге и на scroll-range
@@ -155,8 +175,6 @@ function ChatInput({
   onAskModeChange,
   browserMode = false,
   onBrowserModeChange,
-  persona = DEFAULT_PERSONA,
-  onPersonaChange,
   rateLimitSec = 0,
   workdir,
   compactSessionStats,
@@ -173,6 +191,11 @@ function ChatInput({
   onGitSyncApply,
   onGitSyncLater,
   onGitSyncOpenGit,
+  orchestration = null,
+  onOrchestrationActivate,
+  onOrchestrationChange,
+  orchestrationIssue = null,
+  clearDraftToken = 0,
 }: ChatInputProps) {
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>('ask')
   // Глобальные настройки авто-режима (agentPermissions.autoMode) и проектный
@@ -196,15 +219,23 @@ function ChatInput({
       setSecretsEnabled(l.filter(v => v.enabled).length)
     }).catch(() => {})
   }, [])
-  // ── Пикер аргументов команды (многоуровневый enum-пикер) ──
+  // ── Пикер аргументов команды (многоуровневый enum-пикер + free-text hint) ──
   // argPickerCmd — команда, для которой показываем пикер (null = скрыт).
   // argPickerLevel — индекс текущего аргумента в cmd.arguments.
   // argPickerChoices — отфильтрованные по префиксу опции текущего аргумента.
+  //   ПУСТОЙ массив при активной команде = free-text режим: аргумент без
+  //   choices — CommandArgMenu показывает подсказку-карточку.
   // argPickerIdx — выбранный индекс (как slashIdx).
+  // argPrefix — частично введённый токен текущего аргумента (подсветка опций).
   const [argPickerCmd, setArgPickerCmd] = useState<SlashCommand | null>(null)
   const [argPickerLevel, setArgPickerLevel] = useState(0)
   const [argPickerChoices, setArgPickerChoices] = useState<string[]>([])
   const [argPickerIdx, setArgPickerIdx] = useState(0)
+  const [argPrefix, setArgPrefix] = useState('')
+  // Команда, для которой подсказку закрыли вручную (Esc/клик) — не
+  // переоткрывать на каждое нажатие, пока юзер редактирует ту же команду.
+  // Сбрасывается при смене команды / уходе из командного контекста.
+  const argDismissedRef = useRef<string | null>(null)
   // ── @mention-меню ──
   // mentionItems — текущий список для дропдауна (fuzzy-отфильтрованный).
   // mentionIdx — выбранный индекс (как slashIdx).
@@ -272,6 +303,23 @@ function ChatInput({
     setLiveText(next)
     onChangeValue(next)
   }, [onChangeValue])
+
+  // ── Программная очистка поля по сигналу родителя ────────────────────────
+  // Единственный путь, которым ChatPage снимает черновик one-turn оркестрации:
+  // только после принятой отправки и только если пользователь не начал печатать
+  // заново (иначе токен не инкрементится). value-проп для этого не годится —
+  // он «снимок» и при обычном наборе не меняется.
+  const prevClearTokenRef = useRef(clearDraftToken)
+  useEffect(() => {
+    if (clearDraftToken === prevClearTokenRef.current) return
+    prevClearTokenRef.current = clearDraftToken
+    if (liveTextRef.current === '') return
+    applyLive('')
+    setSlashCmds([])
+    setMentionItems([])
+    mentionTokenRef.current = null
+    if (textareaRef.current) textareaRef.current.style.height = 'auto'
+  }, [clearDraftToken, applyLive])
 
   // ── Голосовой ввод (STT) в инпут-баре — вынесен в хук useChatInputVoice ──
   // Провайдер и размер модели читаются из персистентных настроек (electron-store).
@@ -414,13 +462,25 @@ function ChatInput({
   }, [liveText])
 
   // Сброс навигации по истории при смене чата — индекс относится к
-  // inputHistory предыдущего чата и не валиден для нового.
+  // inputHistory предыдущего чата и не валиден для нового. Там же — dismiss
+  // подсказок аргументов (относился к набору в предыдущем чате).
   useEffect(() => {
     historyIdxRef.current = null
+    argDismissedRef.current = null
   }, [chatId])
 
   // Обновляем слеш-меню и @mention-меню при вводе
-  const handleChange = (text: string) => {
+  const handleChange = (raw: string) => {
+    // ── /orchestrate — одноразовая оркестрация ───────────────────────────
+    // Ведущая команда (набрана руками или вставлена из буфера) включает блок
+    // выбора исполнителя/ревьюера и вырезается из текста: остаток остаётся
+    // черновиком, вложения не трогаем. Повторно уже включённый режим текст
+    // не переписывает (иначе правки пользователя затирались бы).
+    let text = raw
+    if (!orchestration && /^\/orchestrate(?:\s+|$)/i.test(raw)) {
+      text = raw.replace(/^\/orchestrate\s*/i, '')
+      onOrchestrationActivate?.()
+    }
     // Любой ручной ввод сбрасывает режим навигации по истории — иначе
     // следующий ArrowUp продолжил бы с устаревшего индекса.
     historyIdxRef.current = null
@@ -438,43 +498,48 @@ function ChatInput({
       setSlashCmds([])
     }
 
-    // ── Пикер аргументов команды: синхронизация с ручным вводом ──
-    // Если argPicker активен — фильтруем choices текущего уровня по
-    // последнему вводимому токену-префиксу. Если юзер ушёл из формата
-    // /cmd или превысил уровень — закрываем пикер.
-    // Слишком длинный текст (вставка) — пикер закрываем: разбор /cmd args
+    // ── Контекст команды: подсказки аргументов (пикер + free-text hint) ──
+    // Выводится ИЗ ТЕКСТА (resolveSlashContext), а не только из выбора команды
+    // в меню: ручной набор `/compact ` теперь тоже открывает подсказки.
+    // Enum-аргументы → пикер опций, свободный текст → карточка-подсказка.
+    // Слишком длинный текст (вставка) — подсказки закрываем: разбор /cmd args
     // по сотням КБ не имеет смысла.
-    if (argPickerCmd && text.length > ARG_PICKER_MAX_CHARS) {
+    if (text.length > ARG_PICKER_MAX_CHARS) {
       closeArgPicker()
-    } else if (argPickerCmd) {
-      const cmd = argPickerCmd
-      // Slice-подход (а не regex m[2]) — \s* жадно съедает trailing-пробел,
-      // из-за чего для `/cmd choice ` rest терял финальный пробел и уровень
-      // считался на 1 меньше (picker показывал прошлый уровень, не следующий).
-      const head = text.match(/^\/(\S+)/)
-      if (!head || head[1].toLowerCase() !== cmd.name.toLowerCase()) {
-        closeArgPicker()
+    } else {
+      const ctx = text.startsWith('/') ? resolveSlashContext(text, customCommands) : null
+      if (!ctx || !ctx.hasArgsRegion) {
+        // Вне командного контекста (или `/cmd` ещё без аргументов — там своё
+        // слеш-меню) подсказки не нужны, dismiss сбрасываем: новая попытка
+        // набора той же команды снова покажет подсказки.
+        argDismissedRef.current = null
+        if (argPickerCmd) closeArgPicker()
+      } else if (argDismissedRef.current === ctx.command.name) {
+        // Закрыто вручную (Esc/клик мимо) — не переоткрываем на каждое
+        // нажатие, пока юзер редактирует ту же команду.
       } else {
-        const after = text.slice(head[0].length)
-        const trimmed = after.trim()
-        const endsWithSpace = after.length > 0 && /\s$/.test(after)
-        const tokens = trimmed === '' ? [] : trimmed.split(/\s+/)
-        const level = endsWithSpace ? tokens.length : tokens.length - 1
-        const arg = cmd.arguments?.[level]
-        if (!arg?.choices || arg.choices.length === 0 || level >= (cmd.arguments?.length ?? 0)) {
+        const args = getCommandArguments(ctx.command)
+        const level = Math.min(ctx.level, Math.max(0, args.length - 1))
+        const arg = args[level]
+        if (!arg) {
           closeArgPicker()
+        } else if (arg.choices && arg.choices.length > 0) {
+          // Пикер опций. Нет совпадений по префиксу → показываем ВСЕ опции:
+          // подсказка не мигает при опечатке, допустимые значения видны.
+          const filtered = ctx.endsWithSpace
+            ? arg.choices
+            : arg.choices.filter(c => c.toLowerCase().startsWith(ctx.prefix.toLowerCase()))
+          setArgPickerCmd(ctx.command)
+          setArgPickerLevel(level)
+          setArgPickerChoices(filtered.length > 0 ? filtered : arg.choices)
+          setArgPickerIdx(0)
+          setArgPrefix(ctx.endsWithSpace ? '' : ctx.prefix)
         } else {
-          const prefix = endsWithSpace ? '' : (tokens.length > 0 ? tokens[tokens.length - 1] : '')
-          const filtered = prefix
-            ? arg.choices.filter(c => c.toLowerCase().startsWith(prefix.toLowerCase()))
-            : arg.choices
-          if (filtered.length === 0) {
-            closeArgPicker()
-          } else {
-            setArgPickerLevel(level)
-            setArgPickerChoices(filtered)
-            setArgPickerIdx(0)
-          }
+          // Свободный текст — карточка-подсказка (choices пустой).
+          setArgPickerCmd(ctx.command)
+          setArgPickerLevel(level)
+          setArgPickerChoices([])
+          setArgPrefix(ctx.prefix)
         }
       }
     }
@@ -527,21 +592,41 @@ function ChatInput({
   }
 
   const selectCommand = (cmd: SlashCommand) => {
+    // ── /orchestrate — не вставляем текст команды в поле ────────────────
+    // Включаем one-turn оркестрацию: снимаем набираемый токен команды,
+    // сохраняя остальной черновик и вложения.
+    if (cmd.orchestration) {
+      historyIdxRef.current = null
+      argDismissedRef.current = null
+      applyLive(liveText.replace(/^\/\S*\s*/, ''))
+      setSlashCmds([])
+      closeArgPicker()
+      onOrchestrationActivate?.()
+      setTimeout(() => editorApiRef.current?.focus(), 0)
+      return
+    }
     // Заменяем ввод на "/command " и фокусируем
     const next = `/${cmd.name} `
     historyIdxRef.current = null
+    argDismissedRef.current = null
     applyLive(next)
     setSlashCmds([])
-    // Если у команды есть первый аргумент с choices — открываем пикер.
-    const firstArg = cmd.arguments?.[0]
+    // Подсказка первого аргумента: enum → пикер опций, свободный текст →
+    // карточка-подсказка (см. getCommandArguments — синтез из placeholder).
+    const firstArg = getCommandArguments(cmd)[0]
     if (firstArg?.choices && firstArg.choices.length > 0) {
       setArgPickerCmd(cmd)
       setArgPickerLevel(0)
       setArgPickerChoices(firstArg.choices)
       setArgPickerIdx(0)
-    } else {
-      setArgPickerCmd(null)
+      setArgPrefix('')
+    } else if (firstArg) {
+      setArgPickerCmd(cmd)
+      setArgPickerLevel(0)
       setArgPickerChoices([])
+      setArgPrefix('')
+    } else {
+      closeArgPicker()
     }
     setTimeout(() => editorApiRef.current?.focus(), 0)
   }
@@ -595,26 +680,52 @@ function ChatInput({
     setArgPickerChoices([])
     setArgPickerLevel(0)
     setArgPickerIdx(0)
+    setArgPrefix('')
   }
+
+  // Закрытие подсказки с запоминанием команды: пока та же команда в поле,
+  // handleChange её не переоткроет (иначе Esc/клик мимо бессмысленны —
+  // следующий же символ снова поднял бы меню).
+  const dismissArgHint = () => {
+    argDismissedRef.current = argPickerCmd?.name ?? null
+    closeArgPicker()
+  }
+
+  // ── Блокировка отправки без исполнителя ──────────────────────────────────
+  // Оркестрация без валидного выбора (исполнитель не выбран / выбор
+  // противоречив) не отправляется вообще: кнопка отправки заблокирована, а
+  // причина постоянно видна в блоке над инпутом (OrchestrationBar сама
+  // показывает validateOrchestration, если явной ошибки ещё нет). Это не
+  // «мягкий» отказ ChatPage — сюда просто нельзя нажать.
+  const orchestrationBlocked = !!orchestration && !!validateOrchestration(orchestration)
 
   const handleSend = () => {
     // Пустой = нет текста (токены не считаем) И нет вложений
     const cleanText = stripAttachTokens(liveText).trim()
     if (!cleanText && attachments.length === 0) return
     if (disabled && !isGenerating) return
+    // Оркестрация без исполнителя: ни Enter, ни кнопка ничего не отправляют.
+    if (orchestrationBlocked) return
+    // One-turn оркестрация: НЕ чистим поле оптимистично. Черновик и вложения
+    // снимает ChatPage только после принятой отправки — отказ (валидация,
+    // плагин, ошибка старта) не должен съедать набранное. Enter и hover-кнопка
+    // ведут сюда же: one-shot нельзя обойти «обычной» отправкой.
+    const oneShotOrchestration = !!orchestration
     // Отправляем value С токенами — ChatPage положит его в message.content
     // (рендер в чате восстановит чипы на местах), а в AI уйдёт чистый текст.
     onSend(liveText.trim())
     historyIdxRef.current = null
     pluginAutoReqRef.current++
     setPluginAuto(null)
-    applyLive('')
+    if (!oneShotOrchestration) {
+      applyLive('')
+    }
     setSlashCmds([])
     setMentionItems([])
     mentionTokenRef.current = null
     closeArgPicker()
     // Вложения очищаются в ChatPage после отправки (после chat:send)
-    if (textareaRef.current) textareaRef.current.style.height = 'auto'
+    if (!oneShotOrchestration && textareaRef.current) textareaRef.current.style.height = 'auto'
     if (uiSounds) playSendSound()
     if (sendEffect) { setSendBurst(true); setTimeout(() => setSendBurst(false), 400) }
   }
@@ -623,12 +734,16 @@ function ChatInput({
   // контекст работающего агента (Agent вставит его на границе раунда).
   // Поле очищаем сразу, как при обычном send: если активного рана уже нет,
   // ChatPage откатится на обычную отправку этим же текстом.
-  // Вложения не поддерживаем: их пайплайн (processAttachmentsAndStream) живёт
-  // в chat:send, поэтому при наличии вложений жест просто ничего не делает —
-  // пользователь отправляет обычным кликом.
+  // Вложения поддерживаются как в обычной отправке: текст летит с
+  // [[attach:id]]-токенами, main их чистит и инлайнит файлы в контекст рана
+  // (processAttachmentsAndStream). Чипы ChatPage снимет после acceptance.
   const handleSteer = () => {
+    // One-turn оркестрация всегда идёт через обычную отправку (в очередь):
+    // внедрение в контекст активного рана обошло бы одноразовый выбор.
+    if (orchestration) { handleSend(); return }
+    const hasAttachments = attachments.length > 0
     const cleanText = stripAttachTokens(liveText).trim()
-    if (!cleanText || attachments.length > 0) return
+    if (!cleanText && !hasAttachments) return
     if (disabled && !isGenerating) return
     const payload = liveText.trim()
     historyIdxRef.current = null
@@ -641,7 +756,7 @@ function ChatInput({
     closeArgPicker()
     if (textareaRef.current) textareaRef.current.style.height = 'auto'
     if (uiSounds) playSteerSound()
-    onSteer?.(payload)
+    onSteer?.(payload, attachments)
   }
 
   // Отправка текста без «живого» значения value (для command-подсказки).
@@ -763,6 +878,7 @@ function ChatInput({
   // чат → tabActions.selectChat (глобальный мост ChatPage), проект → самый
   // свежий чат проекта. Превью-модалка чатам/проектам не подходит (нет path).
   const handleChipPreview = useCallback((a: Attachment) => {
+    if (a.kind === 'mcp') return
     if (a.kind === 'chat' && a.chatId) {
       tabActions.selectChat?.(a.chatId)
       return
@@ -777,10 +893,45 @@ function ChatInput({
     setPreviewAttachment(a)
   }, [])
 
+  // ── Прикрепление из плюс-панели (поиск файлов проекта) ──
+  // Тот же чип в тексте, что и у @mention: токен [[attach:id]] на позиции
+  // каретки, файл-ссылка без копирования (path принадлежит проекту).
+  const handleMenuAttach = useCallback((item: MentionItem): boolean => {
+    const newAtt = mentionToAttachment(item)
+    const dupKey = (a: Attachment): string | undefined =>
+      a.kind === 'chat' ? a.chatId : a.kind === 'project' ? a.projectId : a.path
+    if (attachments.length >= maxAttachments) return false
+    if (attachments.some(a => a.kind === newAtt.kind && dupKey(a) !== undefined && dupKey(a) === dupKey(newAtt))) return false
+    onAttachmentsChange?.([...attachments, newAtt])
+    editorApiRef.current?.insertAttachmentAtCaret(newAtt)
+    return true
+  }, [attachments, maxAttachments, onAttachmentsChange])
+
+  // ── Прикрепление MCP-сервера из плюс-панели ──
+  // Чип kind='mcp' в тексте сообщения; main по нему инжектит имя сервера
+  // и его инструменты в контекст этого запроса (как файл-вложение).
+  const handleMenuAttachMcp = useCallback((server: { id: string; name: string }): boolean => {
+    if (attachments.length >= maxAttachments) return false
+    if (attachments.some(a => a.kind === 'mcp' && a.mcpServerId === server.id)) return false
+    const att: Attachment = {
+      id: crypto.randomUUID(),
+      kind: 'mcp',
+      name: server.name,
+      mcpServerId: server.id,
+      source: 'mention',
+      attachedAt: Date.now(),
+    }
+    onAttachmentsChange?.([...attachments, att])
+    editorApiRef.current?.insertAttachmentAtCaret(att)
+    return true
+  }, [attachments, maxAttachments, onAttachmentsChange])
+
   const handleKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     // Навигация по пикеру аргументов команды — высший приоритет
     // (открыт после выбора команды, пока юзер выбирает enum-опцию).
-    if (argPickerCmd && argPickerChoices.length > 0) {
+    // При активном @mention-меню приоритет у него (юзер явно жестом '@'
+    // запросил файлы) — пикер подсказки просто скрыт до конца mention.
+    if (argPickerCmd && argPickerChoices.length > 0 && mentionItems.length === 0) {
       if (e.key === 'ArrowUp') {
         e.preventDefault()
         setArgPickerIdx(i => (i - 1 + argPickerChoices.length) % argPickerChoices.length)
@@ -797,9 +948,16 @@ function ChatInput({
         return
       }
       if (e.key === 'Escape') {
-        closeArgPicker()
+        dismissArgHint()
         return
       }
+    }
+    // Free-text подсказка аргумента (choices пуст) — клавиши НЕ перехватываем:
+    // Enter отправляет сообщение, стрелки двигают каретку. Только Esc скрывает.
+    if (argPickerCmd && argPickerChoices.length === 0 && mentionItems.length === 0 && e.key === 'Escape') {
+      e.preventDefault()
+      dismissArgHint()
+      return
     }
     // Autocomplete-провайдер плагинов — навигация. Активен только когда
     // слеш/@mention меню закрыты (приоритет у штатных меню).
@@ -925,11 +1083,13 @@ function ChatInput({
       if (document.querySelector('.agent-confirm-overlay')) return
       // §steer — удержание Enter = внедрить реплику в контекст работающего
       // агента (клавиатурный аналог удержания кнопки отправки). Условия те же:
-      // есть текст, идёт генерация, нет вложений — то есть обычный Enter ушёл
+      // есть текст или вложения, идёт генерация — то есть обычный Enter ушёл
       // бы в очередь. Отправку НЕ делаем сразу: ждём keyup (короткое нажатие)
       // либо порога STEER_HOLD_MS (внедрение).
-      const canSteerKeyboard = !!onSteer && !!stripAttachTokens(liveText).trim() &&
-        !!isGenerating && attachments.length === 0
+      const canSteerKeyboard = !!onSteer &&
+        !orchestration &&
+        (!!stripAttachTokens(liveText).trim() || attachments.length > 0) &&
+        !!isGenerating
       if (canSteerKeyboard) {
         // Автоповтор удержания не должен перезапускать таймер.
         if (e.repeat || enterHoldTimer.current !== null) return
@@ -982,7 +1142,7 @@ function ChatInput({
   // готовности модели). Преварма при старте НЕТ — воркер спавнится только
   // по факту использования голоса (см. voice.ipc.ts).
   const micBusy = voice.modelLoading && !voiceActive && !liveText.trim() && !isGenerating
-  // language — 'ru' (default) | 'en'. Selects persona name/description variant.
+  // language — 'ru' (default) | 'en'. Selects localized toggle labels.
   const lang = useSettingsStore(s => (s.settings['language'] as 'ru' | 'en') ?? 'ru')
 
   // Breadcrumb пути рабочей директории: показываем последние 2 сегмента
@@ -1010,24 +1170,47 @@ function ChatInput({
         <ChatInputMenus
           slashCmds={slashCmds}
           slashIdx={slashIdx}
+          slashQuery={liveText.startsWith('/') && !liveText.includes(' ') ? liveText.slice(1) : ''}
           mentionItems={mentionItems}
           mentionIdx={mentionIdx}
-          argPickerCmd={argPickerCmd}
+          // Активное @mention-меню скрывает пикер аргументов (два меню на одном
+          // якоре перекрывались бы; после резолюции mention пикер вернётся —
+          // состояние argPickerCmd не трогаем, гасим только отображение).
+          argPickerCmd={mentionItems.length > 0 ? null : argPickerCmd}
           argPickerLevel={argPickerLevel}
           argPickerChoices={argPickerChoices}
           argPickerIdx={argPickerIdx}
+          argPrefix={argPrefix}
           boxRef={boxRef}
           onSelectCommand={selectCommand}
           onCloseSlash={() => setSlashCmds([])}
           onSelectMention={selectMention}
           onCloseMention={() => { setMentionItems([]); mentionTokenRef.current = null }}
           onSelectArgChoice={selectArgChoice}
-          onCloseArgPicker={closeArgPicker}
+          onCloseArgPicker={dismissArgHint}
           pluginAuto={pluginAuto ? pluginAuto.data : null}
           pluginAutoIdx={pluginAuto?.idx ?? 0}
           onSelectPluginAuto={selectPluginAuto}
           onClosePluginAuto={() => { pluginAutoReqRef.current++; setPluginAuto(null) }}
         />
+
+      {/* Компактный блок one-turn оркестрации — ВЫШЕ строки статуса (модель,
+          проект, размышление), только когда режим включён (/orchestrate или
+          «+» → Оркестрация). */}
+      <AnimatePresence initial={false}>
+        {orchestration && (
+          <OrchestrationBar
+            key="orchestration-bar"
+            selection={orchestration}
+            error={orchestrationIssue}
+            mainModelId={mainModelId}
+            mainModelProviderId={mainModelProviderId}
+            onExecutorChange={(m: OrchestrationModel) => onOrchestrationChange?.({ ...orchestration, executor: m })}
+            onReviewerChange={(m: OrchestrationModel | null) => onOrchestrationChange?.({ executor: orchestration.executor, reviewer: m ?? undefined })}
+            onClose={() => onOrchestrationChange?.(null)}
+          />
+        )}
+      </AnimatePresence>
 
       {/* Строка статуса над инпутом: workdir-бейдж + planning/image-бейджи + бейджи голоса/очереди/расширений/изменений + селектор модели. */}
       <ChatInputStatusRow
@@ -1048,8 +1231,6 @@ function ChatInput({
         onAskModeChange={onAskModeChange}
         browserMode={browserMode}
         onBrowserModeChange={onBrowserModeChange}
-        persona={persona}
-        onPersonaChange={onPersonaChange}
         lang={lang}
         mainModelId={mainModelId}
         mainModelProviderId={mainModelProviderId}
@@ -1108,6 +1289,7 @@ function ChatInput({
         <div className="chat-input-row">
           {/* + кнопка с меню */}
           <ChatInputPlusMenu
+            anchorRef={boxRef}
             onAttachClick={handleAttachClick}
             secretsCount={secretsCount}
             onProtectedVarsClick={() => setProtectedVarsOpen(true)}
@@ -1119,9 +1301,18 @@ function ChatInput({
             onAskModeChange={onAskModeChange}
             browserMode={browserMode}
             onBrowserModeChange={onBrowserModeChange}
-            persona={persona}
-            onPersonaChange={onPersonaChange}
             lang={lang}
+            chatId={chatId}
+            workdir={workdir}
+            projectId={projectId}
+            attachments={attachments}
+            maxAttachments={maxAttachments}
+            onAttachItem={handleMenuAttach}
+            onAttachMcp={handleMenuAttachMcp}
+            customCommands={customCommands}
+            onInsertCommand={selectCommand}
+            orchestrationActive={!!orchestration}
+            onOrchestrate={onOrchestrationActivate}
           />
 
           {/* Кнопки плагинов над инпутом (registerInputAction) */}
@@ -1146,10 +1337,12 @@ function ChatInput({
             onPreviewAttachment={handleChipPreview}
             replies={replyTo}
             onRemoveReply={onCancelReply}
+            customCommands={customCommands}
             editorApiRef={editorApiRef}
             editorRef={textareaRef}
             placeholder={
-              planningMode ? 'Режим планирования — опишите задачу...'
+              orchestration ? 'Оркестрация — опишите задачу для исполнителя...'
+              : planningMode ? 'Режим планирования — опишите задачу...'
               : askMode ? 'Ask-режим — только чтение, задайте вопрос...'
               : imageMode ? 'Режим генерации изображений — опишите картинку...'
               : isIncognito ? 'Режим инкогнито — чат не сохраняется...'
@@ -1184,16 +1377,25 @@ function ChatInput({
             voice={voice}
             micBusy={micBusy}
             sendBurst={sendBurst}
+            // Оркестрация без исполнителя — отправка недоступна (см. выше).
+            blocked={orchestrationBlocked}
+            blockedTitle="Оркестрация: выберите модель-исполнителя"
             onStop={onStop}
             onSend={handleSend}
-            onSteer={onSteer ? handleSteer : undefined}
-            holdActive={enterHold && !!isGenerating && !!stripAttachTokens(liveText).trim() && attachments.length === 0}
+            onSteer={onSteer && !orchestration ? handleSteer : undefined}
+            // §steer — кольцо удержания Enter на кнопке: условие то же, что в
+            // canSteerKeyboard (текст ИЛИ вложения).
+            // Раньше здесь оставалось «нет вложений» — при вложениях внедрение
+            // срабатывало, а анимация на кнопке не показывалась.
+            holdActive={enterHold && !!isGenerating && !orchestration &&
+              (!!stripAttachTokens(liveText).trim() || attachments.length > 0)}
             onMicClick={handleMicClick}
           />
         </div>
       </div>
 
-      <p className="chat-input-hint">Enter — отправить · Shift+Enter — новая строка · / — команды · @ — файлы и сущности · удержать Enter или кнопку отправки — внедрить в контекст работающего агента</p>
+      <p className="chat-input-hint">Enter — отправить · Shift+Enter — новая строка · / — команды · /orchestrate — один ход с ревьюером · @ — файлы и сущности · удержать Enter или кнопку отправки — внедрить в контекст работающего агента</p>
+      <ChatActivityStrip />
       </div>
 
       {/* Модалка превью вложения — лайтбокс для картинок, CodePreview для файлов */}

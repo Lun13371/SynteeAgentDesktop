@@ -110,6 +110,9 @@ export const BUILTIN_MODELS: ModelMeta[] = [
   // ── OpenRouter — агрегатор моделей, OpenAI-совместимый (https://openrouter.ai) ──
   // Требует API-ключ пользователя. 200 t/s на free-моделях — идеально для fast-context.
   m('inclusionai/ling-3.0-flash:free', 'openrouter', 'Ling 3.0 Flash (Free)', 262_144, 0, 0, 'fast', [T,R,C], 'OpenRouter — 200 t/s бесплатно, дефолт для fast-context'),
+  // ChatGPT-подписка (openai-codex) — каталога здесь нет намеренно: список
+  // моделей приходит живьём с бэкенда (codexAuth.fetchCodexModels →
+  // /backend-api/codex/models), включая display_name, контекст и уровни reasoning.
 ]
 
 export const BUILTIN_PROVIDERS_META: Record<string, { name: string; baseUrl: string; docsUrl: string; color: string }> = {
@@ -135,4 +138,7 @@ export const BUILTIN_PROVIDERS_META: Record<string, { name: string; baseUrl: str
   openrouter:  { name: 'OpenRouter',   baseUrl: 'https://openrouter.ai/api/v1',          color: '#8b5cf6', docsUrl: 'https://openrouter.ai/keys' },
   // ── Syntee-Gateway — собственный шлюз с JWT-авторизацией (модели тянем из /v1/models) ──
   'syntee-gateway': { name: 'Syntee Gateway', baseUrl: '', color: '#10b981', docsUrl: '' },
+  // ── ChatGPT-подписка (Codex): базовый URL бэкенда ChatGPT, ключ не нужен —
+  //    Authorization подставляет AIClient из OAuth-токена (codexAuth.ts).
+  'openai-codex': { name: 'ChatGPT (подписка)', baseUrl: 'https://chatgpt.com/backend-api/codex', color: '#10a37f', docsUrl: 'https://chatgpt.com' },
 }

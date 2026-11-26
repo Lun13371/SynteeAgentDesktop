@@ -1,109 +1,31 @@
 import * as React from 'react'
 import { useState, useMemo, memo, useCallback, useEffect, useRef } from 'react'
-import { createPortal } from 'react-dom'
 import { copyToClipboard } from '@renderer/utils/clipboard'
 import { motion, AnimatePresence } from 'framer-motion'
-import ReactMarkdown, { defaultUrlTransform } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
-import type { PluginUiWidgetPayload } from '@shared/types/plugin'
 import { formatTokens, formatTokensFull, formatDuration } from '@shared/format'
-import { normalizeMathDelimiters, containsMathMarkers } from '@shared/mathNormalize'
-import PluginIframe from '../PluginSlot/PluginIframe'
+import { containsMathMarkers } from '@shared/mathNormalize'
+import { SLASH_COMMANDS } from '@shared/slashCommands'
 import { useToast } from '../Toast/Toast'
-import { collectMarkdownRenderers, collectMessageContextMenu, collectMessageTags, getPluginsExt } from '../../../utils/pluginExtApi'
-import { useExtensionsStore } from '../../../store/extensions.store'
-import { usePluginPanelStore } from '../../../store/pluginPanel.store'
-// ── Быстрый рендер код-блоков через HTML-строку ──────────────────────────
-// Заменяет react-syntax-highlighter (React-дерево из тысяч <span>) на
-// refractor → HAST → HTML-строка → dangerouslySetInnerHTML.
-// Браузер парсит HTML на C++ уровне — в 5-10× быстрее создания React-элементов.
-// Стили oneDark применяются как inline-стили — визуально пиксель-в-пиксель.
-// Языки регистрируются через refractor (тот же инстанс, что использовался
-// внутри react-syntax-highlighter PrismLight).
-// refractor 5: именованный экспорт { refractor } (в v4 был default).
-import { refractor } from 'refractor/core'
-import { highlightCodeToHtml } from '../../../utils/codeHighlightHTML'
-
-// Регистрируем только нужные языки (~23 вместо ~270 в полном Prism).
-// refractor 5 (пришёл с react-syntax-highlighter 16) поменял exports-мап:
-// './*' → './lang/*.js', поэтому языки импортируются как 'refractor/<lang>',
-// а не 'refractor/lang/<lang>' (иначе путь резолвится в lang/lang/...).
-import tsx from 'refractor/tsx'
-import typescript from 'refractor/typescript'
-import javascript from 'refractor/javascript'
-import jsx from 'refractor/jsx'
-import python from 'refractor/python'
-import json from 'refractor/json'
-import bash from 'refractor/bash'
-import shell from 'refractor/shell-session'
-import sql from 'refractor/sql'
-import go from 'refractor/go'
-import rust from 'refractor/rust'
-import yaml from 'refractor/yaml'
-import markdownLang from 'refractor/markdown'
-import cssLang from 'refractor/css'
-import markup from 'refractor/markup'
-import java from 'refractor/java'
-import cLang from 'refractor/c'
-import cpp from 'refractor/cpp'
-import csharp from 'refractor/csharp'
-import php from 'refractor/php'
-import ruby from 'refractor/ruby'
-import diffLang from 'refractor/diff'
-
-refractor.register(tsx)
-refractor.register(typescript)
-refractor.register(javascript)
-refractor.register(jsx)
-refractor.register(python)
-refractor.register(json)
-refractor.register(bash)
-refractor.register(shell)
-refractor.register(sql)
-refractor.register(go)
-refractor.register(rust)
-refractor.register(yaml)
-refractor.register(markdownLang)
-refractor.register(cssLang)
-refractor.register(markup)
-refractor.register(java)
-refractor.register(cLang)
-refractor.register(cpp)
-refractor.register(csharp)
-refractor.register(php)
-refractor.register(ruby)
-refractor.register(diffLang)
-
-// Алиасы языков (как в react-syntax-highlighter registerLanguage)
-refractor.alias('typescript', ['ts'])
-refractor.alias('javascript', ['js'])
-refractor.alias('python', ['py'])
-refractor.alias('bash', ['sh'])
-refractor.alias('shell-session', ['shell', 'console'])
-refractor.alias('rust', ['rs'])
-refractor.alias('yaml', ['yml'])
-refractor.alias('markdown', ['md'])
-refractor.alias('markup', ['html', 'xml'])
-refractor.alias('cpp', ['c++'])
-refractor.alias('csharp', ['cs'])
-refractor.alias('ruby', ['rb'])
-import PlanCard from '../PlanCard/PlanCard'
+// ── Быстрый рендер код-блоков: языки подсветки ───────────────────────────
+// Регистрацию выполняет highlightCodeToHtml (utils/codeHighlightHTML →
+// registerLanguages). Побочный импорт здесь был ненадёжен: модуль без
+// используемых экспортов выпиливался из прод-бандла, и подсветка отключалась.
 import Logo from '../Logo/Logo'
 import AttachmentPreviewModal from '../AttachmentPreviewModal/AttachmentPreviewModal'
 import type { Message, ToolOutputMode, Attachment, ToolStep } from '../../../../../shared/types'
-import { extractPlanSegments } from '../../../../../shared/planParser'
 import { splitFinalFromIters, stripFinalMarkersStreaming } from '../../../../../shared/finalAnswer'
 import AppIcon from '../AppIcon/AppIcon'
 import IconButton from '../IconButton/IconButton'
 import ToolChain, { hasUnfinishedCalls } from '../ToolChain/ToolChain'
 import MessageFileChanges from '../MessageFileChanges/MessageFileChanges'
+import { collectFileChanges } from '../../../../../shared/fileChanges'
 import TodoChecklist from '../TodoChecklist/TodoChecklist'
-import FastContextBlock, { type FastContextResultData } from '../FastContextBlock/FastContextBlock'
 import AgentCard, { type AgentCardData } from '../AgentCard/AgentCard'
-import MermaidBlock from './MermaidBlock'
-import ChartBlock from './ChartBlock'
+import OrchestrationCard, { type OrchestrationRunStatus } from '../OrchestrationCard/OrchestrationCard'
+import type { OrchestrationProgress } from '../../../utils/orchestrationProgress'
 import ThinkingBlock from '../ThinkingBlock/ThinkingBlock'
 import { useUIStore, type AvatarStyle } from '../../../store/ui.store'
 import { useChatStore } from '../../../store/chat.store'
@@ -122,6 +44,16 @@ import '../InlineAttachmentRenderer/InlineAttachmentRenderer.css'
 import 'katex/dist/katex.min.css'
 import './MessageBubble.css'
 import { SystemDivider } from './SystemDivider'
+import {
+  EditorTextarea,
+  evictOldest,
+  PluginMessageCtxMenu,
+  PluginMessageButtons,
+  showMessageContextMenu,
+  createMdComponents,
+  ParsedContent,
+} from './markdownRenderer'
+
 
 // Варианты анимации сообщений
 export const MSG_ANIM_VARIANTS: Record<string, {
@@ -187,1184 +119,16 @@ interface MessageBubbleProps {
   workdir?: string
   /** Доступен ли редактор чата (false — инкогнито-чаты, live-пузыри). */
   editorAvailable?: boolean
+  /** Продолжить прерванный оркестрированный ран из карточки прогресса. */
+  onOrchestrationContinue?: (message: Message) => void
+  /** По этому сообщению «Продолжить» уже нажали — кнопку не показываем. */
+  orchestrationContinued?: boolean
 }
 
 // Memoized code highlighter — рендерит HTML-строку через dangerouslySetInnerHTML.
 // refractor.highlight() вызывается один раз, результат кэшируется в codeHighlightHTML.
 // При scroll-remount виртуализатора берём готовый HTML из кэша — нулевая стоимость.
 // Стиль на <pre> (внешний контейнер) — как раньше был на <div> внутри SyntaxHighlighter.
-const PRE_STYLE: React.CSSProperties = {
-  margin: 0,
-  padding: '14px 16px',
-  background: '#0d0d0f',
-  borderRadius: '0 0 8px 8px',
-  fontSize: '13px',
-  lineHeight: '20.8px',
-  display: 'flex',
-  alignItems: 'flex-start',
-  overflow: 'auto',
-}
-
-const CodeHighlighter = memo(function CodeHighlighter({ raw, lang }: { raw: string; lang: string }) {
-  const html = useMemo(() => highlightCodeToHtml(raw, lang), [raw, lang])
-  return <pre style={PRE_STYLE} dangerouslySetInnerHTML={{ __html: html }} />
-}, (prev, next) => prev.raw === next.raw && prev.lang === next.lang)
-
-// Кнопка копирования код-блока — владеет своим copied-состоянием локально.
-// Раньше copiedBlock жил в MessageContent и при каждом клике пересоздавал
-// mdComponents → ре-парс ВСЕХ ReactMarkdown-сегментов в сообщении. Теперь
-// mdComponents стабилен (useMemo []), копирование не триггерит ре-парс.
-const CopyButton = memo(function CopyButton({ raw }: { raw: string }) {
-  const [copied, setCopied] = useState(false)
-  return (
-    <button
-      className={`code-copy-btn ${copied ? 'code-copy-btn--copied' : ''}`}
-      onClick={async () => {
-        const ok = await copyToClipboard(raw)
-        if (!ok) return
-        setCopied(true)
-        setTimeout(() => setCopied(false), 1500)
-      }}
-    >
-      {copied ? '✓ Скопировано' : 'Копировать'}
-    </button>
-  )
-})
-
-// ── Редактор чата: textarea для inline-правки текста сообщения ───────────
-// Авто-рост по контенту. Значение управляется снаружи (draft в chat.store) —
-// пишется в БД только при «Применить и закрыть» (applyEditorDrafts в ChatPage).
-const EditorTextarea = memo(function EditorTextarea({ value, onChange }: { value: string; onChange: (v: string) => void }) {
-  const ref = useRef<HTMLTextAreaElement>(null)
-  // Авто-рост: сброс высоты → scrollHeight. На каждый change value.
-  useEffect(() => {
-    const el = ref.current
-    if (!el) return
-    el.style.height = 'auto'
-    el.style.height = `${Math.min(el.scrollHeight, 600)}px`
-  }, [value])
-  return (
-    <textarea
-      ref={ref}
-      className="message-editor-textarea"
-      value={value}
-      onChange={e => onChange(e.target.value)}
-      spellCheck={false}
-      // Не даём Escape закрывать модалки/меню пока фокус в редакторе.
-      onKeyDown={e => { if (e.key === 'Escape') e.stopPropagation() }}
-    />
-  )
-})
-
-// Diff рендерер
-const DiffBlock = memo(function DiffBlock({ code }: { code: string }) {
-  return (
-    <div className="diff-block">
-      {code.split('\n').map((line, i) => {
-        const cls = line.startsWith('+') ? 'diff-add'
-          : line.startsWith('-') ? 'diff-del'
-          : line.startsWith('@@') ? 'diff-hunk'
-          : 'diff-ctx'
-        return <div key={i} className={`diff-line ${cls}`}><span className="diff-line-content">{line || '\u00A0'}</span></div>
-      })}
-    </div>
-  )
-})
-
-// ── Кастомный рендерер кодоблока от плагина (registerMarkdownRenderer) ──
-// ```language в сообщении, где language совпал с плагинным рендерером
-// (регистронезависимо), рендерится iframe-панелью плагина — как mermaid.
-// Код передаётся в iframe через widgetData при загрузке.
-function PluginMarkdownBlock({ pluginId, entry, height, raw, lang }: {
-  pluginId: string
-  entry: string
-  height: number
-  raw: string
-  lang: string
-}) {
-  return (
-    <div className="plugin-md-renderer" style={{ height }}>
-      <div className="plugin-md-renderer-header">
-        <span className="code-lang">{lang.toUpperCase()}</span>
-        <span className="plugin-md-renderer-badge" title={`Рендерер плагина ${pluginId}`}>plugin</span>
-      </div>
-      <PluginIframe
-        pluginId={pluginId}
-        entry={entry}
-        widgetData={{ code: raw, language: lang }}
-        className="plugin-md-renderer-frame"
-      />
-    </div>
-  )
-}
-
-/** Поиск плагинного markdown-рендерера по language кодоблока. */
-function findPluginMdRenderer(lang: string) {
-  const l = lang.toLowerCase()
-  return collectMarkdownRenderers().find(r => r.language.toLowerCase() === l) ?? null
-}
-
-// Admonition блок
-const ADMONITION_META: Record<string, { icon: string; label: string; cls: string }> = {
-  note:    { icon: '📝', label: 'Заметка',    cls: 'adm--note' },
-  info:    { icon: 'ℹ️',  label: 'Инфо',       cls: 'adm--info' },
-  tip:     { icon: '💡', label: 'Совет',      cls: 'adm--tip' },
-  warning: { icon: '⚠️', label: 'Внимание',   cls: 'adm--warning' },
-  danger:  { icon: '🚨', label: 'Опасность',  cls: 'adm--danger' },
-}
-
-const AdmonitionBlock = memo(function AdmonitionBlock({ kind, title, children }: { kind: string; title?: string; children: React.ReactNode }) {
-  const meta = ADMONITION_META[kind] || ADMONITION_META.note
-  return (
-    <div className={`adm ${meta.cls}`}>
-      <div className="adm-header">
-        <span className="adm-icon">{meta.icon}</span>
-        <span className="adm-title">{title || meta.label}</span>
-      </div>
-      <div className="adm-body">{children}</div>
-    </div>
-  )
-})
-
-// Парсим admonitions + <plan>-блоки — вынесено и мемоизировано снаружи
-// Возвращает сегменты: md (обычный markdown), admonition (:::note…:::),
-// plan (<plan title="…" summary="…" — рендерится в PlanCard).
-// allowPlanCard: если false — <plan>-теги НЕ парсятся, остаются как текст.
-// Это защищает от рендеринга <plan> вне режима планирования (модель может
-// ошибочно написать тег, но он не должен стать PlanCard).
-// Module-level кэш segments из parseContent. parseContent делает строковое
-// разбиение (admonitions/plan) — не тяжёлое, но при scroll-mount большого
-// сообщения каждый раз пересоздаёт массивы. Кэш переиспользуется跨 mounts
-// виртуализатора. Ключ — text+allowPlanCard (строки, иммутабельные).
-// Мягкий эвикшн кэшей: при переполнении удаляем старейшие записи до `keep`
-// (Map упорядочен по вставке). Раньше делали .clear() — это вызывало
-// одномоментный ре-парс всех видимых сообщений посреди скролла (фриз).
-function evictOldest<T>(map: Map<string, T>, keep: number) {
-  let toDelete = map.size - keep
-  for (const key of map.keys()) {
-    if (toDelete <= 0) break
-    map.delete(key)
-    toDelete--
-  }
-}
-
-const parseContentCache = new Map<string, ReturnType<typeof parseContent>>()
-function parseContentCached(raw: string, allowPlanCard = false): ReturnType<typeof parseContent> {
-  const key = allowPlanCard ? '1' + raw : '0' + raw
-  let segs = parseContentCache.get(key)
-  if (!segs) {
-    segs = parseContent(raw, allowPlanCard)
-    // Ограничиваем размер кэша, чтобы не текло по памяти на длинных чатах.
-    if (parseContentCache.size > 200) evictOldest(parseContentCache, 150)
-    parseContentCache.set(key, segs)
-  }
-  return segs
-}
-
-function parseContent(raw: string, allowPlanCard = false): Array<{ type: 'md' | 'admonition' | 'plan'; content: string; kind?: string; title?: string; summary?: string; partial?: boolean }> {
-  // 0. Нормализация LaTeX-разделителей математики: \(...\), \[...\] и голые
-  //    \begin{env} → $ / $$ (remark-math понимает только доллары). Кэш
-  //    parseContentCache ключуется по сырому тексту — нормализованный вывод
-  //    консистентен. Код-блоки и инлайн-код не затрагиваются.
-  raw = normalizeMathDelimiters(raw)
-  // 1. Если PlanCard не разрешён — пропускаем <plan>-парсинг, весь текст как md.
-  if (!allowPlanCard) {
-    // Просто разбиваем на md + admonition, без plan-сегментов.
-    const result: Array<{ type: 'md' | 'admonition' | 'plan'; content: string; kind?: string; title?: string; summary?: string; partial?: boolean }> = []
-    const lines = raw.split('\n')
-    let i = 0
-    let mdBuf: string[] = []
-    const ADM_RE = /^:::(note|tip|warning|danger|info)(?:\s+(.+))?$/i
-    const flushMd = () => {
-      if (mdBuf.length) {
-        result.push({ type: 'md', content: mdBuf.join('\n') })
-        mdBuf = []
-      }
-    }
-    while (i < lines.length) {
-      const m = ADM_RE.exec(lines[i].trim())
-      if (m) {
-        flushMd()
-        const kind = m[1].toLowerCase()
-        const title = m[2]
-        const body: string[] = []
-        i++
-        while (i < lines.length && lines[i].trim() !== ':::') { body.push(lines[i]); i++ }
-        result.push({ type: 'admonition', content: body.join('\n'), kind, title })
-      } else {
-        mdBuf.push(lines[i])
-      }
-      i++
-    }
-    flushMd()
-    return result
-  }
-
-  // 2. PlanCard разрешён — парсим <plan>-теги через shared-парсер.
-  // PlanCard монтируется сразу когда открылся <plan ...> (partial=true),
-  // и растёт вместе со стримом. Когда </plan> пришёл — partial=false,
-  // появляются кнопки действий (копировать/открыть файл). Раньше partial
-  // даунгрейдился в обычный markdown, но карточка уже умеет стримиться
-  // (CSS pulse-рамка, индикатор «пишу план…»), так что даунгрейд не нужен.
-  const { segments: planSegs } = extractPlanSegments(raw)
-
-  // 2. Каждый text-сегмент дополнительно разбиваем на md + admonition.
-  const result: Array<{ type: 'md' | 'admonition' | 'plan'; content: string; kind?: string; title?: string; summary?: string; partial?: boolean }> = []
-  for (const seg of planSegs) {
-    if (seg.type === 'plan') {
-      result.push({
-        type: 'plan',
-        content: seg.content,
-        title: seg.title,
-        summary: seg.summary,
-        partial: seg.partial,
-      })
-      continue
-    }
-    // text → разбиваем на admonitions
-    const lines = seg.content.split('\n')
-    let i = 0
-    let mdBuf: string[] = []
-    const ADM_RE = /^:::(note|tip|warning|danger|info)(?:\s+(.+))?$/i
-    const flushMd = () => {
-      if (mdBuf.length) {
-        result.push({ type: 'md', content: mdBuf.join('\n') })
-        mdBuf = []
-      }
-    }
-    while (i < lines.length) {
-      const m = ADM_RE.exec(lines[i].trim())
-      if (m) {
-        flushMd()
-        const kind = m[1].toLowerCase()
-        const title = m[2]
-        const body: string[] = []
-        i++
-        while (i < lines.length && lines[i].trim() !== ':::') { body.push(lines[i]); i++ }
-        result.push({ type: 'admonition', content: body.join('\n'), kind, title })
-      } else {
-        mdBuf.push(lines[i])
-      }
-      i++
-    }
-    flushMd()
-  }
-  return result
-}
-
-// ── safeUrlTransform: пропускаем внутренние схемы через санитайзер ──────
-// Дефолтный defaultUrlTransform react-markdown вырезает неизвестные протоколы
-// (file-path://, file://) → href=''. Клик по ссылке с пустым href вёл на
-// текущую страницу приложения → setWindowOpenHandler → shell.openExternal(URL
-// самого приложения) → открывалась ВТОРАЯ копия приложения («перезапуск»).
-// Отсюда же «кривая подсветка»: путь получал класс md-link вместо
-// file-path-link. Наши схемы пропускаем как есть, остальное — штатный санитайзер.
-const safeUrlTransform = (url: string): string =>
-  url.startsWith('file-path://') || url.startsWith('file://')
-    ? url
-    : defaultUrlTransform(url)
-
-// ── Инлайн-виджет плагина ────────────────────────────────────────────────
-// Тул плагина может вернуть JSON-маркер вместо текста:
-// {"__plugin_ui__":true,"pluginId":"...","entry":"ui/chart.html","data":...,"height":260}
-// → рендерим iframe-карточку (PluginIframe) вместо markdown.
-function tryParsePluginWidget(content: string): PluginUiWidgetPayload | null {
-  const t = content.trim()
-  if (!t.startsWith('{"__plugin_ui__"')) return null
-  try {
-    const obj = JSON.parse(t) as PluginUiWidgetPayload
-    if (!obj || obj.__plugin_ui__ !== true) return null
-    if (typeof obj.pluginId !== 'string') return null
-    // kind='diff' — нативный diff-виджет без iframe: entry не обязателен.
-    // kind='badge' — инлайн-бейдж (пилюля): нужен text, entry не нужен.
-    const kind = obj.kind ?? 'iframe'
-    if (kind === 'iframe' && typeof obj.entry !== 'string') return null
-    if (kind === 'diff' && typeof obj.diff !== 'string') return null
-    if (kind === 'badge' && typeof obj.text !== 'string') return null
-    return obj
-  } catch {
-    return null
-  }
-}
-
-/** Инлайн-бейдж плагина (kind='badge'): компактная пилюля в сообщении —
- *  статус/результат без отдельного iframe-виджета. */
-function PluginBadgeWidget({ widget }: { widget: PluginUiWidgetPayload }) {
-  return (
-    <span
-      className="plugin-inline-badge"
-      style={widget.color ? { borderColor: widget.color, color: widget.color } : undefined}
-      title={widget.pluginId}
-    >
-      {widget.text}
-    </span>
-  )
-}
-
-function PluginDiffWidget({ widget }: { widget: PluginUiWidgetPayload }) {
-  // Нативный diff-виджет: title/language сверху, unified diff построчно
-  // (те же классы, что у DiffBlock кодоблока в markdown).
-  const diffText = widget.diff ?? ''
-  return (
-    <div className="plugin-inline-widget plugin-diff-widget">
-      {(widget.title || widget.language) && (
-        <div className="plugin-diff-widget-header">
-          {widget.title && <span className="plugin-diff-widget-title">{widget.title}</span>}
-          {widget.language && <span className="plugin-diff-widget-lang">{widget.language}</span>}
-        </div>
-      )}
-      <div className="plugin-diff-widget-body diff-block">
-        {diffText.split('\n').map((line, i) => {
-          const cls = line.startsWith('+') ? 'diff-add'
-            : line.startsWith('-') ? 'diff-del'
-            : line.startsWith('@@') ? 'diff-hunk'
-            : 'diff-ctx'
-          return (
-            <div key={i} className={`diff-line ${cls}`}>
-              <span className="diff-line-content">{line || '\u00A0'}</span>
-            </div>
-          )
-        })}
-      </div>
-    </div>
-  )
-}
-
-function PluginInlineWidget({ widget }: { widget: PluginUiWidgetPayload }) {
-  const openPluginPanel = usePluginPanelStore(s => s.openPanel)
-  const kind = widget.kind ?? 'iframe'
-  // kind='diff' — нативный diff-виджет хоста (iframe не грузим).
-  if (kind === 'diff') return <PluginDiffWidget widget={widget} />
-  // kind='badge' — инлайн-пилюля (декорация сообщения без iframe).
-  if (kind === 'badge') return <PluginBadgeWidget widget={widget} />
-  const height = typeof widget.height === 'number' ? widget.height : 260
-  // Action-кнопки виджета: command → слэш-команда плагина,
-  // panel → открыть панель плагина (registerPanel).
-  const widgetActions = widget.actions ?? []
-  const runAction = (a: { label: string; command?: string; panel?: string }) => {
-    if (a.command) {
-      const ext = getPluginsExt()
-      if (ext.notificationAction) {
-        void ext.notificationAction({ pluginId: widget.pluginId, command: a.command }).catch(() => {})
-      }
-      return
-    }
-    if (a.panel) openPluginPanel(widget.pluginId, a.label)
-  }
-  return (
-    <div className="plugin-inline-widget">
-      <div className="plugin-inline-widget-frame-wrap" style={{ height }}>
-        <PluginIframe
-          pluginId={widget.pluginId}
-          entry={widget.entry}
-          widgetData={widget.data}
-          className="plugin-inline-widget-frame"
-        />
-      </div>
-      {widgetActions.length > 0 && (
-        <div className="plugin-widget-actions">
-          {widgetActions.map((a, i) => (
-            <button
-              key={`${a.label}-${i}`}
-              type="button"
-              className="plugin-widget-action-btn"
-              onClick={() => runAction(a)}
-            >
-              {a.label}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  )
-}
-
-// ── Контекстные пункты плагинов для сообщения (registerContextMenu) ─────
-// Кнопка «⋯» появляется в message-actions рядом с copy/pin/reply, если хоть
-// один запущенный плагин зарегистрировал пункты scope:'message'. При открытии
-// подмешиваются пункты scope:'selection' (если в документе есть выделение).
-// Пункты с button:true рендерятся ОТДЕЛЬНЫМИ кнопками в ряду действий
-// (PluginMessageButtons ниже), а в меню «⋯» не попадают.
-function PluginMessageCtxMenu({ message }: { message: Message }) {
-  const pluginsList = useExtensionsStore(s => s.plugins)
-  const chatId = message.chatId || useChatStore.getState().currentChatId || ''
-  const items = useMemo(() => collectMessageContextMenu(), [pluginsList])
-  // button-пункты рендерятся отдельными кнопками (PluginMessageButtons) —
-  // в меню «⋯» попадают только обычные пункты.
-  const messageItems = useMemo(() => items.filter(i => i.scope === 'message' && !i.button), [items])
-  const [open, setOpen] = useState(false)
-  const btnRef = useRef<HTMLButtonElement | null>(null)
-  const menuRef = useRef<HTMLDivElement | null>(null)
-  const [pos, setPos] = useState<{ x: number; y: number; up: boolean } | null>(null)
-  const [visibleItems, setVisibleItems] = useState<typeof items>([])
-
-  // Закрытие: клик вне меню/кнопки или Escape.
-  useEffect(() => {
-    if (!open) return
-    const onDown = (e: MouseEvent) => {
-      if (menuRef.current?.contains(e.target as Node)) return
-      if (btnRef.current?.contains(e.target as Node)) return
-      setOpen(false)
-    }
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false) }
-    document.addEventListener('mousedown', onDown)
-    document.addEventListener('keydown', onKey)
-    return () => {
-      document.removeEventListener('mousedown', onDown)
-      document.removeEventListener('keydown', onKey)
-    }
-  }, [open])
-
-  if (messageItems.length === 0) return null
-
-  const toggleMenu = () => {
-    const rect = btnRef.current?.getBoundingClientRect()
-    if (!rect) return
-    const selection = (window.getSelection()?.toString() ?? '').trim()
-    const selItems = selection ? items.filter(i => i.scope === 'selection') : []
-    const shown = [...messageItems, ...selItems]
-    setVisibleItems(shown)
-    // Оценка высоты — чтобы открывать вверх у нижнего края окна.
-    const estH = shown.length * 34 + 16
-    const up = rect.bottom + 8 + estH > window.innerHeight
-    setPos({ x: Math.max(8, Math.min(rect.right, window.innerWidth - 220)), y: up ? rect.top - 8 : rect.bottom + 8, up })
-    setOpen(v => !v)
-  }
-
-  const runItem = (pluginId: string, item: { id: string; label: string; sub?: string; icon?: string }, selection: string) => {
-    setOpen(false)
-    const ext = getPluginsExt()
-    if (!ext.contextMenuClick) return
-    void ext.contextMenuClick({
-      pluginId,
-      itemId: item.id,
-      payload: { messageId: message.id, chatId, content: message.content ?? '', selection: selection || undefined },
-    }).catch(() => {})
-  }
-
-  return (
-    <>
-      <motion.button
-        type="button"
-        className={`icon-button msg-action-btn plugin-msg-menu-btn${open ? ' plugin-msg-menu-btn--open' : ''}`}
-        ref={btnRef}
-        onClick={toggleMenu}
-        title="Действия плагинов"
-        aria-label="Действия плагинов"
-        whileHover={{ scale: 1.04 }}
-        whileTap={{ scale: 0.92 }}
-      >
-        <AppIcon name="moreHorizontal" size="sm" />
-      </motion.button>
-      {open && pos && visibleItems.length > 0 && createPortal(
-        <motion.div
-          ref={menuRef}
-          className="plugin-msg-menu"
-          style={{ position: 'fixed', left: pos.x, top: pos.y, zIndex: 9990 }}
-          initial={{ opacity: 0, scale: 0.96, y: pos.up ? 4 : -4 }}
-          animate={{ opacity: 1, scale: 1, y: 0 }}
-          exit={{ opacity: 0, scale: 0.96 }}
-          transition={{ type: 'spring', stiffness: 500, damping: 32 }}
-        >
-          {visibleItems.map((it) => {
-            const sel = (window.getSelection()?.toString() ?? '').trim()
-            const isSelection = it.scope === 'selection'
-            return (
-              <button
-                key={`${it.pluginId}-${it.id}`}
-                type="button"
-                className="plugin-msg-menu-item"
-                onMouseDown={(e) => { e.preventDefault(); runItem(it.pluginId, { id: it.id, label: it.label, icon: it.icon }, isSelection ? sel : '') }}
-              >
-                <AppIcon name={(it.icon as Parameters<typeof AppIcon>[0]['name']) || 'moreHorizontal'} size="sm" tone="muted" />
-                <span>{it.label}</span>
-              </button>
-            )
-          })}
-        </motion.div>,
-        document.body,
-      )}
-    </>
-  )
-}
-
-// ── Кнопки-декорации сообщений от плагинов (registerContextMenu button) ──
-// Пункты с button:true — отдельные кнопки в ряду действий сообщения
-// (copy/pin/reply), не в меню «⋯». Клик — тот же callHandler 'menu'.
-function PluginMessageButtons({ message }: { message: Message }) {
-  const pluginsList = useExtensionsStore(s => s.plugins)
-  const chatId = message.chatId || useChatStore.getState().currentChatId || ''
-  const buttons = useMemo(
-    () => collectMessageContextMenu().filter(i => i.button && i.scope === 'message'),
-    [pluginsList],
-  )
-
-  if (buttons.length === 0) return null
-
-  const runItem = (pluginId: string, itemId: string) => {
-    const ext = getPluginsExt()
-    if (!ext.contextMenuClick) return
-    void ext.contextMenuClick({
-      pluginId,
-      itemId,
-      payload: { messageId: message.id, chatId, content: message.content ?? '' },
-    }).catch(() => {})
-  }
-
-  return (
-    <>
-      {buttons.map(it => (
-        <motion.button
-          key={`${it.pluginId}-${it.id}`}
-          type="button"
-          className="icon-button msg-action-btn plugin-msg-action-btn"
-          title={it.label}
-          aria-label={it.label}
-          whileHover={{ scale: 1.04 }}
-          whileTap={{ scale: 0.92 }}
-          onClick={() => runItem(it.pluginId, it.id)}
-        >
-          <AppIcon name={(it.icon as Parameters<typeof AppIcon>[0]['name']) || 'puzzle'} size="sm" />
-        </motion.button>
-      ))}
-    </>
-  )
-}
-
-// ── Кастомные теги сообщений плагинов (registerMessageTag) ───────────────
-// Парный тег <tag attr="...">inner</tag> или самозакрытый <tag attr="..."/>
-// рендерится iframe-виджетом плагина вместо markdown. Незарегистрированный
-// тег остаётся обычным текстом (в markdown это выглядит как raw HTML —
-// react-markdown выводит его как есть, т.к. rehype-raw не подключён, значит
-// текст просто не пропадает).
-function parseAttrs(attrStr: string): Record<string, string> {
-  const out: Record<string, string> = {}
-  const re = /([a-zA-Z_][\w-]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/g
-  let m: RegExpExecArray | null
-  while ((m = re.exec(attrStr))) {
-    out[m[1]] = m[2] ?? m[3] ?? m[4] ?? ''
-  }
-  return out
-}
-
-function PluginTagWidget({ pluginId, entry, height, attrs, inner }: {
-  pluginId: string
-  entry: string
-  height: number
-  attrs: Record<string, string>
-  inner: string
-}) {
-  return (
-    <div className="plugin-message-tag" style={{ height }}>
-      <PluginIframe
-        pluginId={pluginId}
-        entry={entry}
-        widgetData={{ attrs, inner }}
-        className="plugin-message-tag-frame"
-      />
-    </div>
-  )
-}
-
-interface PluginTagMatch {
-  pluginId: string
-  entry: string
-  height?: number
-  attrs: Record<string, string>
-  inner: string
-  start: number
-  end: number
-}
-
-/** Просканировать текст на зарегистрированные теги плагинов. Пусто — нет. */
-function scanPluginTags(content: string): PluginTagMatch[] {
-  const tags = collectMessageTags()
-  if (tags.length === 0) return []
-  const byTag = new Map<string, { pluginId: string; entry: string; height?: number }>()
-  for (const t of tags) {
-    if (t.tag && !byTag.has(t.tag)) byTag.set(t.tag, { pluginId: t.pluginId, entry: t.entry, height: t.height })
-  }
-  if (byTag.size === 0) return []
-  const names = [...byTag.keys()].map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')
-  const re = new RegExp(
-    `<(${names})((?:\\s+[a-zA-Z_][\\w-]*(?:\\s*=\\s*(?:"[^"]*"|'[^']*'|[^\\s"'>]+))?)*)\\s*(?:/>|>([\\s\\S]*?)<\\/\\1\\s*>)`,
-    'g',
-  )
-  const out: PluginTagMatch[] = []
-  let m: RegExpExecArray | null
-  while ((m = re.exec(content))) {
-    const meta = byTag.get(m[1])
-    if (!meta) continue
-    out.push({
-      pluginId: meta.pluginId,
-      entry: meta.entry,
-      height: meta.height,
-      attrs: parseAttrs(m[2] || ''),
-      inner: m[3] ?? '',
-      start: m.index,
-      end: m.index + m[0].length,
-    })
-  }
-  return out
-}
-
-function escapeRegex(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-}
-
-// ── renderParsedSegments: рендер массива сегментов из parseContent ─────────
-// Переиспользуется в 4 местах (основной рендер, iterations, liveTextAfter).
-// Принимает per-instance mdComponents (с доступом к workdir для кликабельных путей).
-// plan-сегменты рендерятся в PlanCard (live во время стрима — partial=true, после — с filePath).
-function renderParsedSegments(
-  segs: ReturnType<typeof parseContent>,
-  remarkPlugins: readonly unknown[],
-  rehypePlugins: readonly unknown[],
-  planFilePath?: string,
-  mdComponents?: Record<string, unknown>,
-): React.ReactNode {
-  return segs.map((s, i) => {
-    if (s.type === 'plan') {
-      return (
-        <PlanCard
-          key={`plan-${i}`}
-          title={s.title || 'План'}
-          summary={s.summary || ''}
-          content={s.content}
-          filePath={s.partial ? undefined : planFilePath}
-          partial={s.partial}
-        />
-      )
-    }
-    if (s.type === 'admonition') {
-      return (
-        <AdmonitionBlock key={`adm-${i}`} kind={s.kind!} title={s.title}>
-          <ReactMarkdown
-            remarkPlugins={remarkPlugins as never}
-            rehypePlugins={rehypePlugins as never}
-            components={mdComponents as never}
-            urlTransform={safeUrlTransform}
-          >
-            {s.content}
-          </ReactMarkdown>
-        </AdmonitionBlock>
-      )
-    }
-    // Инлайн-виджет плагина: если md-сегмент целиком — JSON-маркер виджета,
-    // рендерим PluginIframe вместо markdown.
-    const widget = tryParsePluginWidget(s.content)
-    if (widget) {
-      return <PluginInlineWidget key={`widget-${i}`} widget={widget} />
-    }
-    // Кастомные теги плагинов (registerMessageTag): разбиваем md-сегмент на
-    // под-части — markdown-текст через обычный ReactMarkdown, теги — виджеты.
-    const tagMatches = scanPluginTags(s.content)
-    if (tagMatches.length > 0) {
-      const parts: React.ReactNode[] = []
-      let cursor = 0
-      tagMatches.forEach((m, ti) => {
-        const before = s.content.slice(cursor, m.start)
-        if (before.trim()) {
-          parts.push(
-            <ReactMarkdown
-              key={`md-${i}-${ti}`}
-              remarkPlugins={remarkPlugins as never}
-              rehypePlugins={rehypePlugins as never}
-              components={mdComponents as never}
-              urlTransform={safeUrlTransform}
-            >
-              {before}
-            </ReactMarkdown>,
-          )
-        }
-        parts.push(
-          <PluginTagWidget
-            key={`tag-${i}-${ti}`}
-            pluginId={m.pluginId}
-            entry={m.entry}
-            height={typeof m.height === 'number' ? m.height : 260}
-            attrs={m.attrs}
-            inner={m.inner}
-          />,
-        )
-        cursor = m.end
-      })
-      const tail = s.content.slice(cursor)
-      if (tail.trim()) {
-        parts.push(
-          <ReactMarkdown
-            key={`md-${i}-tail`}
-            remarkPlugins={remarkPlugins as never}
-            rehypePlugins={rehypePlugins as never}
-            components={mdComponents as never}
-            urlTransform={safeUrlTransform}
-          >
-            {tail}
-          </ReactMarkdown>,
-        )
-      }
-      return <React.Fragment key={`md-tags-${i}`}>{parts}</React.Fragment>
-    }
-    return (
-      <ReactMarkdown
-        key={`md-${i}`}
-        remarkPlugins={remarkPlugins as never}
-        rehypePlugins={rehypePlugins as never}
-        components={mdComponents as never}
-        urlTransform={safeUrlTransform}
-      >
-        {s.content}
-      </ReactMarkdown>
-    )
-  })
-}
-
-// ── createMdComponents: per-instance mdComponents с доступом к workdir ───
-// Раньше был module-level (стабилен, кэшируемый). Теперь — функция, т.к.
-// нужен workdir для кликабельных путей и onOpenFile для code-блоков.
-// Кэш parsedRenderCache ключуется по text+workdir — при смене workdir
-// кэш-промах, но evictOldest ограничивает рост.
-function showMessageContextMenu(x: number, y: number, items: Array<{ label: string; run: () => void }>): void {
-  document.querySelector('.message-link-ctx-menu')?.remove()
-  const menu = document.createElement('div')
-  menu.className = 'message-link-ctx-menu'
-  for (const item of items) {
-    const button = document.createElement('button')
-    button.type = 'button'
-    button.textContent = item.label
-    button.addEventListener('click', () => { menu.remove(); item.run() })
-    menu.appendChild(button)
-  }
-  document.body.appendChild(menu)
-  const rect = menu.getBoundingClientRect()
-  menu.style.left = `${Math.max(8, Math.min(x, window.innerWidth - rect.width - 8))}px`
-  menu.style.top = `${Math.max(8, Math.min(y, window.innerHeight - rect.height - 8))}px`
-  const close = (e: Event) => { if (!menu.contains(e.target as Node)) menu.remove() }
-  const closeOnKey = (e: KeyboardEvent) => { if (e.key === 'Escape') menu.remove() }
-  setTimeout(() => {
-    document.addEventListener('pointerdown', close, { once: true })
-    document.addEventListener('keydown', closeOnKey, { once: true })
-  }, 0)
-}
-
-function createMdComponents(opts: { workdir?: string; onOpenFile?: (path: string) => void; onPreviewAttachment?: (a: Attachment | null) => void }): Record<string, unknown> {
-  const { workdir, onOpenFile, onPreviewAttachment } = opts
-
-  // Обработчик клика на путь файла (code-блоки, заголовки с путём).
-  // openFilePath сам резолвит от workdir, парсит суффикс :42-58 и решает
-  // по stat: файл в проекте → правая панель, папка/вне проекта → Проводник.
-  const handlePathClick = (e: React.MouseEvent, rawPath: string) => {
-    e.preventDefault()
-    e.stopPropagation()
-    void openFilePath(rawPath, workdir)
-  }
-
-  // Обработчик клика на ссылку — если это file:// путь, открываем в панели
-  const handleLinkClick = (e: React.MouseEvent, href: string) => {
-    // file:// путь → открываем через общий флоу (панель/Проводник).
-    // preventDefault ДО проверки onOpenFile: иначе при отсутствии колбэка
-    // происходила бы дефолтная навигация (открытие второй копии приложения).
-    if (href.startsWith('file://')) {
-      e.preventDefault()
-      // file:///C:/path → C:/path ; file://C:\path → C:\path
-      const fp = decodeURIComponent(href.replace(/^file:\/\/\/?/, ''))
-      void openFilePath(fp, workdir)
-      return
-    }
-    // Относительный путь без протокола (редко, но возможно)
-    if (workdir && !href.startsWith('http') && !href.startsWith('mailto') && /\.\w{1,10}$/.test(href)) {
-      e.preventDefault()
-      void openFilePath(href, workdir)
-      return
-    }
-    // Иначе — обычная ссылка, браузер откроет
-  }
-
-  return {
-    code({ className, children }: { className?: string; children?: React.ReactNode }) {
-      const match = /language-(\w+)/.exec(className || '')
-      const raw = String(children).replace(/\n$/, '')
-      const isInline = !match && !raw.includes('\n')
-      if (isInline) return <code className="inline-code">{children}</code>
-      const lang = match?.[1] || 'text'
-      if (lang === 'mermaid') return <MermaidBlock code={raw} />
-      if (lang === 'chart') return <ChartBlock code={raw} />
-      if (lang === 'diff') return <DiffBlock code={raw} />
-      // Кастомный рендерер кодоблока от плагина (registerMarkdownRenderer):
-      // если плагин зарегистрировал рендерер для этого языка — грузим его
-      // iframe с кодом в widgetData; иначе — обычный код-блок.
-      const pluginMd = findPluginMdRenderer(lang)
-      if (pluginMd) {
-        return (
-          <PluginMarkdownBlock
-            pluginId={pluginMd.pluginId}
-            entry={pluginMd.entry}
-            height={pluginMd.height ?? 300}
-            raw={raw}
-            lang={lang}
-          />
-        )
-      }
-
-      // Парсим info-string на наличие пути: ```ts src/foo.ts
-      // info-string — это className после language-, может содержать путь
-      const fullInfo = className || ''
-      const pathMatch = /\blanguage-(\w+)\s+(.+)/.exec(fullInfo)
-      const codePath = pathMatch?.[2]?.trim()
-
-      return (
-        <div className="code-block">
-          <div
-            className={`code-block-header${codePath && onOpenFile ? ' code-block-header--clickable' : ''}`}
-            onClick={codePath && onOpenFile ? (e) => handlePathClick(e, codePath) : undefined}
-          >
-            <span className="code-lang">{lang.toUpperCase()}{codePath ? ` · ${codePath}` : ''}</span>
-            <div className="code-block-header-actions">
-              {codePath && onOpenFile && (
-                <button
-                  className="code-block-open-file-btn"
-                  onClick={(e) => handlePathClick(e, codePath)}
-                  title="Открыть в редакторе"
-                >
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
-                    <polyline points="15 3 21 3 21 9" />
-                    <line x1="10" y1="14" x2="21" y2="3" />
-                  </svg>
-                </button>
-              )}
-              <CopyButton raw={raw} />
-            </div>
-          </div>
-          <CodeHighlighter raw={raw} lang={lang} />
-        </div>
-      )
-    },
-    table({ children }: { children?: React.ReactNode }) { return <div className="md-table-wrap"><table className="md-table">{children}</table></div> },
-    thead({ children }: { children?: React.ReactNode }) { return <thead className="md-thead">{children}</thead> },
-    tr({ children }: { children?: React.ReactNode }) { return <tr className="md-tr">{children}</tr> },
-    th({ children }: { children?: React.ReactNode }) { return <th className="md-th">{children}</th> },
-    td({ children }: { children?: React.ReactNode }) { return <td className="md-td">{children}</td> },
-    blockquote({ children }: { children?: React.ReactNode }) { return <blockquote className="md-blockquote">{children}</blockquote> },
-    a({ href, children }: { href?: string; children?: React.ReactNode }) {
-      const onContextMenu = (e: React.MouseEvent<HTMLAnchorElement>) => {
-        if (!href || href.startsWith('file-path://')) return
-        e.preventDefault()
-        e.stopPropagation()
-        const isLocal = href.startsWith('file://') || (workdir && !/^(https?:|mailto:)/i.test(href))
-        showMessageContextMenu(e.clientX, e.clientY, [
-          { label: isLocal ? 'Открыть путь' : 'Открыть ссылку в браузере', run: () => isLocal ? void handleLinkClick({ preventDefault() {}, stopPropagation() {} } as React.MouseEvent, href) : window.open(href, '_blank', 'noopener,noreferrer') },
-          { label: 'Копировать адрес', run: () => { void copyToClipboard(href) } },
-        ])
-      }
-      // file-path:// — кликабельный путь файла из remarkFilePaths плагина.
-      // FilePathLink: чип с иконкой, статусом существования, peek-превью,
-      // контекстным меню; клик → панель/Проводник (openFilePath).
-      if (href?.startsWith('file-path://')) {
-        const rawPath = decodeURIComponent(href.replace(/^file-path:\/\//, ''))
-        return <FilePathLink raw={rawPath} workdir={workdir} onPreviewAttachment={onPreviewAttachment ?? undefined} />
-      }
-      // file:// — путь к файлу на диске, открываем в правой панели
-      if (href?.startsWith('file://')) {
-        return (
-          <a
-            href={href}
-            className="md-link"
-            onClick={(e) => handleLinkClick(e, href)}
-            onContextMenu={onContextMenu}
-          >
-            {children}
-          </a>
-        )
-      }
-      // Пустой href (санитайзер вырезал протокол) — НЕ кликабельная ссылка:
-      // href='' означал бы переход на текущую страницу приложения.
-      if (!href) {
-        return <span className="md-link">{children}</span>
-      }
-      // Обычная ссылка — открываем в браузере. title показывает полный URL
-      // (полезно для [текст](url) — куда реально ведёт).
-      return (
-        <a
-          href={href}
-          className="md-link"
-          target="_blank"
-          rel="noreferrer"
-          title={href}
-          onClick={(e) => handleLinkClick(e, href)}
-          onContextMenu={onContextMenu}
-        >
-          {children}
-        </a>
-      )
-    },
-    hr() { return <hr className="md-hr" /> },
-    p({ children }: { children?: React.ReactNode }) {
-      return <p>{children}</p>
-    },
-    img({ src, alt }: { src?: string; alt?: string }) {
-      if (!src) return null
-      return <ChatImage src={src} alt={alt || ''} onPreviewAttachment={onPreviewAttachment} />
-    },
-  }
-}
-
-// ── ChatImage: красивый рендер картинок в чате ──
-// Скелетон пока грузится → клик открывает AttachmentPreviewModal (zoom/pan) →
-// hover показывает кнопки: копировать URL, копировать markdown, открыть в браузере.
-let chatImgCounter = 0
-const ChatImage = memo(function ChatImage({ src, alt, onPreviewAttachment }: {
-  src: string
-  alt: string
-  onPreviewAttachment?: (a: Attachment | null) => void
-}) {
-  const [loaded, setLoaded] = useState(false)
-  const [error, setError] = useState(false)
-  const [copied, setCopied] = useState<'url' | 'md' | null>(null)
-
-  // Синтетический Attachment для AttachmentPreviewModal
-  const handleOpenPreview = useCallback(() => {
-    if (!onPreviewAttachment) {
-      // Fallback — открыть в браузере
-      window.open(src, '_blank')
-      return
-    }
-    // Извлекаем имя файла из URL
-    let name = alt || 'image'
-    try {
-      const u = new URL(src)
-      const basename = u.pathname.split('/').pop()
-      if (basename && /\.\w{1,5}$/.test(basename)) name = basename
-    } catch { /* not a URL, use alt */ }
-    onPreviewAttachment({
-      id: `chat-img-${++chatImgCounter}`,
-      kind: 'image',
-      name,
-      dataUrl: src,
-      source: 'paste' as const,
-      attachedAt: Date.now(),
-    })
-  }, [src, alt, onPreviewAttachment])
-
-  const handleCopyUrl = useCallback((e: React.MouseEvent) => {
-    e.stopPropagation()
-    void copyToClipboard(src).then((ok) => {
-      if (ok) {
-        setCopied('url')
-        setTimeout(() => setCopied(null), 1500)
-      }
-    })
-  }, [src])
-
-  const handleCopyMd = useCallback((e: React.MouseEvent) => {
-    e.stopPropagation()
-    const md = `![${alt || 'image'}](${src})`
-    void copyToClipboard(md).then((ok) => {
-      if (ok) {
-        setCopied('md')
-        setTimeout(() => setCopied(null), 1500)
-      }
-    })
-  }, [src, alt])
-
-  const handleOpenExternal = useCallback((e: React.MouseEvent) => {
-    e.stopPropagation()
-    window.open(src, '_blank')
-  }, [src])
-
-  if (error) {
-    return (
-      <div className="chat-img-error" title={`URL: ${src}`}>
-        <svg className="chat-img-error-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-          <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
-          <circle cx="8.5" cy="8.5" r="1.5"/>
-          <path d="M21 15l-5-5L5 21"/>
-          <line x1="3" y1="14" x2="8" y2="14" />
-        </svg>
-        <span className="chat-img-error-text">
-          {alt || 'Изображение не загрузилось'}
-        </span>
-        <button
-          className="chat-img-error-btn"
-          onClick={(e) => { e.stopPropagation(); window.open(src, '_blank') }}
-          title="Открыть в браузере"
-        >
-          Открыть
-        </button>
-      </div>
-    )
-  }
-
-  return (
-    <figure className="chat-img-figure">
-      <div className="chat-img-container" onClick={handleOpenPreview}>
-        {/* Skeleton пока не загружено */}
-        {!loaded && <div className="chat-img-skeleton" />}
-        <img
-          src={src}
-          alt={alt}
-          loading="lazy"
-          className={`chat-img${loaded ? ' chat-img--loaded' : ''}`}
-          onLoad={() => setLoaded(true)}
-          onError={() => setError(true)}
-          draggable={false}
-        />
-        {/* Hover actions — top-right */}
-        {loaded && (
-          <div className="chat-img-actions" onClick={(e) => e.stopPropagation()}>
-            <button className="chat-img-action-btn" onClick={handleOpenPreview} title="Открыть в просмотре">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M15 3h6v6"/><path d="M10 14L21 3"/>
-                <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
-              </svg>
-            </button>
-            <button className="chat-img-action-btn" onClick={handleCopyUrl} title="Копировать URL">
-              {copied === 'url' ? (
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="20 6 9 17 4 12"/>
-                </svg>
-              ) : (
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
-                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
-                </svg>
-              )}
-            </button>
-            <button className="chat-img-action-btn" onClick={handleCopyMd} title="Копировать markdown">
-              {copied === 'md' ? (
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="20 6 9 17 4 12"/>
-                </svg>
-              ) : (
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M4 7V4h16v3"/><path d="M9 20h6"/><path d="M12 4v16"/>
-                </svg>
-              )}
-            </button>
-            <button className="chat-img-action-btn" onClick={handleOpenExternal} title="Открыть в браузере">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <circle cx="12" cy="12" r="10"/>
-                <line x1="2" y1="12" x2="22" y2="12"/>
-                <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
-              </svg>
-            </button>
-          </div>
-        )}
-      </div>
-      {alt && <figcaption className="chat-img-caption">{alt}</figcaption>}
-    </figure>
-  )
-}, (prev, next) => prev.src === next.src && prev.alt === next.alt && prev.onPreviewAttachment === next.onPreviewAttachment)
-
-// ── Module-level кэш отрендеренного ReactNode-дерева по text.
-// Виртуализатор монтирует/демонтирует MessageBubble при скролле; ParsedContent
-// memo per-instance теряется при unmount → ReactMarkdown заново парсит весь
-// markdown (remark→mdast→hast→JSX). Для большого сообщения это 0.3–0.5с фриз
-// на КАЖДОМ scroll-remount. Кэш хранит готовое React-дерево; при remount
-// берём из кэша — ре-парс пропускается. Безопасно: mdComponents module-level
-// стабилен, компоненты (CodeHighlighter/MermaidBlock/CopyButton) те же.
-// Ключ: text + allowPlanCard + набор плагинов (стрим/не-стрим/math/нет-math).
-const parsedRenderCache = new Map<string, React.ReactNode>()
-
-// ── ParsedContent: мемоизированный рендер parseContent ──────────────────
-// Раньше parseContent(...) звался инлайн при каждом флеше стрима (20×/сек),
-// ре-парся markdown AST + KaTeX каждый раз. Теперь каждый экземпляр
-// мемоизирует парс на [text, allowPlanCard] — ре-парс только если текст
-// реально изменился. Невидимо: вывод идентичный.
-const ParsedContent = memo(function ParsedContent({
-  text, allowPlanCard, remarkPlugins, rehypePlugins, planFilePath, isStreaming, mdComponents, workdir,
-}: {
-  text: string
-  allowPlanCard: boolean
-  remarkPlugins: readonly unknown[]
-  rehypePlugins: readonly unknown[]
-  planFilePath?: string
-  isStreaming?: boolean
-  mdComponents?: Record<string, unknown>
-  workdir?: string
-}) {
-  const segs = useMemo(() => parseContentCached(text, allowPlanCard), [text, allowPlanCard])
-  const wdKey = workdir ?? ''
-
-  // ── Инкрементальный рендер во время стриминга ──
-  // Во время стрима text растёт каждые 50мс. Кэш parsedRenderCache ключуется
-  // по всему тексту → MISS на каждом флеше → O(n) ре-парс.
-  //
-  // Оптимизация: разбиваем text на стабильный префикс + активный хвост.
-  // Стабильный префикс = всё до последней границы блока (\n\n, ```, :::).
-  // Префикс кэшируется в parsedRenderCache → hit на каждом флеше.
-  // Хвост парсится ReactMarkdown → O(|хвост|) вместо O(n).
-  // Полный markdown (таблицы, списки, bold, код) сохраняется во время стрима.
-  if (isStreaming && text) {
-    // Ищем последнюю границу блока — после неё текст может быть неполным
-    const lastFence = text.lastIndexOf('```')
-    const lastPara = text.lastIndexOf('\n\n')
-    const lastAdm = text.lastIndexOf('\n:::')
-    // Если код-блок ОТКРЫТ (нечётное количество ```), последний ``` —
-    // открывающий fence. Границы \n\n/::: ВНУТРИ блока (после lastFence)
-    // разрывают блок на prefix/tail → ReactMarkdown рендерит половину
-    // кода как текст. Не используем их — splitAt = lastFence.
-    const fenceCount = (text.match(/```/g) || []).length
-    const splitAt = (fenceCount % 2 === 1 && lastFence >= 0)
-      ? lastFence
-      : Math.max(lastFence, lastPara, lastAdm)
-    if (splitAt > 100 && splitAt < text.length - 1) {
-      // Есть стабильный префикс — кэшируем его, хвост парсим отдельно
-      const prefix = text.slice(0, splitAt)
-      const tail = text.slice(splitAt)
-      const prefixKey = prefix + '|stream|' + (allowPlanCard ? '1' : '0')
-        + '|' + (remarkPlugins === undefined ? '' : remarkPlugins.length)
-        + '|' + (rehypePlugins === undefined ? '' : rehypePlugins.length)
-        + '|' + wdKey
-      let prefixNode = parsedRenderCache.get(prefixKey)
-      if (!prefixNode) {
-        const prefixSegs = parseContentCached(prefix, allowPlanCard)
-        prefixNode = renderParsedSegments(prefixSegs, remarkPlugins, rehypePlugins, planFilePath, mdComponents)
-        if (parsedRenderCache.size > 150) evictOldest(parsedRenderCache, 100)
-        parsedRenderCache.set(prefixKey, prefixNode)
-      }
-      // Хвост — короткий, парсим ReactMarkdown каждый флеш (дёшево)
-      const tailSegs = parseContentCached(tail, allowPlanCard)
-      const tailNode = renderParsedSegments(tailSegs, remarkPlugins, rehypePlugins, planFilePath, mdComponents)
-      return <>{prefixNode}{tailNode}</>
-    }
-    // Нет стабильного префикса (начало ответа) — парсим весь text через ReactMarkdown.
-    // remarkGfm (без KaTeX) — дёшево, полный markdown сохраняется.
-    const cacheKey = text + '|stream|' + (allowPlanCard ? '1' : '0')
-      + '|' + (remarkPlugins === undefined ? '' : remarkPlugins.length)
-      + '|' + (rehypePlugins === undefined ? '' : rehypePlugins.length)
-      + '|' + wdKey
-    let node = parsedRenderCache.get(cacheKey)
-    if (!node) {
-      node = renderParsedSegments(segs, remarkPlugins, rehypePlugins, planFilePath, mdComponents)
-      if (parsedRenderCache.size > 150) evictOldest(parsedRenderCache, 100)
-      parsedRenderCache.set(cacheKey, node)
-    }
-    return <>{node}</>
-  }
-
-  // Финальный рендер (isStreaming=false) — полный парс с кэшированием
-  const cacheKey = text + '|' + (allowPlanCard ? '1' : '0')
-    + '|' + (remarkPlugins === undefined ? '' : remarkPlugins.length)
-    + '|' + (rehypePlugins === undefined ? '' : rehypePlugins.length)
-    + '|' + (planFilePath ?? '')
-    + '|' + wdKey
-  let node = parsedRenderCache.get(cacheKey)
-  if (!node) {
-    node = renderParsedSegments(segs, remarkPlugins, rehypePlugins, planFilePath, mdComponents)
-    if (parsedRenderCache.size > 150) evictOldest(parsedRenderCache, 100)
-    parsedRenderCache.set(cacheKey, node)
-  }
-  return <>{node}</>
-}, (prev, next) =>
-  prev.text === next.text &&
-  prev.allowPlanCard === next.allowPlanCard &&
-  prev.remarkPlugins === next.remarkPlugins &&
-  prev.rehypePlugins === next.rehypePlugins &&
-  prev.planFilePath === next.planFilePath &&
-  prev.isStreaming === next.isStreaming &&
-  prev.workdir === next.workdir
-)
 
 // ── AgentCardLive — живая карточка суб-агента в чате ─────────────────────
 // Module-level кэш: виртуализатор монтирует/демонтирует сообщения при
@@ -1512,19 +276,17 @@ function WaitingIndicator({ rateLimitSec, agentStatus, retry, lastError, filesCh
   toolProgress?: Record<string, { stage: string; detail?: string; ts: number }>
 }) {
   const [phraseIdx, setPhraseIdx] = useState(0)
-  const [visible, setVisible] = useState(true)
 
   useEffect(() => {
     // При ретрае/ошибке/rate-limit морозим ротацию фраз — пользователь видит
     // причину вместо generic «Думаю…». Раньше статус ретрая затирался
     // следующим onStatus, и индикатор молчал о происходящем.
     if (agentStatus || rateLimitSec || retry || lastError) return
+    // Смена фразы БЕЗ полного гашения: раньше visible=false на 300мс каждые
+    // 2.5с — индикатор «мигал» (пропадал/появлялся). Теперь текст меняется
+    // сразу, а появление анимирует мягкий fade-in через key.
     const interval = setInterval(() => {
-      setVisible(false)
-      setTimeout(() => {
-        setPhraseIdx(i => (i + 1) % WAITING_PHRASES.length)
-        setVisible(true)
-      }, 300)
+      setPhraseIdx(i => (i + 1) % WAITING_PHRASES.length)
     }, 2500)
     return () => clearInterval(interval)
   }, [agentStatus, rateLimitSec, retry, lastError])
@@ -1567,8 +329,8 @@ function WaitingIndicator({ rateLimitSec, agentStatus, retry, lastError, filesCh
   return (
     <span className="msg-waiting-wrap">
       <span
+        key={phraseIdx}
         className={`msg-waiting-shimmer${cls}`}
-        style={{ opacity: visible ? 1 : 0, transition: 'opacity 0.3s ease' }}
       >
         {text}
       </span>
@@ -1583,38 +345,6 @@ function plural(n: number, one: string, few: string, many: string): string {
   if (mod10 === 1 && mod100 !== 11) return one
   if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return few
   return many
-}
-
-/** Извлекает результат get_fast_context из steps итерации.
- *  Мемоизирован по content-строке: JSON.parse выполняется только при первом
- *  вызове с данным content, повторные вызовы берут результат из кэша.
- *  Раньше JSON.parse звался на каждом рендере MessageContent (внутри IIFE
- *  в liveIters.map и savedIters.map) — лишний CPU на каждый tool step. */
-const _fcResultCache = new Map<string, FastContextResultData>()
-
-/** Пустой result для live-режима FastContextBlock. Модульная константа:
- *  инлайн-литерал в JSX создавал новый объект на каждый рендер MessageBubble
- *  и ломал memo-компаратор FastContextBlock (prev.result === next.result) —
- *  блок (stages/chips/shimmer) перерисовывался на каждый token-flush стрима,
- *  хотя liveProgress не менялся. */
-const EMPTY_FC_RESULT: FastContextResultData = { files: [], summary: '', ms: 0, indexedFilesCount: 0 }
-
-function extractFastContextResult(steps: Array<{ type: string; toolName?: string; content?: string }>): FastContextResultData | null {
-  for (const s of steps) {
-    if (s.type === 'tool_result' && s.toolName === 'get_fast_context' && s.content) {
-      const cached = _fcResultCache.get(s.content)
-      if (cached) return cached
-      try {
-        const parsed = JSON.parse(s.content) as FastContextResultData
-        if (parsed && Array.isArray(parsed.files)) {
-          if (_fcResultCache.size > 200) _fcResultCache.clear()
-          _fcResultCache.set(s.content, parsed)
-          return parsed
-        }
-      } catch { /* skip */ }
-    }
-  }
-  return null
 }
 
 // ── renderClickablePlainText: кликабельные пути в plain-text user-сообщениях ─
@@ -1642,11 +372,13 @@ function renderAttachChip(
 ): React.ReactNode {
   if (!att) return null
   const isEntity = att.kind === 'chat' || att.kind === 'project'
-  const clickable = isEntity || !!onPreviewAttachment
+  const clickable = (isEntity || !!onPreviewAttachment) && att.kind !== 'mcp'
   const title = att.kind === 'chat'
     ? `Чат: ${att.name}${att.snippet ? `\n${att.snippet}` : ''}`
     : att.kind === 'project'
     ? `Проект: ${att.name}${att.snippet ? `\n${att.snippet}` : ''}`
+    : att.kind === 'mcp'
+    ? `MCP-сервер: ${att.name} — его инструменты доступны в этом запросе`
     : att.relPath || att.path || att.name
   return (
     <span
@@ -1680,6 +412,13 @@ function renderAttachChip(
           ) : att.kind === 'project' ? (
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+            </svg>
+          ) : att.kind === 'mcp' ? (
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="2" y="2" width="20" height="8" rx="2" />
+              <rect x="2" y="14" width="20" height="8" rx="2" />
+              <line x1="6" y1="6" x2="6.01" y2="6" />
+              <line x1="6" y1="18" x2="6.01" y2="18" />
             </svg>
           ) : (
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -1738,6 +477,42 @@ type MsgIter = {
   steps: import('../ToolChain/ToolChain').ToolStep[]
 }
 
+// ── Инлайн-чипы слеш-команды в чате (Discord-стиль) ─────────────────────────
+//
+// User-сообщение с командой рендерится как: чип `/name` + чипы совпавших
+// enum-аргументов (позиционно, как в инпуте) + остальной текст как был.
+// Отдельная пилюля над сообщением остаётся только фолбэком — когда текст
+// контента почему-то не начинается с команды (старые данные).
+
+/** Разбор контента user-сообщения на команду и аргументы-чипы. */
+function splitInlineCommand(
+  content: string,
+  sc: { name: string; args: string },
+): { consumed: number; argChips: Array<{ text: string; index: number }> } | null {
+  const esc = sc.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const m = new RegExp('^\\/' + esc + '(?=$|[\\s])').exec(content)
+  if (!m) return null
+  const argChips: Array<{ text: string; index: number }> = []
+  let pos = m[0].length
+  // Enum-аргументы по позициям (builtin-команды; custom без lookup — чипы
+  // аргументов у них не рисуем, сам чип команды работает).
+  const args = SLASH_COMMANDS.find(c => c.name === sc.name)?.arguments
+  if (args?.length) {
+    let idx = 0
+    for (;;) {
+      const ws = /^\s+/.exec(content.slice(pos))
+      if (!ws) break
+      const tok = /^(\S+)/.exec(content.slice(pos + ws[0].length))
+      if (!tok) break
+      if (!args[idx]?.choices?.some(c => c.toLowerCase() === tok[1].toLowerCase())) break
+      pos += ws[0].length + tok[1].length
+      argChips.push({ text: tok[1], index: idx })
+      idx++
+    }
+  }
+  return { consumed: pos, argChips }
+}
+
 // Мемоизированный тяжёлый контент сообщения
 const MessageContent = memo(function MessageContent({
   content, isUser, searchQuery, toolOutputMode, toolSteps,
@@ -1745,9 +520,13 @@ const MessageContent = memo(function MessageContent({
   liveThinking, isStreaming, isWaiting, liveIters, liveTodo, liveTextAfter, rateLimitSec,
   userMarkdown = true, timeEl, agentStatus, toolProgress, retry, lastError,
   spawnedAgents,
+  orchestration,
+  orchestrationRunStatus,
   onPreviewAttachment,
   workdir,
   editorAvailable = true,
+  onOrchestrationContinue,
+  orchestrationContinued,
 }: {
   content: string; isUser: boolean; searchQuery?: string
   toolOutputMode: ToolOutputMode; toolSteps?: Message['toolSteps']
@@ -1769,10 +548,18 @@ const MessageContent = memo(function MessageContent({
   lastError?: string | null
   toolProgress?: Record<string, { stage: string; detail?: string; sessionId?: string; filesProcessed?: number; filesTotal?: number; filesFound?: Array<{ path: string; score: number; why: string }>; ts: number }>
   spawnedAgents?: Array<{ agentId: string; callId?: string; task: string; msgId: string; model?: string; ts: number }>
+  /** Прогресс оркестрации этого рана: live — из store, история — message.orchestration. */
+  orchestration?: OrchestrationProgress[]
+  /** Как завершился ран (для различения stopped/failed/«без подтверждения»). */
+  orchestrationRunStatus?: OrchestrationRunStatus
   onPreviewAttachment?: (a: Attachment | null) => void
   workdir?: string
   /** Доступен ли редактор чата для этого сообщения (false в инкогнито). */
   editorAvailable?: boolean
+  /** Продолжить прерванный оркестрированный ран (кнопка на карточке). */
+  onOrchestrationContinue?: (message: Message) => void
+  /** «Продолжить» уже нажали — кнопку не показываем. */
+  orchestrationContinued?: boolean
 }) {
   const [statsOpen, setStatsOpen] = useState(false)
   // Если панель статистики не влезает сверху (сообщение в самом верху чата) —
@@ -1892,6 +679,16 @@ const MessageContent = memo(function MessageContent({
     [chainSections],
   )
 
+  // Мини-агенты (Briefing/конституция/Economist) кидают карточки ДО первого
+  // токена модели — они создают live-итерацию, но это не «ход работы».
+  // Индикатор ожидания не должен из-за них исчезать: пока в ленте только
+  // такие карточки и нет текста/рассуждения — «Думаю…» остаётся видимым.
+  const assistantCardsOnly = !!liveIters?.length && liveIters.every(it =>
+    (!it.textBefore || !it.textBefore.trim()) &&
+    it.steps.length > 0 &&
+    it.steps.every(s => s.type === 'hint' || s.type === 'janitor'),
+  )
+
   // Бежит ли ещё ход работы (для живого окна): незавершённые тулы, идущий
   // визуальный анализ или стримящееся рассуждение. Когда пошёл финальный
   // текст ответа — false, и лента сама сворачивается, освобождая место.
@@ -1908,25 +705,13 @@ const MessageContent = memo(function MessageContent({
     : undefined
 
   // ── Контент под шагом ВНУТРИ ленты ────────────────────────────────────
-  // FastContextBlock и карточки саб-агентов раньше рендерились отдельными
-  // блоками рядом с плашкой (и в live, и в истории — дублированным кодом).
-  // Теперь это один слот под своей итерацией: блок стоит прямо под шагом
-  // get_fast_context / spawn_agent, скроллится вместе с лентой и
+  // Карточки саб-агентов рендерятся одним слотом под своей итерацией: блок
+  // стоит прямо под шагом spawn_agent, скроллится вместе с лентой и
   // сворачивается вместе с ходом работы.
   // ВАЖНО: решение принимается по шагу ИМЕННО этой итерации — иначе карточка
   // дублировалась бы под каждым шагом секции (у секции общий список steps).
   const renderIterExtra = useCallback((iter: { call: MsgIter['steps'][number]; result?: MsgIter['steps'][number] }, isLastSection: boolean) => {
     const toolName = iter.call.toolName
-
-    // Fast Context — под своим шагом; live-прогресс только для последней секции.
-    if (toolName === 'get_fast_context') {
-      const fcLive = isStreaming && isLastSection ? toolProgress?.['get_fast_context'] : undefined
-      if (fcLive && fcLive.stage !== 'done') {
-        return <FastContextBlock result={EMPTY_FC_RESULT} liveProgress={fcLive} />
-      }
-      const fcSaved = extractFastContextResult([iter.call, ...(iter.result ? [iter.result] : [])])
-      return fcSaved ? <FastContextBlock result={fcSaved} /> : null
-    }
 
     // Карточка саб-агента — под своим spawn_agent.
     if (toolName === 'spawn_agent') {
@@ -1950,13 +735,12 @@ const MessageContent = memo(function MessageContent({
     return null
   }, [isStreaming, toolProgress, spawnedAgents])
 
-  // Живой счётчик (§4.2): N файлов изменено · M команд выполнено
+  // Живой счётчик (§4.2): N файлов изменено · M команд выполнено.
+  // Файлы считаем через collectFileChanges — он же учитывает правки внутри
+  // execute_code (у скрипта нет собственных tool_result-шагов).
   const agentCounts = useMemo(() => {
     if (!toolSteps) return { filesChanged: 0, commandsRun: 0 }
-    const filesChanged = toolSteps.filter(s =>
-      s.type === 'tool_result' && s.success &&
-      ['write_file', 'edit_file'].includes(s.toolName || '')
-    ).length
+    const filesChanged = collectFileChanges(toolSteps).length
     const commandsRun = toolSteps.filter(s =>
       s.type === 'tool_call' && s.toolName === 'run_command'
     ).length
@@ -2006,6 +790,25 @@ const MessageContent = memo(function MessageContent({
     [workdir, onOpenFile, onPreviewAttachment],
   )
 
+  // ── Инлайн-чипы слеш-команды (Discord-стиль) ──
+  // Контент user-сообщения с командой начинается с `/name` — первые токены
+  // рисуем чипами (команда + совпавшие enum-аргументы), остаток — обычным
+  // контентом. inlineCmd=null → чипов нет, рендер как раньше (и пилюля-фолбэк).
+  const inlineCmd = isUser && message.slashCommand
+    ? splitInlineCommand(content, message.slashCommand)
+    : null
+  const cmdRest = inlineCmd ? content.slice(inlineCmd.consumed) : content
+  const inlineCmdFrag = inlineCmd && message.slashCommand && (
+    <>
+      <span className="inline-cmd" title={`Slash-команда /${message.slashCommand.name}`}>
+        <span className="inline-cmd-slash">/</span>{message.slashCommand.name}
+      </span>
+      {inlineCmd.argChips.map(c => (
+        <span key={c.index} className="inline-cmd-arg">{c.text}</span>
+      ))}
+    </>
+  )
+
   return (
     <div
       ref={wrapRef}
@@ -2027,8 +830,10 @@ const MessageContent = memo(function MessageContent({
           </div>
         )}
 
-        {/* Пилюлька слеш-команды */}
-        {isUser && message.slashCommand && (
+        {/* Пилюлька слеш-команды — фолбэк: инлайн-чипы в тексте невозможны,
+            когда контент не начинается с команды (старые/служебные данные).
+            Обычный случай рисуется чипами прямо в тексте (Discord-стиль). */}
+        {isUser && message.slashCommand && !inlineCmd && (
           <div className="message-slash-pill">
             <span className="message-slash-pill-icon">/</span>
             <span className="message-slash-pill-name">{message.slashCommand.name}</span>
@@ -2038,9 +843,26 @@ const MessageContent = memo(function MessageContent({
           </div>
         )}
 
+        {/* ── Прогресс оркестрации ──────────────────────────────────────
+            Одна компактная карточка на ран (в духе AgentCard, но это НЕ
+            сабагент: нет своего id/панели/IPC — только фазы и модели).
+            Live: liveByChat[chatId].orchestration (событие
+            agent:orchestration_progress), история: message.orchestration.
+            Стоит над лентой хода работы — это верхнеуровневый прогресс. */}
+        {!isUser && orchestration && orchestration.length > 0 && (
+          <OrchestrationCard
+            progress={orchestration}
+            runStatus={orchestrationRunStatus}
+            live={isStreaming}
+            onContinue={onOrchestrationContinue ? () => onOrchestrationContinue(message) : undefined}
+            continued={orchestrationContinued}
+          />
+        )}
+
         {!isUser && toolSteps && toolSteps.length > 0 && !liveIters?.length && !(message as Message & { iterations?: unknown[] }).iterations?.length && (
           <ToolChain
             steps={toolSteps}
+            workdir={workdir}
             mode={toolOutputMode}
             isRunning={false}
             renderIterExtra={renderIterExtra}
@@ -2069,6 +891,7 @@ const MessageContent = memo(function MessageContent({
               {!editorActive && chainStepCount > 0 && (
                 <ToolChain
                   sections={chainSections}
+                  workdir={workdir}
                   mode={toolOutputMode}
                   isRunning={false}
                   chatId={message.chatId}
@@ -2105,12 +928,13 @@ const MessageContent = memo(function MessageContent({
                   {editorActive && hasSteps && (
                     <ToolChain
                       steps={iter.steps}
+                      workdir={workdir}
                       mode={toolOutputMode}
                       isRunning={false}
                       renderIterExtra={renderIterExtra}
                     />
                   )}
-                  {/* Fast Context и карточки саб-агентов рендерит сам ToolChain
+                  {/* Карточки саб-агентов рендерит сам ToolChain
                       внутри ленты (renderIterExtra) — здесь их больше нет,
                       иначе в чате было бы два одинаковых блока. */}
                   {/* Сгенерированные изображения внутри persisted-итерации */}
@@ -2190,8 +1014,10 @@ const MessageContent = memo(function MessageContent({
           />
         )}
 
-        {/* Индикатор ожидания — сразу при отправке и пока AI не начал писать */}
-        {!isUser && (isStreaming || isWaiting) && !content && !liveThinking && !message.thinking && !liveIters?.length && (
+        {/* Индикатор ожидания — сразу при отправке и пока AI не начал писать.
+            Исключение: в ленте только карточки мини-агентов (assistantCardsOnly)
+            — это старт рана, «Думаю…» должен остаться видимым. */}
+        {!isUser && (isStreaming || isWaiting) && !content && !liveThinking && !message.thinking && (!liveIters?.length || assistantCardsOnly) && (
                     <WaitingIndicator rateLimitSec={rateLimitSec} agentStatus={agentStatus} retry={retry} lastError={lastError} filesChanged={agentCounts.filesChanged} commandsRun={agentCounts.commandsRun} toolProgress={toolProgress} />
         )}
 
@@ -2210,6 +1036,7 @@ const MessageContent = memo(function MessageContent({
             {chainStepCount > 0 && (
               <ToolChain
                 sections={chainSections}
+                workdir={workdir}
                 mode={toolOutputMode}
                 isRunning={liveChainRunning}
                 busy={isStreaming}
@@ -2245,7 +1072,7 @@ const MessageContent = memo(function MessageContent({
                       <ParsedContent text={iterText} allowPlanCard={allowPlanCard} remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} planFilePath={message.planData?.filePath} mdComponents={mdComponents} workdir={workdir} />
                     </div>
                   )}
-                  {/* Fast Context и карточки саб-агентов больше не рендерятся
+                  {/* Карточки саб-агентов больше не рендерятся
                       здесь: они живут ВНУТРИ ленты, под своим шагом
                       (см. renderIterExtra → ToolChain). */}
                   {/* Сгенерированные изображения внутри live-итерации */}
@@ -2359,13 +1186,16 @@ const MessageContent = memo(function MessageContent({
                 <div className="message-content selectable">
                   <p style={{ whiteSpace: 'pre-wrap' }}>
                     {replyChips}
-                    {splitByAttachTokens(content).map((seg, i) =>
-                      seg.type === 'text' ? (
-                        <React.Fragment key={i}>{renderClickablePlainText(seg.text, workdir, onOpenFile)}</React.Fragment>
-                      ) : (
-                        <React.Fragment key={i}>{renderAttachChip(attMap.get(seg.id), onPreviewAttachment)}</React.Fragment>
-                      ),
-                    )}
+                    {inlineCmdFrag}
+                    {splitByAttachTokens(content).map((seg, i) => {
+                      // Первый текстовый сегмент содержит команду — она уже
+                      // отрисована чипами inlineCmdFrag, срезаем её из текста.
+                      if (seg.type === 'text') {
+                        const text = i === 0 && inlineCmd ? seg.text.slice(inlineCmd.consumed) : seg.text
+                        return <React.Fragment key={i}>{renderClickablePlainText(text, workdir, onOpenFile)}</React.Fragment>
+                      }
+                      return <React.Fragment key={i}>{renderAttachChip(attMap.get(seg.id), onPreviewAttachment)}</React.Fragment>
+                    })}
                   </p>
                 </div>
               )
@@ -2373,12 +1203,16 @@ const MessageContent = memo(function MessageContent({
             return (
               <div className="message-content selectable">
                 {isUser && !userMarkdown ? (
-                  <p style={{ whiteSpace: 'pre-wrap' }}>{replyChips}{renderClickablePlainText(content, workdir, onOpenFile)}</p>
+                  <p style={{ whiteSpace: 'pre-wrap' }}>{replyChips}{inlineCmdFrag}{renderClickablePlainText(cmdRest, workdir, onOpenFile)}</p>
                 ) : isUser ? (
-                  // User-сообщения с markdown: через ParsedContent (с кэшем)
-                  // вместо прямого renderParsedSegments — консистентно с
-                  // ассистентскими сообщениями и надёжнее.
-                  <ParsedContent text={content} allowPlanCard={false} remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} mdComponents={mdComponents} workdir={workdir} />
+                  // User-сообщения с markdown: чипы команды + остаток через
+                  // ParsedContent (с кэшем) — консистентно с ассистентскими.
+                  <>
+                    {inlineCmdFrag}
+                    {cmdRest.trim() ? (
+                      <ParsedContent text={cmdRest} allowPlanCard={false} remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} mdComponents={mdComponents} workdir={workdir} />
+                    ) : null}
+                  </>
                 ) : (
                   // Ассистентские сообщения — через ParsedContent с module-level
                   // кэшем: scroll-remount виртуализатора и hover (showActions)
@@ -2580,9 +1414,12 @@ const MessageContent = memo(function MessageContent({
                       </div>
                     )}
                     {message.promptTokens != null && (
-                      <div className="message-stats-row" title={`Точно: ${formatTokensFull(message.promptTokens)} токенов`}>
+                      <div
+                        className="message-stats-row"
+                        title={`Сумма prompt_tokens по всем LLM-вызовам хода (tool-раунды), а не размер контекста. Точно: ${formatTokensFull(message.promptTokens)} токенов`}
+                      >
                         <span className="message-stats-arrow message-stats-arrow--up">↑</span>
-                        <span className="message-stats-label">Вход</span>
+                        <span className="message-stats-label">Вход за ход</span>
                         <span className="message-stats-value">{formatTokens(message.promptTokens)}</span>
                       </div>
                     )}
@@ -2594,9 +1431,9 @@ const MessageContent = memo(function MessageContent({
                       </div>
                     )}
                     {totalTokens > 0 && (
-                      <div className="message-stats-row" title={`Точно: ${formatTokensFull(totalTokens)} токенов`}>
+                      <div className="message-stats-row" title={`Вход за ход + выход. Размер текущего контекста смотри в кольце контекста. Точно: ${formatTokensFull(totalTokens)} токенов`}>
                         <AppIcon name="layers" size="xs" tone="muted" />
-                        <span className="message-stats-label">Всего</span>
+                        <span className="message-stats-label">Всего за ход</span>
                         <span className="message-stats-value">{formatTokens(totalTokens)}</span>
                       </div>
                     )}
@@ -2681,7 +1518,7 @@ function AssistantAvatar({ style }: { style: AvatarStyle }) {
 
 
 const MessageBubble = memo(function MessageBubble({
-  message, onPin, onCopy, onReadAloud, onReply, onRewind, toolOutputMode = 'normal', searchQuery, liveThinking, isStreaming, isWaiting, rateLimitSec, shouldAnimate = true, workdir, editorAvailable = true,
+  message, onPin, onCopy, onReadAloud, onReply, onRewind, toolOutputMode = 'normal', searchQuery, liveThinking, isStreaming, isWaiting, rateLimitSec, shouldAnimate = true, workdir, editorAvailable = true, onOrchestrationContinue, orchestrationContinued,
 }: MessageBubbleProps) {
   const isUser = message.role === 'user'
 
@@ -2731,6 +1568,29 @@ const MessageBubble = memo(function MessageBubble({
   const spawnedAgentsFromStore = useChatStore(s =>
     isLiveBubble && message.chatId ? s.liveByChat[message.chatId]?.spawnedAgents : undefined
   )
+  // ── Прогресс оркестрации ────────────────────────────────────────────
+  // Live-пузырь читает массив напрямую из store (событие
+  // agent:orchestration_progress мержит фазы в буфер, см. useOrchestrationProgress).
+  // Сохранённое сообщение — из message.orchestration (persisted main'ом).
+  // Селекторы узкие: массив получает новую ссылку только при событиях
+  // оркестрации, поэтому чужие обновления live-state не пробивают memo.
+  const orchestrationFromStore = useChatStore(s =>
+    isLiveBubble && message.chatId ? s.liveByChat[message.chatId]?.orchestration : undefined
+  )
+  const runStatusFromStore = useChatStore(s =>
+    isLiveBubble && message.chatId ? s.runStatusByChat[message.chatId]?.status : undefined
+  )
+  const orchestration = isLiveBubble
+    ? orchestrationFromStore
+    : (message as Message & { orchestration?: OrchestrationProgress[] }).orchestration
+  // Различение «остановлено / упало / завершено без подтверждения»:
+  // live — статус рана из store, история — message.finishReason.
+  const orchestrationRunStatus: OrchestrationRunStatus = isLiveBubble
+    ? (runStatusFromStore === 'compacting' ? 'running' : runStatusFromStore)
+    : message.finishReason === 'stopped' ? 'cancelled'
+      : message.finishReason === 'error' ? 'error'
+        : message.finishReason === 'done' ? 'done'
+          : undefined
   const retryFromStore = useChatStore(s =>
     isLiveBubble && message.chatId ? s.liveByChat[message.chatId]?.retry : undefined
   )
@@ -2899,6 +1759,10 @@ const MessageBubble = memo(function MessageBubble({
             lastError={lastErrorFromStore}
             toolProgress={toolProgressFromStore}
             spawnedAgents={spawnedAgentsFromStore}
+            orchestration={orchestration}
+            orchestrationRunStatus={orchestrationRunStatus}
+            onOrchestrationContinue={onOrchestrationContinue}
+            orchestrationContinued={orchestrationContinued}
             onPreviewAttachment={setPreviewAttachment}
             workdir={workdir}
             editorAvailable={editorAvailable}
@@ -2933,6 +1797,10 @@ const MessageBubble = memo(function MessageBubble({
         lastError={lastErrorFromStore}
         toolProgress={toolProgressFromStore}
         spawnedAgents={spawnedAgentsFromStore}
+        orchestration={orchestration}
+        orchestrationRunStatus={orchestrationRunStatus}
+        onOrchestrationContinue={onOrchestrationContinue}
+        orchestrationContinued={orchestrationContinued}
         onPreviewAttachment={setPreviewAttachment}
         workdir={workdir}
         editorAvailable={editorAvailable}

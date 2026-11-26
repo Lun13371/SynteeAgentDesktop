@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { SkillFolderUpdate } from '../shared/types'
+import type { SubagentOverviewItem } from '../shared/types/subagentOverview'
 
 // Типизированный API bridge для renderer
 const synteeAPI = {
@@ -326,9 +327,9 @@ const synteeAPI = {
     setInteractive: (v: boolean) =>
       ipcRenderer.send('overlay:setInteractive', v),
     captureScreen: () => ipcRenderer.invoke('notification:captureScreen') as Promise<string | null>,
-    onPush: (cb: (payload: import('../../shared/types').NotificationPayload) => void) => {
+    onPush: (cb: (payload: import('../shared/types').NotificationPayload) => void) => {
       const handler = (_: unknown, payload: unknown) =>
-        cb(payload as import('../../shared/types').NotificationPayload)
+        cb(payload as import('../shared/types').NotificationPayload)
       ipcRenderer.on('notification:push', handler)
       return () => ipcRenderer.removeListener('notification:push', handler)
     },
@@ -422,8 +423,8 @@ const synteeAPI = {
 
   // Dots — always-on фоновые агенты (аналог OpenAI Dots)
   dots: {
-    list: () => ipcRenderer.invoke('dots:list') as Promise<import('../../shared/types').Dot[]>,
-    get: (dotId: string) => ipcRenderer.invoke('dots:get', dotId) as Promise<import('../../shared/types').Dot | null>,
+    list: () => ipcRenderer.invoke('dots:list') as Promise<import('../shared/types').Dot[]>,
+    get: (dotId: string) => ipcRenderer.invoke('dots:get', dotId) as Promise<import('../shared/types').Dot | null>,
     create: (input: {
       name: string
       icon: string
@@ -435,19 +436,19 @@ const synteeAPI = {
       webhookEnabled?: boolean
       modelId?: string | null
       modelProvider?: string | null
-    }) => ipcRenderer.invoke('dots:create', input) as Promise<{ ok: boolean; dot?: import('../../shared/types').Dot; error?: string }>,
-    update: (dotId: string, patch: Partial<import('../../shared/types').DotConfig>) =>
-      ipcRenderer.invoke('dots:update', dotId, patch) as Promise<{ ok: boolean; dot?: import('../../shared/types').Dot; error?: string }>,
+    }) => ipcRenderer.invoke('dots:create', input) as Promise<{ ok: boolean; dot?: import('../shared/types').Dot; error?: string }>,
+    update: (dotId: string, patch: Partial<import('../shared/types').DotConfig>) =>
+      ipcRenderer.invoke('dots:update', dotId, patch) as Promise<{ ok: boolean; dot?: import('../shared/types').Dot; error?: string }>,
     delete: (dotId: string) => ipcRenderer.invoke('dots:delete', dotId) as Promise<{ ok: boolean }>,
     runNow: (dotId: string) => ipcRenderer.invoke('dots:runNow', dotId) as Promise<{ ok: boolean; reason?: string }>,
     getRuns: (dotId: string, limit?: number) =>
-      ipcRenderer.invoke('dots:getRuns', dotId, limit) as Promise<import('../../shared/types').DotRun[]>,
+      ipcRenderer.invoke('dots:getRuns', dotId, limit) as Promise<import('../shared/types').DotRun[]>,
     unreadCounts: (pairs: Array<{ dotId: string; since: number }>) =>
       ipcRenderer.invoke('dots:unreadCounts', pairs) as Promise<Record<string, number>>,
     getWebhookUrl: (dotId: string) => ipcRenderer.invoke('dots:getWebhookUrl', dotId) as Promise<string | null>,
-    getSettings: () => ipcRenderer.invoke('dots:getSettings') as Promise<import('../../shared/types').DotSettings>,
-    setSettings: (patch: Partial<import('../../shared/types').DotSettings>) =>
-      ipcRenderer.invoke('dots:setSettings', patch) as Promise<import('../../shared/types').DotSettings>,
+    getSettings: () => ipcRenderer.invoke('dots:getSettings') as Promise<import('../shared/types').DotSettings>,
+    setSettings: (patch: Partial<import('../shared/types').DotSettings>) =>
+      ipcRenderer.invoke('dots:setSettings', patch) as Promise<import('../shared/types').DotSettings>,
   },
 
   // Встроенный браузер (правая панель, webview). Renderer хостит webview-
@@ -549,7 +550,7 @@ const synteeAPI = {
     // limit — размер страницы (по умолчанию 20). beforeCreatedAt/beforeId —
     // курсор для догрузки старых сообщений вверх (пара из oldest текущего окна).
     getMessagesPage: (chatId: string, limit?: number, beforeCreatedAt?: number, beforeId?: string) =>
-      ipcRenderer.invoke('chat:getMessagesPage', chatId, limit, beforeCreatedAt, beforeId) as Promise<{ messages: import('../../shared/types').Message[]; hasMore: boolean }>,
+      ipcRenderer.invoke('chat:getMessagesPage', chatId, limit, beforeCreatedAt, beforeId) as Promise<{ messages: import('../shared/types').Message[]; hasMore: boolean }>,
     send: (params: {
       chatId: string
       content: string
@@ -563,19 +564,20 @@ const synteeAPI = {
       /** Тумблер «Управление браузером»: browser_* тулы + request_access. */
       browserMode?: boolean
       mode?: 'code' | 'work'
-      /** Single-select persona run mode (classic/architect/debugger/...).
-       *  Orthogonal to planning/ask/image toggles. */
-      persona?: import('../../shared/modes').PersonaId
       oneShotSkill?: { name: string; instructions: string }
       oneShotAllowedTools?: string[]
       oneShotMode?: 'ask' | 'plan' | 'code'
-      /** Per-message persona override (/debug, /review, ...). */
-      oneShotPersona?: import('../../shared/modes').PersonaId
       /** Уровень мышления из UI на момент отправки (source of truth для main). */
       reasoningValue?: string
-      attachments?: import('../../shared/types').Attachment[]
+      attachments?: import('../shared/types').Attachment[]
       /** Реплай-цитаты: сообщения, на которые отвечает эта отправка. */
-      replyTo?: import('../../shared/types').ReplyTarget[]
+      replyTo?: import('../shared/types').ReplyTarget[]
+      /** §orchestration — one-turn оркестрация (/orchestrate): роли моделей
+       *  на ОДИН запрос. Планировщика снимает main (текущая модель чата);
+       *  reviewer не задан → main явно подставляет планировщика.
+       *  Несовместимые режимы (Ask/Plan/image) main отклоняет броском —
+       *  renderer показывает причину в блоке оркестрации. */
+      orchestration?: import('../shared/orchestration').OrchestrationSelection
     }) => ipcRenderer.invoke('chat:send', params),
     delete: (chatId: string) => ipcRenderer.invoke('chat:delete', chatId),
     rename: (chatId: string, title: string) => ipcRenderer.invoke('chat:rename', chatId, title),
@@ -611,9 +613,11 @@ const synteeAPI = {
     // ── Steering: реплика пользователя ВНУТРЬ активного рана ──
     // Long-press на кнопке отправки: текст не встаёт в очередь, а влетает
     // в контекст работающего агента на границе следующего раунда.
+    // attachments — вложения реплики (как в chat:send: текстовые файлы
+    // инлайнятся, картинки идут в vision / analyze_image).
     // accepted:false — активного рана нет (renderer отправит обычным путём).
-    steer: (chatId: string, text: string, steerId: string) =>
-      ipcRenderer.invoke('chat:steer', chatId, text, steerId),
+    steer: (chatId: string, text: string, steerId: string, attachments?: unknown[]) =>
+      ipcRenderer.invoke('chat:steer', chatId, text, steerId, attachments),
     // Передумал: снять реплику, пока агент её не внедрил (карточка «ждёт»).
     steerCancel: (chatId: string, steerId: string) =>
       ipcRenderer.invoke('chat:steer:cancel', chatId, steerId),
@@ -628,9 +632,17 @@ const synteeAPI = {
     canRedo: (chatId: string, rewindMessageId: string) => ipcRenderer.invoke('chat:canRedo', chatId, rewindMessageId),
     // ── ChangesBadge: изменения последнего запроса + undo файлов ──
     // getLastTurnChanges — per-file added/deleted для последнего turn'а с правками.
+    // getTurnChanges — то же для ЛЮБОГО turn'а по userMessageId (панель «Сессия»).
+    // getSessionTurnChanges — карта изменений всех чекпоинтов сессии одним вызовом.
     // undoLastTurnFiles — откатить все файлы последнего turn'а (без удаления сообщений).
     // undoFile — откатить один файл последнего turn'а.
-    getLastTurnChanges: (chatId: string) => ipcRenderer.invoke('chat:getLastTurnChanges', chatId) as Promise<import('../../shared/types').LastTurnChanges | null>,
+    getLastTurnChanges: (chatId: string) => ipcRenderer.invoke('chat:getLastTurnChanges', chatId) as Promise<import('../shared/types').LastTurnChanges | null>,
+    getTurnChanges: (chatId: string, userMessageId?: string) => ipcRenderer.invoke('chat:getTurnChanges', chatId, userMessageId) as Promise<import('../shared/types').LastTurnChanges | null>,
+    getSessionTurnChanges: (chatId: string) => ipcRenderer.invoke('chat:getSessionTurnChanges', chatId) as Promise<Record<string, import('../shared/types').LastTurnChanges>>,
+    // getCheckpointFileDiffs — кумулятивные per-file диффы с содержимым «до/после»
+    // (diff-панель «Сессии»). Раньше не был проброшен через preload: панель
+    // молча падала в fallback-парсинг step-диффов.
+    getCheckpointFileDiffs: (chatId: string, userMessageId: string) => ipcRenderer.invoke('chat:getCheckpointFileDiffs', chatId, userMessageId) as Promise<Array<{ filePath: string; original: string; modified: string; added: number; deleted: number; created: boolean }>>,
     undoLastTurnFiles: (chatId: string) => ipcRenderer.invoke('chat:undoLastTurnFiles', chatId) as Promise<{ restored?: number; failed?: string[]; error?: string }>,
     undoFile: (chatId: string, path: string) => ipcRenderer.invoke('chat:undoFile', chatId, path) as Promise<{ success?: boolean; error?: string }>,
     // ── Undo файлов любого чекпоинта (правая панель «Сессия») ──
@@ -700,13 +712,27 @@ const synteeAPI = {
       ipcRenderer.on('chat:image-mode-changed', listener)
       return () => ipcRenderer.removeListener('chat:image-mode-changed', listener)
     },
+    // §orchestration — live-прогресс фаз одного рана (/orchestrate).
+    // Событие: { chatId, msgId (assistant-сообщение рана), progress }.
+    // Подписка на 'agent:orchestration_progress' (см. shared/constants
+    // IPC_EVENTS.AGENT_ORCHESTRATION_PROGRESS); возвращает unsubscribe.
+    onOrchestrationProgress: (cb: (event: {
+      chatId: string
+      msgId: string
+      progress: import('../shared/orchestration').OrchestrationProgress
+    }) => void) => {
+      const handler = (_e: unknown, event: unknown) => cb(event as {
+        chatId: string
+        msgId: string
+        progress: import('../shared/orchestration').OrchestrationProgress
+      })
+      ipcRenderer.on('agent:orchestration_progress', handler)
+      return () => ipcRenderer.removeListener('agent:orchestration_progress', handler)
+    },
     setAskMode: (chatId: string, val: boolean) => ipcRenderer.invoke('chat:setAskMode', chatId, val),
     // Тумблер «Управление браузером» (browser_* тулы для AI).
     getBrowserMode: (chatId: string) => ipcRenderer.invoke('browser:getMode', chatId) as Promise<boolean>,
     setBrowserMode: (chatId: string, val: boolean) => ipcRenderer.invoke('browser:setMode', chatId, val),
-    /** Single-select persona run mode (classic/architect/debugger/...). */
-    getPersona: (chatId: string) => ipcRenderer.invoke('chat:getPersona', chatId) as Promise<import('../../shared/modes').PersonaId>,
-    setPersona: (chatId: string, persona: import('../../shared/modes').PersonaId) => ipcRenderer.invoke('chat:setPersona', chatId, persona),
     /** Per-chat модель: null = глобальное назначение role:'main'. */
     getModel: (chatId: string) => ipcRenderer.invoke('chat:getModel', chatId) as Promise<{ modelId: string; modelProvider: string } | null>,
     setModel: (chatId: string, modelId: string | null, modelProvider: string | null) => ipcRenderer.invoke('chat:setModel', chatId, modelId, modelProvider),
@@ -734,22 +760,9 @@ const synteeAPI = {
     setAppearance: (id: string, color: string, icon: string) => ipcRenderer.invoke('projects:setAppearance', id, color, icon),
   },
 
-  // Fast Context — статус индекса проекта, реиндекс, live progress
-  fastContext: {
-    getStatus: (projectId: string) => ipcRenderer.invoke('fastcontext:getStatus', projectId),
-    reindex: (projectId: string) => ipcRenderer.invoke('fastcontext:reindex', projectId),
-    clearIndex: (projectId: string) => ipcRenderer.invoke('fastcontext:clearIndex', projectId),
-    setActive: (projectId: string | null) => ipcRenderer.invoke('fastcontext:setActive', projectId),
-    onProgress: (cb: (data: { projectId: string; stage: string; detail?: string; filesProcessed?: number; filesTotal?: number }) => void) => {
-      const handler = (_e: unknown, data: { projectId: string; stage: string; detail?: string; filesProcessed?: number; filesTotal?: number }) => cb(data)
-      ipcRenderer.on('fastcontext:progress', handler)
-      return () => ipcRenderer.removeListener('fastcontext:progress', handler)
-    },
-    onUpdated: (cb: (projectId: string) => void) => {
-      const handler = (_e: unknown, projectId: string) => cb(projectId)
-      ipcRenderer.on('fastcontext:updated', handler)
-      return () => ipcRenderer.removeListener('fastcontext:updated', handler)
-    },
+  // Extensions — активация проекта для авто-детекта MCP/skills
+  extensions: {
+    setActiveProject: (projectId: string | null) => ipcRenderer.invoke('extensions:setActiveProject', projectId),
   },
 
   // Память (MemoryStore: гибридный TF-IDF + embeddings, 4 kind, 3 scope)
@@ -785,6 +798,7 @@ const synteeAPI = {
     run: (query: string) => ipcRenderer.invoke('agent:run', query),
     cancel: (id?: string) => ipcRenderer.invoke('agent:cancel', id),
     list: () => ipcRenderer.invoke('agent:list'),
+    overview: (chatId: string) => ipcRenderer.invoke('agent:overview', chatId) as Promise<SubagentOverviewItem[]>,
     get: (id: string) => ipcRenderer.invoke('agent:get', id),
     children: (parentId: string) => ipcRenderer.invoke('agent:children', parentId),
     clearChat: (chatId: string) => ipcRenderer.invoke('agent:clearChat', chatId),
@@ -841,6 +855,23 @@ const synteeAPI = {
     save: (input: import('../shared/types/protectedVars').ProtectedVarSaveInput) =>
       ipcRenderer.invoke('protectedVars:save', input) as Promise<{ ok: true; meta: import('../shared/types/protectedVars').ProtectedVarMeta } | { ok: false; error: string }>,
     delete: (id: string) => ipcRenderer.invoke('protectedVars:delete', id) as Promise<boolean>,
+  },
+
+  // ChatGPT-подписка (Codex OAuth): вход, импорт логина Codex CLI, статус, каталог моделей
+  codex: {
+    status: () => ipcRenderer.invoke('codex:status'),
+    login: () => ipcRenderer.invoke('codex:login'),
+    loginManual: (input: string) => ipcRenderer.invoke('codex:loginManual', input),
+    cancelLogin: () => ipcRenderer.invoke('codex:cancelLogin'),
+    import: () => ipcRenderer.invoke('codex:import'),
+    logout: () => ipcRenderer.invoke('codex:logout'),
+    refresh: () => ipcRenderer.invoke('codex:refresh'),
+    models: () => ipcRenderer.invoke('codex:models'),
+    onAuthChanged: (cb: (state: unknown) => void) => {
+      const handler = (_: unknown, state: unknown) => cb(state)
+      ipcRenderer.on('codex:auth-changed', handler)
+      return () => ipcRenderer.removeListener('codex:auth-changed', handler)
+    },
   },
 
   // Провайдеры и модели
@@ -1000,9 +1031,15 @@ const synteeAPI = {
       ipcRenderer.invoke('git:fileVersions', params),
     showFiles: (params: { workdir: string; hash: string }) =>
       ipcRenderer.invoke('git:showFiles', params),
-    branchList: (workdir: string) =>
-      ipcRenderer.invoke('git:branchList', workdir),
-    checkout: (params: { workdir: string; branch: string }) =>
+    branchList: (workdir: string, all?: boolean) =>
+      ipcRenderer.invoke('git:branchList', workdir, all),
+    // Фоновое обновление удалённых веток (`fetch --all --prune`): дедуп и
+    // rate limit — в main (src/main/git/refresh.ts). Никогда не бросает.
+    refreshBranches: (workdir: string) =>
+      ipcRenderer.invoke('git:refreshBranches', workdir),
+    // remote=true — переключение на удалённую ветку: branch без префикса
+    // refs/remotes/ (origin/feat/x); в main создаётся локальная tracking-ветка.
+    checkout: (params: { workdir: string; branch: string; remote?: boolean }) =>
       ipcRenderer.invoke('git:checkout', params),
     branchCreate: (params: { workdir: string; branch: string; checkout?: boolean }) =>
       ipcRenderer.invoke('git:branchCreate', params),
@@ -1014,21 +1051,31 @@ const synteeAPI = {
       ipcRenderer.invoke('git:stashList', workdir),
     logFile: (params: { workdir: string; file: string; limit?: number }) =>
       ipcRenderer.invoke('git:logFile', params),
+    // Агрегат для поповера «Инструменты Git» (branch/ahead/behind +N −M).
+    repoSummary: (workdir: string) =>
+      ipcRenderer.invoke('git:repoSummary', workdir),
+    // Граф коммитов всех веток (окно «Git Graph»).
+    graph: (params: { workdir: string; limit?: number }) =>
+      ipcRenderer.invoke('git:graph', params),
+    // Сообщение коммита от локальной модели; lang — язык описания.
+    generateCommitMessage: (params: { workdir: string; lang?: 'ru' | 'en' }) =>
+      ipcRenderer.invoke('git:generateCommitMessage', params),
+    // git add -A («включить незастейдженные изменения»).
+    // Коммит + push одним действием.
+    commitAndPush: (params: { workdir: string; message: string; includeUnstaged?: boolean; push?: boolean }) =>
+      ipcRenderer.invoke('git:commitAndPush', params),
   },
 
   // Skills — markdown-инструкции в system prompt.
   // getAll — все скиллы (с состоянием) для popover; projectId опционально.
   // setState — обновить enabled/scope скилла.
   // reload — сбросить кэш и перечитать .md с диска.
-  // getActive — активные скиллы для конкретного чата (для бейджа).
   skills: {
     getAll: (params?: { projectId?: string; chatId?: string }) => ipcRenderer.invoke('skills:getAll', params),
     setState: (params: { skillId: string; state: unknown; source: 'builtin' | 'user' | 'project' }) =>
       ipcRenderer.invoke('skills:setState', params),
     setFolderState: (params: SkillFolderUpdate) => ipcRenderer.invoke('skills:setFolderState', params),
     reload: () => ipcRenderer.invoke('skills:reload'),
-    getActive: (params: { chatId: string; isIncognito?: boolean }) =>
-      ipcRenderer.invoke('skills:getActive', params),
     installFromUrl: (params: { url: string; scope: 'global' | { workdir: string } }) =>
       ipcRenderer.invoke('skills:installFromUrl', params),
   },
@@ -1046,18 +1093,16 @@ const synteeAPI = {
   // getAll — все серверы с runtime-состоянием (для popover).
   // save/delete — CRUD глобальных серверов.
   // connect/disconnect/reconnect — управление подключением.
-  // setServerState — enabled/scope сервера.
+  // setServerState — enabled/scope/таймаут сервера.
   // setToolState — per-tool enabled/requireApproval.
   mcp: {
     getAll: (params?: { projectId?: string; chatId?: string }) => ipcRenderer.invoke('mcp:getAll', params),
-    getActiveForChat: (params: { chatId: string; isIncognito?: boolean }) =>
-      ipcRenderer.invoke('mcp:getActiveForChat', params),
     save: (config: unknown) => ipcRenderer.invoke('mcp:save', config),
     delete: (id: string) => ipcRenderer.invoke('mcp:delete', id),
     connect: (serverId: string) => ipcRenderer.invoke('mcp:connect', serverId),
     disconnect: (serverId: string) => ipcRenderer.invoke('mcp:disconnect', serverId),
     reconnect: (serverId: string) => ipcRenderer.invoke('mcp:reconnect', serverId),
-    setServerState: (params: { serverId: string; projectId?: string; enabled?: boolean; scope?: unknown }) =>
+    setServerState: (params: { serverId: string; projectId?: string; enabled?: boolean; scope?: unknown; toolTimeoutSeconds?: number }) =>
       ipcRenderer.invoke('mcp:setServerState', params),
     setServersEnabled: (params: { serverIds: string[]; projectId?: string; enabled: boolean }) =>
       ipcRenderer.invoke('mcp:setServersEnabled', params),
@@ -1249,7 +1294,7 @@ const synteeAPI = {
   draft: {
     getAttachments: (chatId: string) =>
       ipcRenderer.invoke('draft:getAttachments', chatId),
-    setAttachments: (chatId: string, attachments: import('../../shared/types').Attachment[]) =>
+    setAttachments: (chatId: string, attachments: import('../shared/types').Attachment[]) =>
       ipcRenderer.invoke('draft:setAttachments', chatId, attachments),
     clearAttachments: (chatId: string) =>
       ipcRenderer.invoke('draft:clearAttachments', chatId),
@@ -1291,26 +1336,25 @@ const synteeAPI = {
   },
 
   // ── Автообновление клиента ──────────────────────────────────────────────
-  // In-app informational checker. The Go launcher (syntee-launcher) does the
-  // real download+apply; this API only exposes state for the titlebar badge,
-  // the changelog modal, the force modal, and the settings "Changelog" tab.
-  //   - check(): manual re-check (settings button). Returns the new state.
-  //   - getStatus(): snapshot of current state (badge visibility, manifest).
-  //   - getHistory(): list of ever-activated releases for the settings tab.
-  //   - dismiss(version): hide the badge for this version (force ignores it).
-  //   - quitAndInstall(): spawn updater.exe, then app.exit(0). Resolves with
-  //     { ok: false, error } when the updater couldn't be started (app keeps
-  //     running in that case).
-  //   - onStateChanged(cb): subscribe to live updates from the main process.
+  // Обновления приходят из GitHub Releases. Скачивание идёт в фоне сразу
+  // после обнаружения версии; установка — по кнопке или при выходе.
+  //   - check(): ручная проверка (кнопка в настройках). Возвращает состояние.
+  //   - getStatus(): снимок состояния (бейдж, манифест, прогресс загрузки).
+  //   - getHistory(): список версий для вкладки Changelog.
+  //   - dismiss(version): скрыть бейдж до следующего релиза.
+  //   - quitAndInstall(): запустить установщик и закрыть приложение.
+  //     Резолвится с { ok: false, error }, если установщик не запустился
+  //     (приложение в этом случае продолжает работу).
+  //   - onStateChanged(cb): подписка на изменения состояния из main.
   updates: {
-    check: () => ipcRenderer.invoke('updates:check') as Promise<import('../../shared/types').UpdateState>,
-    getStatus: () => ipcRenderer.invoke('updates:getStatus') as Promise<import('../../shared/types').UpdateState>,
+    check: () => ipcRenderer.invoke('updates:check') as Promise<import('../shared/types').UpdateState>,
+    getStatus: () => ipcRenderer.invoke('updates:getStatus') as Promise<import('../shared/types').UpdateState>,
     getHistory: (params?: { channel?: string; limit?: number }) =>
-      ipcRenderer.invoke('updates:getHistory', params) as Promise<import('../../shared/types').ChangelogEntry[]>,
-    dismiss: (version: string) => ipcRenderer.invoke('updates:dismiss', version) as Promise<import('../../shared/types').UpdateState>,
-    quitAndInstall: () => ipcRenderer.invoke('updates:quitAndInstall') as Promise<import('../../shared/types').QuitAndInstallResult>,
-    onStateChanged: (cb: (state: import('../../shared/types').UpdateState) => void) => {
-      const handler = (_e: unknown, state: import('../../shared/types').UpdateState) => cb(state)
+      ipcRenderer.invoke('updates:getHistory', params) as Promise<import('../shared/types').ChangelogEntry[]>,
+    dismiss: (version: string) => ipcRenderer.invoke('updates:dismiss', version) as Promise<import('../shared/types').UpdateState>,
+    quitAndInstall: () => ipcRenderer.invoke('updates:quitAndInstall') as Promise<import('../shared/types').QuitAndInstallResult>,
+    onStateChanged: (cb: (state: import('../shared/types').UpdateState) => void) => {
+      const handler = (_e: unknown, state: import('../shared/types').UpdateState) => cb(state)
       ipcRenderer.on('updates:state-changed', handler)
       return () => ipcRenderer.removeListener('updates:state-changed', handler)
     },
@@ -1323,6 +1367,62 @@ const synteeAPI = {
   clipboard: {
     writeText: (text: string) => ipcRenderer.invoke('clipboard:writeText', text) as Promise<boolean>,
     readText: () => ipcRenderer.invoke('clipboard:readText') as Promise<string>,
+  },
+
+  assistants: {
+    getSettings: () => ipcRenderer.invoke('assistants:getSettings') as Promise<import('../shared/assistants').AssistantsSettings>,
+    updateSettings: (patch: Partial<import('../shared/assistants').AssistantsSettings>) =>
+      ipcRenderer.invoke('assistants:updateSettings', patch) as Promise<import('../shared/assistants').AssistantsSettings>,
+    getLog: (since?: number) => ipcRenderer.invoke('assistants:getLog', since) as Promise<import('../shared/assistants').AssistantLogEntry[]>,
+    getStats: () => ipcRenderer.invoke('assistants:getStats') as Promise<import('../shared/assistants').AgentStatsMap>,
+    getStatus: () => ipcRenderer.invoke('assistants:getStatus') as Promise<{ serverState: string; modelSize: string; modelDownloaded: boolean; binaryReady: boolean; active: number; queueLength: number; idleUnloaded: boolean }>,
+    setup: () => ipcRenderer.invoke('assistants:setup') as Promise<{ ok: boolean; error?: string }>,
+    onSetupProgress: (cb: (p: { phase: string; percent: number; error?: string }) => void) => {
+      const handler = (_: unknown, p: { phase: string; percent: number; error?: string }) => cb(p)
+      ipcRenderer.on('assistants:setupProgress', handler)
+      return () => ipcRenderer.removeListener('assistants:setupProgress', handler)
+    },
+  },
+
+  // Карта проекта — граф кода (файлы, символы, вызовы).
+  projectMap: {
+    getGraph: (projectId: string, opts?: import('../shared/projectMap').GetGraphOptions) =>
+      ipcRenderer.invoke('projectMap:getGraph', projectId, opts) as Promise<import('../shared/projectMap').CodeMapGraph>,
+    getFileGraph: (projectId: string, filePath: string) =>
+      ipcRenderer.invoke('projectMap:getFileGraph', projectId, filePath) as Promise<import('../shared/projectMap').CodeMapGraph>,
+    getStatus: (projectId: string) =>
+      ipcRenderer.invoke('projectMap:getStatus', projectId) as Promise<import('../shared/projectMap').CodeMapStatus>,
+    getSemanticStatus: (projectId: string) =>
+      ipcRenderer.invoke('projectMap:getSemanticStatus', projectId) as Promise<import('../shared/projectMap').CodeMapSemanticStatus>,
+    getStats: (projectId: string) =>
+      ipcRenderer.invoke('projectMap:getStats', projectId) as Promise<import('../shared/projectMap').CodeMapStatus & { files: number }>,
+    listStats: () =>
+      ipcRenderer.invoke('projectMap:listStats') as Promise<import('../shared/projectMap').ProjectMapProjectStats[]>,
+    getAutoInfo: () =>
+      ipcRenderer.invoke('projectMap:getAutoInfo') as Promise<import('../shared/projectMap').ProjectMapAutoInfo>,
+    getSemanticDevice: () =>
+      ipcRenderer.invoke('projectMap:getSemanticDevice') as Promise<{ requested: string; active: string | null }>,
+    findNodes: (projectId: string, query: string, limit?: number) =>
+      ipcRenderer.invoke('projectMap:findNodes', projectId, query, limit) as Promise<import('../shared/projectMap').CodeMapNode[]>,
+    getNeighbors: (projectId: string, nodeId: string) =>
+      ipcRenderer.invoke('projectMap:getNeighbors', projectId, nodeId) as Promise<{
+        node: import('../shared/projectMap').CodeMapNode | null
+        callers: import('../shared/projectMap').CodeMapEdge[]
+        callees: import('../shared/projectMap').CodeMapEdge[]
+      }>,
+    getFileDeps: (projectId: string, filePath: string) =>
+      ipcRenderer.invoke('projectMap:getFileDeps', projectId, filePath) as Promise<{
+        imports: import('../shared/projectMap').CodeMapEdge[]
+        importedBy: import('../shared/projectMap').CodeMapEdge[]
+      }>,
+    rebuild: (projectId: string) => ipcRenderer.invoke('projectMap:rebuild', projectId) as Promise<boolean>,
+    ensure: (projectId: string) => ipcRenderer.invoke('projectMap:ensure', projectId) as Promise<boolean>,
+    setActiveProject: (projectId: string | null) => ipcRenderer.invoke('projectMap:setActiveProject', projectId) as Promise<boolean>,
+    onProgress: (cb: (p: import('../shared/projectMap').CodeMapProgress) => void) => {
+      const handler = (_: unknown, p: import('../shared/projectMap').CodeMapProgress) => cb(p)
+      ipcRenderer.on('projectMap:progress', handler)
+      return () => { ipcRenderer.removeListener('projectMap:progress', handler) }
+    },
   },
 }
 

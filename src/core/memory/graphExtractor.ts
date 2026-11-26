@@ -4,8 +4,7 @@
  * Два подхода:
  *
  * 1. HEURISTIC (быстро, без LLM):
- *    - extractFromDecisionHeuristic: regex для file paths, symbol refs из content
- *    - syncFromFastContext: files/symbols/imports/calls из fast_context_index
+ *    - extractFromDecisionHeuristic: концепции из content decision/convention
  *
  * 2. LLM (умно, дорого):
  *    - extractFromConversationLLM: концепции, отношения из chat_summary
@@ -16,10 +15,8 @@
 
 import type Store from 'electron-store'
 import { AIClient } from '../ai/AIClient'
-import { extractJsonFromLlmResponse } from '../context/fastContext/annotator'
-import { getFastContextEntries, type FastContextEntry } from '../db/fastContextStore'
+import { extractJsonFromLlmResponse } from '../ai/llmJson'
 import { getDB } from '../db/handle'
-import type { FileSymbols } from '../context/fastContext/types'
 import {
   upsertNode,
   upsertEdge,
@@ -52,26 +49,13 @@ export interface GraphExtraction {
   edges: ExtractedEdge[]
 }
 
-// ─── HEURISTIC: file path & symbol extraction ────────────────────────────────
-
-/**
- * Regex для поиска путей к файлам в тексте.
- * Ловит: src/foo.ts, ./bar.js, ../baz/index.tsx, MemoryStore.ts, schemas.ts
- * Не ловит: обычные слова без расширения.
- */
-const FILE_PATH_REGEX = /(?:\.\/|\.\.\/|\/)?(?:[\w-]+(?:\/[\w-]+)*\.[a-z]{1,5})\b/gi
-
-/**
- * Regex для поиска упоминаний имён функций/классов (CamelCase или snake_case).
- * Минимум 4 символа, чтобы не ловить предлоги/местоимения.
- */
-const SYMBOL_REGEX = /\b(?:[A-Z][a-zA-Z]{3,}|[a-z][a-zA-Z_]{4,})\b/g
+// ─── HEURISTIC: decision → concepts ──────────────────────────────────────────
 
 /**
  * Извлечь сущности из decision (memory_item kind=project_decision) heuristically.
  * - Создаёт decision узел
- * - Ищет file paths в content → file узлы + AFFECTS edges
- * - Ищет symbol mentions → symbol узлы + MENTIONS edges (если symbol есть в fast_context)
+ * - Извлекает концепции (tech terms + CamelCase)
+ * - Связывает decision'ы с общими концепциями
  *
  * Синхронно: пишет в graphStore через upsertNode/upsertEdge.
  */
@@ -98,94 +82,12 @@ export function extractFromDecisionHeuristic(params: {
   })
   nodes++
 
-  // 2. File paths в content → file nodes + AFFECTS edges
-  const filePaths = new Set<string>()
-  const matches = content.match(FILE_PATH_REGEX) ?? []
-  for (const m of matches) {
-    // Normalize: убираем ведущие ./ и ../
-    const normalized = m.replace(/^(?:\.\/|\.\.\/|\/)+/, '')
-    if (normalized.length > 3 && normalized.length < 200) {
-      filePaths.add(normalized)
-    }
-  }
-
-  // Также проверяем что эти файлы реально есть в fast_context_index проекта
-  // (чтобы не создавать мусорные узлы для несуществующих файлов)
-  const existingFiles = new Set<string>()
-  try {
-    const fcEntries = getFastContextEntries(projectId)
-    for (const e of fcEntries) {
-      existingFiles.add(e.filePath)
-      // Также добавляем basename для matching
-      const basename = e.filePath.split(/[/\\]/).pop()
-      if (basename) existingFiles.add(basename)
-    }
-  } catch { /* skip if fast_context не доступен */ }
-
-  for (const filePath of filePaths) {
-    // Проверяем: либо полный путь есть в индексе, либо basename
-    const basename = filePath.split(/[/\\]/).pop() ?? filePath
-    const known = existingFiles.has(filePath) || existingFiles.has(basename)
-    if (!known) continue // пропускаем незнакомые файлы
-
-    upsertEdge({
-      projectId,
-      fromType: 'decision',
-      fromLabel: decisionLabelShort,
-      toType: 'file',
-      toLabel: basename, // используем basename как label для краткости
-      type: 'affects',
-      toSourceKind: 'fast_context',
-      toSourceId: basename,
-      metadata: { evidence: 'mentioned_in_decision' },
-    })
-    edges++
-  }
-
-  // 3. Symbol mentions → symbol nodes + MENTIONS edges
-  // Сначала собираем все symbol names из fast_context
-  const symbolNames = new Set<string>()
-  try {
-    const fcEntries = getFastContextEntries(projectId)
-    for (const e of fcEntries) {
-      if (!e.symbolsJson) continue
-      try {
-        const symbols = JSON.parse(e.symbolsJson) as FileSymbols
-        for (const def of symbols.definitions) {
-          if (def.name && def.name.length >= 4) {
-            symbolNames.add(def.name)
-          }
-        }
-      } catch { /* skip */ }
-    }
-  } catch { /* skip */ }
-
-  if (symbolNames.size > 0) {
-    const symbolMatches = content.match(SYMBOL_REGEX) ?? []
-    const uniqueMatches = new Set(symbolMatches)
-    for (const sym of uniqueMatches) {
-      if (symbolNames.has(sym)) {
-        upsertEdge({
-          projectId,
-          fromType: 'decision',
-          fromLabel: decisionLabelShort,
-          toType: 'symbol',
-          toLabel: sym,
-          type: 'mentions',
-          toSourceKind: 'fast_context',
-          metadata: { evidence: 'mentioned_in_decision' },
-        })
-        edges++
-      }
-    }
-  }
-
-  // 4. Concept extraction (relaxed — no fast_context needed)
+  // 2. Concept extraction
   const conceptResult = extractConceptsHeuristic(projectId, decisionLabelShort, content)
   nodes += conceptResult.nodes
   edges += conceptResult.edges
 
-  // 5. Cross-link: find other decisions that mention the same concepts
+  // 3. Cross-link: find other decisions that mention the same concepts
   for (const concept of conceptResult.concepts) {
     // Find existing concept node
     const conceptNode = db.prepare(
@@ -220,8 +122,6 @@ export function extractFromDecisionHeuristic(params: {
   return { nodes, edges }
 }
 
-// ─── HEURISTIC: concept extraction (relaxed, no fast_context needed) ──────────
-
 /**
  * Known technology/concept terms for heuristic extraction.
  * If any of these appear in text, a concept node is created.
@@ -246,7 +146,6 @@ const TECH_TERMS = new Set([
  * - Finds known tech terms (case-sensitive match from TECH_TERMS)
  * - Finds CamelCase words > 5 chars (potential concepts)
  * Creates concept nodes + mentions edges from the source decision.
- * Does NOT require fast_context — relaxed matching.
  */
 function extractConceptsHeuristic(
   projectId: string,
@@ -293,218 +192,6 @@ function extractConceptsHeuristic(
   return { nodes, edges, concepts: conceptList }
 }
 
-/**
- * Синхронизировать узлы/рёбра из fast_context_index в graph.
- * - files → file nodes
- * - symbols → symbol nodes + DEFINED_IN edges (file → symbol)
- * - imports → IMPORTS edges (file → file)
- * - references → CALLS edges (symbol → symbol) — best-effort резолвинг по name
- *
- * Используется при full rebuild и при incremental reindex.
- * Удаляет устаревшие file/symbol узлы (source_kind='fast_context'), которых
- * больше нет в fast_context_index.
- *
- * @param entries — опциональный подмножество записей для обработки (incremental).
- *   Если не передан — берутся ВСЕ записи проекта из fast_context_index.
- */
-/** Build basename → filePath map для резолвинга imports.
- *  Строится ОДИН раз на весь проект, передаётся в syncSingleEntry.
- *  Раньше перестраивалось внутри syncSingleEntry для каждого entry → O(N²). */
-export function buildBasenameToPath(allEntries: FastContextEntry[]): Map<string, string> {
-  const basenameToPath = new Map<string, string>()
-  for (const e of allEntries) {
-    const base = e.filePath.split(/[/\\]/).pop() ?? e.filePath
-    const baseNoExt = base.replace(/\.[^.]+$/, '')
-    if (!basenameToPath.has(base)) basenameToPath.set(base, e.filePath)
-    if (!basenameToPath.has(baseNoExt)) basenameToPath.set(baseNoExt, e.filePath)
-  }
-  return basenameToPath
-}
-
-export function syncFromFastContext(
-  projectId: string,
-  entries?: FastContextEntry[],
-): { nodes: number; edges: number } {
-  const allEntries = entries ?? getFastContextEntries(projectId)
-
-  let nodes = 0
-  let edges = 0
-
-  const basenameToPath = buildBasenameToPath(allEntries)
-  for (const entry of allEntries) {
-    const result = syncSingleEntry(projectId, entry, allEntries, basenameToPath)
-    nodes += result.nodes
-    edges += result.edges
-  }
-
-  // Удаляем устаревшие file/symbol узлы (source_kind='fast_context'), которых
-  // больше нет в currentFilePaths. Рёбра удалятся каскадно.
-  // NOTE: это делает graphBuilder, не тут — чтобы избежать рекурсии.
-
-  return { nodes, edges }
-}
-
-/**
- * Синхронизировать ОДНУ запись fast_context в graph (для incremental-обновлений).
- * - file → file node
- * - symbols → symbol nodes + DEFINED_IN edges (file → symbol)
- * - imports → IMPORTS edges (file → file, best-effort по basename)
- * - references → CALLS edges (file → symbol, best-effort по name)
- *
- * @param allEntries — полный список записей проекта. Нужен для резолвинга
- *   imports/references в полном контексте (при incremental-синке changed файлов).
- * @param basenameToPath — пред-построенный Map basename→filePath (O(1) lookup).
- *   Если не передан — строится на месте (медленно, O(N) на каждый entry).
- */
-export function syncSingleEntry(
-  projectId: string,
-  entry: FastContextEntry,
-  allEntries: FastContextEntry[],
-  basenameToPath?: Map<string, string>,
-): { nodes: number; edges: number } {
-  // Documentation/config artifacts participate in fast-context retrieval but
-  // should not add synthetic headings/keys to the code dependency graph.
-  if (entry.lang === 'markdown' || entry.lang === 'config') return { nodes: 0, edges: 0 }
-
-  let nodes = 0
-  let edges = 0
-
-  const basename = entry.filePath.split(/[/\\]/).pop() ?? entry.filePath
-
-  // Build basename → filePath map для резолвинга imports (если не передан).
-  const bmap = basenameToPath ?? buildBasenameToPath(allEntries)
-
-  // File node
-  upsertNode({
-    projectId,
-    type: 'file',
-    label: basename,
-    sourceKind: 'fast_context',
-    sourceId: entry.filePath,
-    metadata: {
-      path: entry.filePath,
-      lang: entry.lang,
-      rankedScore: entry.rankedScore,
-    },
-    weightBoost: Math.max(0.5, entry.rankedScore / 10),
-  })
-  nodes++
-
-  // Symbols
-  if (entry.symbolsJson) {
-    try {
-      const symbols = JSON.parse(entry.symbolsJson) as FileSymbols
-      for (const def of symbols.definitions) {
-        if (!def.name || def.name.length < 2) continue
-        upsertNode({
-          projectId,
-          type: 'symbol',
-          label: def.name,
-          sourceKind: 'fast_context',
-          sourceId: `${entry.filePath}:${def.lineStart}`,
-          metadata: {
-            file: entry.filePath,
-            kind: def.kind,
-            lineStart: def.lineStart,
-            lineEnd: def.lineEnd,
-            parentName: def.parentName,
-          },
-        })
-        nodes++
-
-        // Edge: file DEFINED_IN symbol (точнее: symbol DEFINED_IN file)
-        upsertEdge({
-          projectId,
-          fromType: 'symbol',
-          fromLabel: def.name,
-          toType: 'file',
-          toLabel: basename,
-          type: 'implemented_in',
-          fromSourceKind: 'fast_context',
-          toSourceKind: 'fast_context',
-          fromSourceId: `${entry.filePath}:${def.lineStart}`,
-          toSourceId: entry.filePath,
-        })
-        edges++
-      }
-
-      // Imports → IMPORTS edges (file → file, proper resolution)
-      for (const imp of symbols.imports ?? []) {
-        // Извлекаем путь из import строки: from '...', require('...')
-        const pathMatch = imp.match(/['"]([^'"]+)['"]/)
-        if (!pathMatch) continue
-        const importPath = pathMatch[1]
-
-        // Резолвинг: пробуем несколько стратегий
-        // 1. Извлекаем basename из import path
-        const rawBase = importPath.split('/').pop() ?? importPath
-        // Убираем leading @ ~ . /
-        const cleanBase = rawBase.replace(/^[@~.]/, '').replace(/^\//, '')
-        // 2. Пробуем с расширением и без
-        const candidates = [cleanBase, cleanBase.replace(/\.[^.]+$/, '')]
-        let resolvedPath: string | null = null
-        for (const c of candidates) {
-          const found = bmap.get(c)
-          if (found && found !== entry.filePath) {
-            resolvedPath = found
-            break
-          }
-        }
-        // 3. Fallback: старый метод — filename with extension в import string
-        if (!resolvedPath) {
-          const importMatch = imp.match(/([\w-]+\.[a-z]{1,5})\b/i)
-          if (importMatch) {
-            const importedBasename = importMatch[1]
-            if (importedBasename !== basename) {
-              const found = bmap.get(importedBasename)
-              if (found && found !== entry.filePath) resolvedPath = found
-            }
-          }
-        }
-
-        if (resolvedPath) {
-          const targetBase = resolvedPath.split(/[/\\]/).pop() ?? resolvedPath
-          upsertEdge({
-            projectId,
-            fromType: 'file',
-            fromLabel: basename,
-            toType: 'file',
-            toLabel: targetBase,
-            type: 'imports',
-            fromSourceKind: 'fast_context',
-            fromSourceId: entry.filePath,
-            toSourceKind: 'fast_context',
-            toSourceId: resolvedPath,
-            metadata: { raw_import: imp },
-          })
-          edges++
-        }
-      }
-
-      // References → CALLS edges (file → symbol, best-effort по name)
-      for (const ref of symbols.references ?? []) {
-        if (ref.length < 4) continue
-        // Проверяем, есть ли такой symbol в индексе (best-effort)
-        // Не создаём узел — upsertEdge создаст если нужно
-        upsertEdge({
-          projectId,
-          fromType: 'file',
-          fromLabel: basename,
-          toType: 'symbol',
-          toLabel: ref,
-          type: 'calls',
-          fromSourceKind: 'fast_context',
-          fromSourceId: entry.filePath,
-          metadata: { reference: ref },
-        })
-        edges++
-      }
-    } catch { /* skip corrupted symbolsJson */ }
-  }
-
-  return { nodes, edges }
-}
-
 // ─── LLM: extract concepts & relations from conversation ─────────────────────
 
 const GRAPH_EXTRACT_SYSTEM_PROMPT = `You are an entity and relationship extractor for a project knowledge graph.
@@ -549,7 +236,7 @@ export async function extractFromConversationLLM(
     return { extraction: { nodes: [], edges: [] } }
   }
 
-  const aiClient = new AIClient(store)
+  const aiClient = new AIClient(store, { chatId: params.chatId, source: 'memory_graph' })
   const prompt = `Extract entities and relationships for the knowledge graph from the dialogue summary:
 
 ${params.summary.slice(0, 4000)}
@@ -565,7 +252,7 @@ Return JSON with nodes and edges.`
         onDone: () => {},
         onError: () => {},
       },
-      'fastContext',
+      'memory',
       GRAPH_EXTRACT_SYSTEM_PROMPT,
       undefined,
       0.1,

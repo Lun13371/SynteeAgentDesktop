@@ -1,4 +1,5 @@
 import { getDB } from './handle'
+import type { SubagentOverviewItem } from '../../shared/types/subagentOverview'
 
 /**
  * Персистентное хранилище записей суб-агентов.
@@ -105,6 +106,13 @@ export function saveSubagent(rec: SubagentRow): void {
 export function loadAllSubagents(): SubagentRow[] {
   const rows = getDB().prepare(`SELECT ${COLS} FROM subagents ORDER BY created_at ASC`).all() as SavedRow[]
   return rows.map(parseRow)
+}
+
+export function loadSubagentOverview(chatId: string): SubagentOverviewItem[] {
+  return getDB().prepare(`
+    SELECT id, task, status, created_at AS createdAt, finished_at AS finishedAt, role
+    FROM subagents WHERE chat_id = ?
+  `).all(chatId) as SubagentOverviewItem[]
 }
 
 export function deleteSubagentsByChat(chatId: string): void {

@@ -1,29 +1,33 @@
 import { useState, useEffect, useRef } from 'react'
 import { IPC_EVENTS } from '@shared/constants'
+import {
+  contextPct, contextStatus, estimateDraftTokens,
+  type ContextUsageBreakdown, type ContextUsagePayload, type ContextUsageSource,
+} from '@shared/contextUsage'
 
 /**
  * Контекст-информация для ContextRing.
- * Формируется из push-событий context:usage (реальные/оценочные данные от main)
- * + локальная надбавка за текущий ввод (для live-обновления при печати).
+ *
+ * Источник — push-события `context:usage` из main. Арифметика (pct/status)
+ * и форма payload живут в `@shared/contextUsage`: раньше каждый эмиттер считал
+ * процент и пороги сам, а renderer дублировал их ещё раз другими числами
+ * (warning > 80 / critical > 95 против 60/85 в main) — кольцо и панель
+ * показывали разное состояние для одного и того же значения.
  */
 export interface ContextInfo {
-  estimated: number         // всего токенов (история + system + tools + input)
+  /** Токенов в ОДНОМ запросе (не сумма за ход) + текущий черновик. */
+  estimated: number
   limit: number
   percent: number
-  source: 'real' | 'estimate'
-  breakdown: {
-    history: number
-    system: number
-    tools: number
-    current: number
-    toolResults?: number
-    completionTokens?: number
-    cacheReadTokens?: number
-    cacheWriteTokens?: number
-  }
+  source: ContextUsageSource
+  breakdown: ContextUsageBreakdown
   sessionCostCents: number | null
   sessionRequests: number
-  // Поля для совместимости с ContextRing.tsx (legacy naming)
+  sessionUnpricedRequests: number
+  lastRequestCostCents: number | null
+  sessionIncludesAuxiliary: boolean
+  accountingStartedAt?: number | null
+  // Поля для ContextRing (легаси-имена, читаются панелью)
   total: number
   modelId: string
   warning: boolean
@@ -53,35 +57,10 @@ interface UseContextCounterOptions {
   isRunning?: boolean
 }
 
-interface UsagePush {
-  chatId?: string
-  pct: number
-  estimated: number
-  limit: number
-  status: 'ok' | 'warn' | 'critical'
-  source?: 'real' | 'estimate'
-  compressed?: boolean
-  breakdown?: {
-    history: number
-    system: number
-    tools: number
-    current: number
-    toolResults?: number
-    completionTokens?: number
-    real?: boolean
-    cacheReadTokens?: number
-    cacheWriteTokens?: number
-  }
-  sessionCostCents?: number | null
-  sessionRequests?: number
-  pricing?: { inputPerM: number; outputPerM: number } | null
-  estimatedCostCents?: number | null
-  providerId?: string
-  modelId?: string
-  // Fix 6: метаданные для ContextRing (раньше захардкожены в 0)
-  historyMessages?: number
-  toolCallsCount?: number
-}
+/** Стоимость приходит отдельным потоком (`context:cost`) — не путать с контекстом. */
+type CostFields = Pick<ContextUsagePayload,
+  'sessionCostCents' | 'sessionRequests' | 'sessionUnpricedRequests'
+  | 'lastRequestCostCents' | 'sessionIncludesAuxiliary' | 'accountingStartedAt'>
 
 export function useContextCounter({
   chatId,
@@ -91,42 +70,62 @@ export function useContextCounter({
   isRunning = false,
 }: UseContextCounterOptions) {
   const [info, setInfo] = useState<ContextInfo | null>(null)
-  const lastPushRef = useRef<UsagePush | null>(null)
+  const lastPushRef = useRef<ContextUsagePayload | null>(null)
   const inputTokensRef = useRef(0)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  // Phase 4: real-priority — после первого real usage храним его и не
-  // перетираем estimate'ом context:calculate. Как у opencode: real
-  // usage — источник истины после первого ответа модели.
-  const lastRealRef = useRef<UsagePush | null>(null)
-  const pricingRef = useRef<UsagePush['pricing']>(null)
+  const pricingRef = useRef<ContextUsagePayload['pricing']>(null)
+  // Costs have a separate stream: auxiliary requests must never replace
+  // the main model's context usage, and later estimates must retain totals.
+  const lastCostRef = useRef<Partial<CostFields> | null>(null)
   const isRunningRef = useRef(isRunning)
   useEffect(() => { isRunningRef.current = isRunning }, [isRunning])
 
   // Подписка на push-события context:usage из main (заменяет polling context:calculate)
   useEffect(() => {
     if (!enabled) return
-    const handler = (data: UsagePush) => {
-      // Fix 6: игнорируем push от другого чата (защита от race-condition
-      // при быстрой смене чатов A→B→C, когда ответ от A приходит позже).
-      if (data.chatId && chatId && data.chatId !== chatId) return
-      lastPushRef.current = data
+    const handler = (data: ContextUsagePayload) => {
+      // Строгая привязка к чату. Раньше chatId в payload отсутствовал вовсе,
+      // из-за чего фильтр не срабатывал никогда: сайд-чаты, дочерние чаты и
+      // сабагенты писали свои цифры в кольцо открытого чата («странно между
+      // сообщениями»). Теперь все эмиттеры обязаны его передавать.
+      if (!data.chatId || data.chatId !== chatId) return
+      const merged: ContextUsagePayload = { ...data, ...lastCostRef.current }
+      lastPushRef.current = merged
       if (data.pricing !== undefined) pricingRef.current = data.pricing
-      // Phase 4: real-priority — real usage от провайдера храним отдельно;
-      // estimate от context:calculate игнорируем, если уже есть real.
-      if (data.source === 'real') {
-        lastRealRef.current = data
-      } else if (lastRealRef.current) {
-        // Уже есть real snapshot для этого чата — estimate не перетирает его
-        // (как в opencode: real — источник истины после первого ответа).
-        return
-      }
-      setInfo(buildContextInfo(data, inputTokensRef.current, modelId, isRunningRef.current, pricingRef.current))
+      // Последнее измерение побеждает — и real, и estimate. Каждый раунд
+      // реально меняет prompt (tool-результаты, новый ответ), поэтому «real
+      // навсегда до компакции» показывал цифру прошлого запроса. Честность
+      // оценки обеспечивают калибровка (usageTracker) и единая формула.
+      setInfo(buildContextInfo(merged, inputTokensRef.current, modelId, isRunningRef.current, pricingRef.current))
     }
     const off = window.syntee.on(IPC_EVENTS.CONTEXT_USAGE, handler as (...args: unknown[]) => void)
-    return off
+    return () => { off() }
   }, [enabled, modelId, chatId])
 
-  // Fix 6: сброс при смене чата + запросить свежий расчёт контекста из main.
+  useEffect(() => {
+    if (!enabled || !chatId) return
+    const handler = (value: unknown) => {
+      const event = value as Partial<ContextUsagePayload>
+      if (event.chatId !== chatId) return
+      const cost: Partial<CostFields> = {
+        sessionCostCents: event.sessionCostCents,
+        sessionRequests: event.sessionRequests,
+        sessionUnpricedRequests: event.sessionUnpricedRequests,
+        lastRequestCostCents: event.lastRequestCostCents,
+        sessionIncludesAuxiliary: event.sessionIncludesAuxiliary,
+        accountingStartedAt: event.accountingStartedAt,
+      }
+      lastCostRef.current = cost
+      const base = lastPushRef.current
+      if (!base) return
+      lastPushRef.current = { ...base, ...cost }
+      setInfo(buildContextInfo(lastPushRef.current, inputTokensRef.current, modelId, isRunningRef.current, pricingRef.current))
+    }
+    const off = window.syntee.on('context:cost', handler)
+    return () => { off() }
+  }, [chatId, enabled, modelId])
+
+  // Сброс при смене чата + запросить свежий расчёт контекста из main.
   // Без этого info висит пустым (или показывает данные предыдущего чата),
   // пока пользователь не отправит первое сообщение — main эмитит CONTEXT_USAGE
   // только в chat:send.
@@ -134,49 +133,22 @@ export function useContextCounter({
     if (!enabled || !chatId) return
     setInfo(null)
     lastPushRef.current = null
-    lastRealRef.current = null
     pricingRef.current = null
+    lastCostRef.current = null
     inputTokensRef.current = 0
     // Просим main пересчитать контекст для нового чата — он эмитит CONTEXT_USAGE
     window.syntee.context.calculate(chatId).catch(() => { /* тихо — не критично */ })
   }, [chatId, enabled])
 
-  // Compaction: main эмитит CHAT_COMPACTED после сжатия, затем шлёт свежий
-  // CONTEXT_USAGE с source:'real' на основе пост-сжатого estimate. Но если
-  // по какой-то причине CONTEXT_USAGE не дошёл/пришёл раньше CHAT_COMPACTED,
-  // lastRealRef может держать устаревший real-снапшот (до-сжатия). Сбрасываем
-  // его по факту compaction-события — это разблокирует real-priority gate
-  // для следующего CONTEXT_USAGE (post-compact real или estimate).
-  useEffect(() => {
-    if (!enabled || !chatId) return
-    const handler = (data: unknown) => {
-      const d = data as { chatId?: string }
-      if (d.chatId && d.chatId !== chatId) return
-      lastRealRef.current = null
-    }
-    const off = window.syntee.on(IPC_EVENTS.CHAT_COMPACTED, handler as (...args: unknown[]) => void)
-    return off
-  }, [enabled, chatId])
-
-  // Live-обновление при печати — лёгкая эвристика в renderer (без IPC).
-  // Раньше каждый debounce 500мс делал IPC round-trip + tiktoken-encode в
-  // main-процессе. Для длинных черновиков это тяжелый encode на каждый debounce.
-  // Теперь: text.length / 3.5 ≈ cl100k_base для текста — визуально кольцо
-  // контекста неотличимо, но без IPC-трафика и CPU в main. Точный tiktoken
-  // расчёт выполняется только при отправке сообщения (chat:send).
+  // Live-обновление при печати — эвристика в renderer (без IPC и tiktoken).
   useEffect(() => {
     if (!enabled) return
     if (debounceRef.current) clearTimeout(debounceRef.current)
     debounceRef.current = setTimeout(() => {
-      // Быстрая оценка без IPC: ~3.5 символа на токен (cl100k_base для текста)
-      const quickEstimate = Math.ceil(currentInput.length / 3.5)
-      inputTokensRef.current = quickEstimate
-      // Покрываем real (если есть) и последний estimate. Для real во время
-      // run'а live-typing НЕ добавляем (isRunning gate) — токены текущего
-      // ввода станут историей только в следующем раунде.
-      const base = lastRealRef.current ?? lastPushRef.current
+      inputTokensRef.current = estimateDraftTokens(currentInput)
+      const base = lastPushRef.current
       if (base) {
-        setInfo(buildContextInfo(base, quickEstimate, modelId, isRunningRef.current, pricingRef.current))
+        setInfo(buildContextInfo(base, inputTokensRef.current, modelId, isRunningRef.current, pricingRef.current))
       }
     }, 500)
     return () => {
@@ -188,44 +160,50 @@ export function useContextCounter({
 }
 
 function buildContextInfo(
-  push: UsagePush,
+  push: ContextUsagePayload,
   inputTokens: number,
   modelId: string,
   isRunning = false,
-  fallbackPricing: UsagePush['pricing'] = null,
+  fallbackPricing: ContextUsagePayload['pricing'] = null,
 ): ContextInfo {
   const breakdown = push.breakdown ?? { history: 0, system: 0, tools: 0, current: 0 }
   // Добавляем токены текущего ввода к estimate. При real usage во время
   // активного run'а (isRunning) НЕ добавляем — реальный promptTokens уже
   // содержит всё отправленное, а текущий ввод относится к СЛЕДУЮЩЕМУ
-  // сообщению и будет учтён в следующем onContextCounted. Это убирает
-  // прыжки: real показывал X, пользователь печатал → кольцо ползло вверх,
-  // потом onContextCounted возвращал обратно.
+  // сообщению и будет учтён в следующем замере. Это убирает прыжки: real
+  // показывал X, пользователь печатал → кольцо ползло вверх, потом замер
+  // возвращал обратно.
   const addLive = !(push.source === 'real' && isRunning)
   const currentInputTokens = addLive ? Math.max(0, inputTokens - (breakdown.current ?? 0)) : 0
   const total = push.estimated + currentInputTokens
-  const percent = push.limit > 0 ? Math.min(100, (total / push.limit) * 100) : push.pct
+  const percent = push.limit > 0 ? Math.min(100, (total / push.limit) * 100) : 0
+  // Пороги — те же, что в main (shared/contextUsage), а не «>80/>95».
+  const status = contextStatus(contextPct(total, push.limit))
 
   return {
     estimated: total,
     limit: push.limit,
     percent,
-    source: push.source ?? (breakdown.real ? 'real' : 'estimate'),
+    source: push.source,
     breakdown,
     sessionCostCents: push.sessionCostCents ?? null,
     sessionRequests: push.sessionRequests ?? 0,
+    sessionUnpricedRequests: push.sessionUnpricedRequests ?? 0,
+    lastRequestCostCents: push.lastRequestCostCents ?? null,
+    sessionIncludesAuxiliary: push.sessionIncludesAuxiliary ?? false,
+    accountingStartedAt: push.accountingStartedAt,
     // Legacy поля для ContextRing
     total,
     modelId,
-    warning: percent > 80,
-    critical: percent > 95,
+    warning: status !== 'ok',
+    critical: status === 'critical',
     systemPrompt: breakdown.system,
     history: breakdown.history,
     historyMessages: push.historyMessages ?? 0,
     toolCallsTokens: breakdown.tools,
     toolCallsCount: push.toolCallsCount ?? 0,
     currentInput: inputTokens,
-    reserved: 2000,
+    reserved: 0,
     pricing: push.pricing ?? fallbackPricing ?? null,
     estimatedCostCents: push.estimatedCostCents ?? null,
     compressed: push.compressed,

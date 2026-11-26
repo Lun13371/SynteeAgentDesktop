@@ -142,6 +142,12 @@ const goalEvaluatorMock = {
   ...evaluator,
   makeGoalJudge: () => async () => verdictQueue.shift() ?? { verdict: 'not_met', reason: 'default' },
 }
+const assistants = load('src/shared/assistants.ts')
+const tokenHelpers = {
+  estimateTokens: text => Math.ceil(text.length / 4),
+  estimateTokensCalibrated: text => Math.ceil(text.length / 4),
+  computeRequestContextSnapshot: () => ({ estimated: 0, breakdown: {} }),
+}
 const { Agent } = load('src/core/agent/Agent.ts', {
   '../ai/AIClient': { AIClient: class {} }, '../ai/visionSupport': { agentModelSupportsVision: () => false },
   '../ai/toolImageHistory': {
@@ -153,12 +159,19 @@ const { Agent } = load('src/core/agent/Agent.ts', {
   './injectionGuard': { isScannedTool: () => false, isMutatingTool: () => false },
   '../context/structuredMemory': empty, '../tools': tools,
   '../context/contextManager': { getContextSettings: () => ({}), getModelContextWindow: () => 128000, getHardLimitTokens: () => 120000, getHardLimitTargetTokens: () => 100000 },
-  '../tokens/usageTracker': { computeContextSnapshot: () => ({ promptTokens: 0, breakdown: {} }) },
-  '../ai/shared': { MAX_TOOL_TIMEOUT_MS: 100 }, '../../shared/modes': empty, '../../shared/subagent-roles': empty,
+  '../tokens/usageTracker': tokenHelpers,
+  '../../shared/assistants': assistants,
+  '../context/constitution': load('src/core/context/constitution.ts', { '../../shared/assistants': assistants }),
+  '../context/janitor': load('src/core/context/janitor.ts', { '../../shared/assistants': assistants, '../tokens/usageTracker': tokenHelpers }),
+  '../ai/shared': { MAX_TOOL_TIMEOUT_MS: 100 }, '../../shared/subagent-roles': empty,
   '../logger': { log() {} }, './utils': { FALLBACK_SYSTEM_PROMPT: 'test', normalizeToolName: x => x, isSequentialTool: () => true, dropOldestRoundsIfOverflow: x => x },
   './validateArgs': empty, './toolDispatcher': { ToolDispatcher: class { maskSecretValuesInText(text) { return text } } }, jsonrepair: { jsonrepair: x => x },
   '../../shared/toolSettings': { getToolSettings: () => ({}), filterToolSchemas: x => x, isToolDisabled: () => false },
-  '../prompts/buildSystemPrompt': { sanitizeToolInstructions: x => x },
+  '../prompts/buildSystemPrompt': {
+    sanitizeToolInstructions: x => x,
+    // Реальный сплиттер: без него Agent не соберёт сообщения (§prompt-cache).
+    splitSystemPromptForCache: p => ({ staticPart: p || '', dynamicPart: '' }),
+  },
   './goalRuntime': { GoalRuntime },
   './goalEvaluator': goalEvaluatorMock,
 }, anyStub())

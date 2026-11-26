@@ -11,7 +11,7 @@ export interface ToggleProps {
 }
 
 // Единый toggle-switch для всех настроек. Раньше копия этой логики
-// жила в SettingsPage / ContextSettingsTab / IndexingSettingsTab —
+// жила в SettingsPage / ContextSettingsTab —
 // теперь один источник правды. CSS-классы (.settings-toggle,
 // .settings-toggle-thumb) определены в SettingsPage.css глобально.
 // Thumb позиция (x) анимируется framer-motion — CSS transform не трогать.

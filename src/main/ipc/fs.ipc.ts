@@ -12,7 +12,7 @@ const VISIBLE_DOTFILES = new Set([
   '.cursorrules', '.windsurfrules', '.clinerules',
 ])
 
-const DEFAULT_IGNORE_DIRS = new Set(['node_modules', 'dist', 'out', '.git', '__pycache__', '.venv', 'build', '.next', 'coverage', '.cache'])
+const DEFAULT_IGNORE_DIRS = new Set(['node_modules', 'dist', 'out', '.git', '__pycache__', '.venv', 'build', '.next', 'coverage', '.cache', '.turbo', '.parcel-cache', 'target', '.gradle', 'venv', '.pytest_cache', '.mypy_cache', '.ruff_cache', '.tox', '.vite', 'obj', 'release', 'storybook-static', '.docusaurus', 'cmake-build-debug', 'cmake-build-release'])
 
 export interface FsEntry {
   name: string
@@ -231,7 +231,7 @@ export function registerFsIPC(): void {
   // ── fs:writeFile — запись файла (атомарная: tmp + rename) ──────────
   // Используется FileEditorPane (Monaco) для сохранения правок.
   // Атомарная запись через tmp+rename предотвращает повреждение файла
-  // при краше/закрытии во время записи (паттерн из LauncherBridge).
+  // при краше/закрытии во время записи (tmp + rename).
   // После записи эмитит 'file:changed' событие в renderer — для live-
   // обновления открытых файловых табов.
   ipcMain.handle('fs:writeFile', async (_e, params: {

@@ -1,14 +1,20 @@
-import { BrowserWindow, ipcMain } from 'electron'
+import { app, BrowserWindow, ipcMain } from 'electron'
 import { Worker } from 'worker_threads'
 import { attachBrowserWorkerBroker, disposeBrowserWorkerBroker } from '../../core/agent/browserWorkerBroker'
 import { join } from 'path'
 import type Store from 'electron-store'
 import type { ChatMode } from '../../shared/types'
 import { getToolSchemas } from '../../core/tools'
+import { log } from '../../core/logger'
+import { projectMapQuery } from '../../core/tools/projectMap'
 import { getFileCacheSnapshot, mergeFileCache } from '../../core/context/fileReadCache'
 import { getAccessToken } from '../services/tokenStore'
 import { getGatewayAuthToken, forceRefreshGatewayToken } from '../services/gatewayClient'
+import { getCodexAccessToken, getCodexAccountId, forceRefreshCodexToken } from '../services/codexAuth'
 import { getGatewayModelsCache } from '../../core/tokens/gatewayModelsCache'
+import { exportCalibration } from '../../core/tokens/usageTracker'
+import { acceptAIUsage } from '../services/usageLedger'
+import type { AIRequestUsage } from '../../core/ai/requestUsage'
 import {
   createSubagentWorktree,
   mergeWorktreeBack,
@@ -16,11 +22,15 @@ import {
   cleanupWorktree,
   hasWorktreeChanges,
   cleanupAbandonedWorktree,
+  stripIgnoredHeavyDirs,
   type WorktreeInfo,
 } from './WorktreeIsolation'
-import { saveSubagent, loadAllSubagents, deleteSubagentsByChat, type SubagentRow } from '../../core/db/subagents'
+import { sweepStaleWorktrees } from './WorktreeGC'
+import { saveSubagent, loadAllSubagents, loadSubagentOverview, deleteSubagentsByChat, type SubagentRow } from '../../core/db/subagents'
+import type { SubagentOverviewItem } from '../../shared/types/subagentOverview'
 import { getChatBrowserMode } from '../../core/db/chats'
-import { getSubagentRole } from '../../shared/subagent-roles'
+import { getSubagentRole, buildSubagentSystemPrompt } from '../../shared/subagent-roles'
+import { buildSubagentMapGuidance } from '../../shared/codeNavigationGuidance'
 import { stripFinalMarkers } from '../../shared/finalAnswer'
 import { activeRuns, confirmCallbacks, questionCallbacks } from '../ipc/chatShared'
 import { getNotificationManager } from './NotificationManager'
@@ -28,6 +38,8 @@ import { searchAllSources, saveMemoryItem, type SaveMemoryInput } from '../../co
 import { bumpMemoryHit } from '../../core/memory/store/utils'
 import { getMemorySettings, getGlobalMemoryEnabled } from '../../core/memory/globalMemorySettings'
 import { persistApprovalGrant } from '../services/approvalAllowlist'
+import { getAssistantsSettings } from '../assistants/bridge'
+import { getBriefingContinuityWithin, noteBriefingChanges } from '../assistants/gitBriefingCache'
 
 export type AgentStatus = 'pending' | 'running' | 'done' | 'error' | 'cancelled'
 
@@ -155,8 +167,6 @@ export interface SubagentContext {
   mode?: ChatMode
   workdir?: string
   projectId?: string
-  fastContextDbPath?: string
-  fastContextWasmDir?: string
   /** Запрошенный режим изоляции (default 'auto'). */
   isolation?: IsolationMode
 }
@@ -198,6 +208,12 @@ class AgentManager {
   init(store: Store) {
     this.store = store
     this.loadPersisted()
+    // §worktree-gc — фоновой свип stale/осиротевших worktree. Строго после
+    // loadPersisted(): он ремонтирует running/pending → cancelled, и всё, что
+    // осталось в userData/worktrees, становится keep-нутым или сиротой.
+    void sweepStaleWorktrees().catch((e) => {
+      console.warn(`[WorktreeGC] sweep failed: ${e?.message ?? e}`)
+    })
   }
 
   /**
@@ -371,6 +387,14 @@ class AgentManager {
     return Array.from(this.agents.values()).sort((a, b) => a.createdAt - b.createdAt)
   }
 
+  getOverview(chatId: string): SubagentOverviewItem[] {
+    const items = new Map(loadSubagentOverview(chatId).map(item => [item.id, item]))
+    for (const { id, chatId: owner, task, status, createdAt, finishedAt, role } of this.agents.values()) {
+      if (owner === chatId) items.set(id, { id, task, status, createdAt, finishedAt, role })
+    }
+    return [...items.values()]
+  }
+
   get(id: string): AgentRecord | undefined {
     return this.agents.get(id)
   }
@@ -461,6 +485,9 @@ class AgentManager {
     try {
       const hasChanges = await hasWorktreeChanges(record.worktreeInfo.worktreePath)
       if (hasChanges) {
+        // §worktree-gc — сразу сносим build-артефакты: сохранённый для разбора
+        // worktree должен весить мегабайты правок, а не гигабайты target/node_modules.
+        await stripIgnoredHeavyDirs(record.worktreeInfo.worktreePath)
         record.summary += `\n\n[Суб-агент завершился с ошибкой, но успел изменить файлы — правки сохранены в worktree: ${record.worktreeInfo.worktreePath}]`
       } else {
         await discardWorktree(record.workdir, record.worktreeInfo)
@@ -477,7 +504,6 @@ class AgentManager {
     mode?: ChatMode
     storeData: Record<string, unknown>
     context?: SubagentContext
-    approvalMode?: 'auto' | 'ask' | 'full'  // §1.10 — override глобального режима
     isolation?: IsolationMode  // §изоляция — override режима worktree
     role?: string  // §roles — специализация суб-агента (researcher/editor/...)
     onFileSnapshot?: (snapshots: Array<{ path: string; contentBefore: string | null }>) => void
@@ -550,14 +576,13 @@ class AgentManager {
     this.persist(record)
     this.broadcast('agent:update', record)
 
-    return this._runWorker(record, subStoreData, opts.context, opts.approvalMode, opts.onFileSnapshot)
+    return this._runWorker(record, subStoreData, opts.context, opts.onFileSnapshot)
   }
 
   private async _runWorker(
     record: AgentRecord,
     storeData: Record<string, unknown>,
     context?: SubagentContext,
-    approvalModeOverride?: 'auto' | 'ask' | 'full',
     onFileSnapshot?: (snapshots: Array<{ path: string; contentBefore: string | null }>) => void,
   ): Promise<{ summary: string; error?: string }> {
     // §roles — получаем roleDef из record.role (roleDef из spawn здесь не виден).
@@ -613,6 +638,20 @@ class AgentManager {
     // Токен для воркера — с авто-refresh (сам воркер рефрешить не может:
     // electron-store/tokenStore в worker_threads недоступны).
     const gatewayToken = await getGatewayAuthToken().catch(() => getAccessToken())
+    // ChatGPT-подписка (Codex): воркер не умеет читать codexAuth — кладём снапшот,
+    // обновление идёт round-trip'ом 'codex_token_refresh'.
+    const codexToken = await getCodexAccessToken().catch(() => null)
+    const codexAccountId = getCodexAccountId()
+    // Мини-агенты: глобальный снапшот настроек — воркер применяет его ДО
+    // первого раунда (иначе глобальный Off не действовал бы до сообщения
+    // 'assistants_settings', а для суб-агентов оно не приходит вовсе).
+    // Суб-агент сохраняет детерминированный janitor, LLM-роли гасит сам воркер.
+    const assistantsSettingsSnapshot = getAssistantsSettings()
+    // Briefing continuity (git) — снапшот из main-кеша, воркер git не запускает.
+    // Within(...) — с бюджетом ожидания: старт суб-агента не блокируется на git.
+    const briefingContinuity = assistantsSettingsSnapshot.enabled && assistantsSettingsSnapshot.briefingEnabled
+      ? await getBriefingContinuityWithin(effectiveWorkdir)
+      : ''
     if (record.status === 'cancelled') return { summary: '', error: 'Суб-агент отменен пользователем' }
 
     return new Promise((resolvePromise) => {
@@ -658,16 +697,26 @@ class AgentManager {
             // (gateway:fetchModels только в main), а getModelContextWindow
             // для 'syntee-gateway' берёт contextWindow из этого кэша.
             gatewayModels: getGatewayModelsCache(),
+            // Калибровка оценки контекста (usageTracker): воркер не имеет
+            // доступа к стору, коэффициенты передаём снапшотом.
+            contextCalibration: exportCalibration(),
+            catalogCachePath: join(app.getPath('userData'), 'modelsCatalog.json'),
             gatewayToken,
+            // ChatGPT-подписка (Codex): токен и account id — снапшотом из main,
+            // refresh идёт round-trip'ом 'codex_token_refresh' (см. обработчик ниже).
+            codexToken,
+            codexAccountId,
             fileCacheSnapshot: getFileCacheSnapshot(record.chatId),
             workdir: effectiveWorkdir,
             // §worktree — маппинг путей projectRoot → worktreePath (Agent.worktreeMap)
             worktreeMap,
             projectId: context?.projectId,
-            fastContextDbPath: context?.fastContextDbPath,
-            fastContextWasmDir: context?.fastContextWasmDir,
             // Тумблер «Управление браузером» чата — суб-агент наследует.
             browserMode,
+            // Мини-агенты: снапшот настроек (детерминированный janitor у
+            // суб-агента сохраняется, LLM-роли гасит воркер) + briefing git.
+            assistantsSettings: assistantsSettingsSnapshot,
+            briefingContinuity,
           },
           env: process.env,
         })
@@ -716,10 +765,6 @@ class AgentManager {
         approvalMode: 'auto', toolOutputMode: 'normal', enableThinking: false,
         ...((storeData.agentSettings as Record<string, unknown> | undefined) ?? {}),
       }
-      // §1.10 — позволяем суб-агенту иметь свой approval режим
-      if (approvalModeOverride) {
-        agentSettings.approvalMode = approvalModeOverride
-      }
       // §roles — keep sub-agent runs bounded. The previous hard-coded 1024
       // made a delegation potentially run for a very long time. Respect an
       // explicit setting, otherwise use a practical default for one-shot work.
@@ -749,34 +794,22 @@ class AgentManager {
             return roleDef.allowedTools.includes(name)
           })
         : fullSchemas
-      ).filter(s => !NO_NESTED_TOOLS.has((s as { function: { name: string } }).function.name))
+      ).filter(s => !NO_NESTED_TOOLS.has(s.function.name)
+        && (s.function.name !== 'project_map' || !!context?.projectId))
       // §roles — subagentRole для Agent.run() options (defense-in-depth в Agent.ts)
       const subagentRole = record.role
 
-      // Work-режим удалён — всегда Code-формулировка для суб-агентов.
-      const subModeIntro = `Работай только в рамках этой подзадачи.
-Сначала пойми релевантный код и контекст, затем выполни работу.
-
-Ты суб-агент, а не основной агент. Будь эффективным:
-- Делай только то, что нужно для задачи — не исследуй лишнее.
-- Используй минимальное количество tool calls. Не повторяй уже сделанные действия.
-- Как только задача выполнена — сразу давай финальный ответ.`
-      const subModeOutro = `- что найдено или сделано
-- какие файлы важны
-- какие есть риски или следующий шаг
-Не включай рассуждения, только результат.`
-      // §roles — fallback systemPrompt с role injection (когда context?.systemPrompt
-      // не передан, т.е. chat.ipc.ts не сформировал промпт).
-      const fallbackRoleInjection = `\n${roleDef.systemPromptInjection}\n`
-      const fallbackRoleLabel = roleDef.id !== 'implementer' ? ` (${roleDef.nameEn})` : ''
-      const fallbackSystemPrompt = `Ты суб-агент${fallbackRoleLabel}. Твоя задача: ${record.task}
-
-${fallbackRoleInjection}${subModeIntro}
-Финальный ответ дай кратко:
-${subModeOutro}`
+      // §roles — fallback systemPrompt (когда context?.systemPrompt не передан,
+      // т.е. chat.ipc.ts не сформировал промпт). Same builder as the primary path.
+      const fallbackSystemPrompt = buildSubagentSystemPrompt({ role: roleDef, task: record.task })
       // §worktree — добавляем блок с реальной workdir суб-агента (worktree или
       // workdir проекта) к промпту из контекста или fallback.
-      const effectiveSystemPrompt = (context?.systemPrompt ?? fallbackSystemPrompt) + workdirNotice
+      const mapGuidance = buildSubagentMapGuidance({
+        hasProject: !!context?.projectId,
+        hasMapTool: effectiveToolSchemas.some(s => s.function.name === 'project_map'),
+        isolatedWorktree: !!record.worktreeInfo,
+      })
+      const effectiveSystemPrompt = (context?.systemPrompt ?? fallbackSystemPrompt) + workdirNotice + mapGuidance
 
       worker.postMessage({
         chatId: `subagent:${record.id}`,
@@ -799,6 +832,11 @@ ${subModeOutro}`
       })
 
       worker.on('message', (msg: Record<string, unknown>) => {
+        // Usage already incurred belongs to the parent chat, even if cancelled.
+        if (msg.type === 'request_usage') {
+          acceptAIUsage({ ...(msg.event as AIRequestUsage), chatId: record.chatId })
+          return
+        }
         if (record.status !== 'running') return
         switch (msg.type) {
           // Worker поймал 401 от gateway и просит свежий JWT (сам рефрешить
@@ -807,6 +845,14 @@ ${subModeOutro}`
           case 'gateway_token_refresh': {
             const replyId = msg.replyId as string
             forceRefreshGatewayToken()
+              .then((token) => worker.postMessage({ replyId, token }))
+              .catch(() => worker.postMessage({ replyId, token: null }))
+            break
+          }
+          // Суб-агент поймал 401 от бэкенда ChatGPT — просит свежий Codex-токен.
+          case 'codex_token_refresh': {
+            const replyId = msg.replyId as string
+            forceRefreshCodexToken()
               .then((token) => worker.postMessage({ replyId, token }))
               .catch(() => worker.postMessage({ replyId, token: null }))
             break
@@ -823,6 +869,10 @@ ${subModeOutro}`
               }
               onFileSnapshot?.([normalized])
               if (!onFileSnapshot) this.appendMergedSnapshots(record.chatId, [normalized])
+              // Briefing-continuity кеш: суб-агент правит файлы — следующее
+              // «git status» для этой workdir должно пересчитаться (git сам
+              // о правке не знает, пока файл не попал в его индекс).
+              noteBriefingChanges(effectiveWorkdir, [normalized.path])
             }
             break
           }
@@ -926,9 +976,15 @@ ${subModeOutro}`
                   }
                   if (!mergeResult.worktreeKept) {
                     try { await cleanupWorktree(record.workdir!, record.worktreeInfo!) } catch { /* noop */ }
+                  } else {
+                    // §worktree-gc — keep-нутый worktree (конфликт/ошибка merge):
+                    // build-артефакты данным не являются — сносим сразу, чтобы
+                    // «сохранён для разбора» не весил гигабайты до GC-свипа.
+                    void stripIgnoredHeavyDirs(record.worktreeInfo!.worktreePath).catch(() => {})
                   }
                  } catch (e: any) {
                    record.summary += `\n\n[Необработанная ошибка merge worktree: ${e.message}. Worktree сохранён: ${record.worktreeInfo!.worktreePath}]`
+                   void stripIgnoredHeavyDirs(record.worktreeInfo!.worktreePath).catch(() => {})
                  }
                 this.persistNow(record)
                 this.broadcast('agent:update', record)
@@ -1046,6 +1102,41 @@ resolve({ summary: record.summary, error: record.error })
                 })) })
               } catch (e) {
                 worker.postMessage({ type: 'recall_memory_reply', replyId, success: false, results: [], error: e instanceof Error ? e.message : String(e) })
+              }
+            })()
+            break
+          }
+
+          // project_map runs in main: the worker thread has no initialized DB
+          // (pattern recall_memory). Логика тула — projectMapQuery целиком:
+          // mapStore/mapSemantic/sidecar живут в main-процессе.
+          case 'project_map': {
+            const replyId = msg.replyId as string
+            const rpcStarted = Date.now()
+            log('[project_map] rpc: action=%s project=%s', msg.action, String(msg.projectId ?? '').slice(0, 8))
+            ;(async () => {
+              try {
+                const result = await projectMapQuery(
+                  {
+                    action: msg.action as
+                      | 'search' | 'semantic' | 'callers' | 'callees' | 'file' | 'overview'
+                      | 'god' | 'communities' | 'path' | 'explain' | 'affected',
+                    query: msg.query as string | undefined,
+                    to: msg.to as string | undefined,
+                    path: msg.path as string | undefined,
+                    nodeId: msg.nodeId as string | undefined,
+                    limit: msg.limit as number | undefined,
+                    depth: msg.depth as number | undefined,
+                    relations: msg.relations as Array<'calls' | 'references' | 'imports'> | undefined,
+                    budget: msg.budget as number | undefined,
+                  },
+                  (msg.projectId as string | undefined) ?? undefined,
+                )
+                log('[project_map] rpc done in %dms (success=%s)', Date.now() - rpcStarted, result.success)
+                worker.postMessage({ type: 'project_map_reply', replyId, ...result })
+              } catch (e) {
+                log('[project_map] rpc FAILED in %dms: %s', Date.now() - rpcStarted, e instanceof Error ? e.message : String(e))
+                worker.postMessage({ type: 'project_map_reply', replyId, success: false, output: '', error: e instanceof Error ? e.message : String(e) })
               }
             })()
             break
@@ -1293,6 +1384,26 @@ resolve({ summary: '', error: e.message })
     }
   }
 
+  /**
+   * Останавливает все живые агенты чата, НЕ удаляя записи: они остаются в
+   * истории со статусом 'cancelled' и фиксированным временем.
+   *
+   * Зачем отдельно от terminate() воркера чата: суб-агенты крутятся в
+   * собственных worker_threads AgentManager'а, поэтому убийство воркера
+   * родительского рана их не останавливает — они догорали в фоне после
+   * «Стоп» и попадали в список завершённых как успешно выполненные.
+   */
+  cancelRunningInChat(chatId: string): number {
+    let cancelled = 0
+    for (const [id, record] of [...this.agents]) {
+      if (record.chatId !== chatId) continue
+      if (record.status !== 'running' && record.status !== 'pending') continue
+      this.cancel(id)
+      cancelled++
+    }
+    return cancelled
+  }
+
   clearChat(chatId: string) {
     Array.from(this.agents.entries()).forEach(([id, record]) => {
       if (record.chatId === chatId) {
@@ -1303,6 +1414,7 @@ resolve({ summary: '', error: e.message })
     // FK ON DELETE CASCADE обычно срабатывает при удалении чата, но clearChat
     // может вызываться без удаления чата — подчищаем явно.
     try { deleteSubagentsByChat(chatId) } catch { /* noop */ }
+    this.broadcast('agent:overviewCleared', { chatId })
   }
 }
 

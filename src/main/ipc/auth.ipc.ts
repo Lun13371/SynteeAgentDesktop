@@ -80,14 +80,14 @@ export function registerDeepLinks(getMainWindow: () => BrowserWindow | null): vo
   // otherwise Windows launches `electron.exe <deep-link-url>` and Electron
   // treats the URL as the app entry point → "Unable to find Electron app".
   //
-  // В dev всегда перерегистрируем (могла остаться битая запись без entry
-  // script от предыдущих запусков). В prod — только если ещё не зарегистрирован.
-  if (is.dev && process.argv[1]) {
+  // В Windows dev всегда перерегистрируем, чтобы обновить путь к entry.
+  // В Linux протокол регистрирует установленное приложение через .desktop.
+  if (is.dev && process.platform === 'win32' && process.argv[1]) {
     app.removeAsDefaultProtocolClient(PROTOCOL)
     app.setAsDefaultProtocolClient(PROTOCOL, process.execPath, [
       resolve(process.argv[1]),
     ])
-  } else if (!app.isDefaultProtocolClient(PROTOCOL)) {
+  } else if ((process.platform !== 'linux' || app.isPackaged) && !app.isDefaultProtocolClient(PROTOCOL)) {
     app.setAsDefaultProtocolClient(PROTOCOL)
   }
 
@@ -115,7 +115,7 @@ export function registerDeepLinks(getMainWindow: () => BrowserWindow | null): vo
     handleCallback(url, getMainWindow())
   })
 
-  // Cold start with a deep link (Windows): the URL is in process.argv.
+  // Cold start with a deep link (Windows/Linux): the URL is in process.argv.
   for (const arg of process.argv) {
     if (arg.startsWith(`${PROTOCOL}://`)) {
       // Defer to when main window exists.

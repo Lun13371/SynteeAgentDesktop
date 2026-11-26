@@ -1,24 +1,26 @@
 import OpenAI from 'openai'
 import Anthropic from '@anthropic-ai/sdk'
 import type Store from 'electron-store'
-// СТАТИЧЕСКИЙ импорт: нативный import() не работает внутри V8-байткода
-// (bytenode-лоадер компилирует через vm.Script без importModuleDynamically —
-// "A dynamic import callback was not specified"). require — безопасен.
+// СТАТИЧЕСКИЙ импорт: динамический import() в worker-потоке main-процесса
+// требует importModuleDynamically в vm-контексте и падает с
+// "A dynamic import callback was not specified". require — безопасен.
 import { isMainThread, workerData } from 'worker_threads'
 import { buildReasoningParams, responsesReasoningParam } from '../../shared/reasoningModels'
 import { getGatewayModelsCache } from '../tokens/gatewayModelsCache'
 import { getCatalogModel } from '../tokens/modelCatalog'
 import { getNextApiKey } from '../../shared/roundRobin'
 import { getIdentityHeaders, getOpencodeZenHeaders, isOpencodeProvider } from '../../shared/constants'
-import type { Provider, ModelParams, ReasoningOptionSpec } from '../../shared/types'
+import type { Provider, ModelParams, ReasoningOptionSpec, ModelMeta } from '../../shared/types'
 import { isAnthropicProvider } from './anthropicConverters'
 import { log, sleep, backoffDelay, OVERALL_TIMEOUT_MS, DEFAULT_TEMPERATURE, DEFAULT_MAX_TOKENS, extractReasoningText } from './shared'
 import { chatWithToolsAnthropic } from './anthropicNative'
 import { routeToolImagesToUser, summarizeImagePayload } from './toolImageMessages'
 import { repairToolCallHistory } from './toolCallHistory'
-import { computeContextSnapshot } from '../tokens/usageTracker'
+import { computeContextSnapshot, getModelPriceInfo } from '../tokens/usageTracker'
 import type { ContextCountedInfo } from '../agent/types'
 import { resolveMediaTransport, requestMediaAnalysis, type AuxiliaryMediaInput, type MediaKind } from './mediaSupport'
+import { observeAIRequest, cacheReadTokensOf, type AIUsageContext } from './requestUsage'
+import { randomUUID } from 'node:crypto'
 
 // ── Gateway token holder + refresher (ретрай на 401) ────────────────────────
 // Worker thread не может импортировать gatewayClient/tokenStore (electron-store
@@ -73,6 +75,74 @@ async function refreshGatewayTokenAfter401(): Promise<string | null> {
   }
 }
 
+// ── ChatGPT-подписка (Codex) ───────────────────────────────────────────────
+// API-ключа нет: авторизация идёт OAuth-токеном, который обновляется по exp.
+// В main-процессе токен берётся из codexAuth (с авто-refresh), в worker —
+// из workerData.codexToken (обновлённый override приоритетнее).
+let codexTokenOverride: string | null = null
+let codexTokenRefresher: (() => Promise<string | null>) | null = null
+
+/** Обновить Codex-токен в текущем процессе (после refresh или входа). */
+export function setCodexToken(token: string | null): void {
+  codexTokenOverride = token
+}
+
+/** Зарегистрировать refresher для worker thread (из ai-worker.ts). */
+export function setCodexTokenRefresher(fn: (() => Promise<string | null>) | null): void {
+  codexTokenRefresher = fn
+}
+
+function getWorkerCodexToken(): string | null {
+  return codexTokenOverride
+    ?? ((workerData as Record<string, unknown> | undefined)?.codexToken as string | null)
+}
+
+function getCodexAccountIdFromWorker(): string | null {
+  return (workerData as Record<string, unknown> | undefined)?.codexAccountId as string | null ?? null
+}
+
+/**
+ * Форс-refresh Codex-токена после 401. Main thread — напрямую через codexAuth
+ * (там singleton refreshPromise), worker — round-trip в main через refresher.
+ */
+async function refreshCodexTokenAfter401(): Promise<string | null> {
+  if (!isMainThread) {
+    try {
+      const fresh = (await codexTokenRefresher?.()) ?? null
+      if (fresh) codexTokenOverride = fresh
+      return fresh
+    } catch {
+      return null
+    }
+  }
+  try {
+    const { forceRefreshCodexToken } = await import('../../main/services/codexAuth')
+    const fresh = await forceRefreshCodexToken()
+    if (fresh) codexTokenOverride = fresh
+    return fresh
+  } catch {
+    return null
+  }
+}
+
+/** Маркер в apiKey провайдера: «токен берётся из ChatGPT-авторизации». */
+const CODEX_KEY_MARKER = '__CODEX__'
+
+/**
+ * Заголовки бэкенда ChatGPT для Codex-запросов (всё, кроме Authorization —
+ * его SDK ставит из apiKey). Дублирует codexAuth.getCodexHeaders, но без
+ * зависимостей от electron — чтобы работать и в worker-потоке.
+ */
+function codexHeaders(accountId: string | null): Record<string, string> {
+  const headers: Record<string, string> = {
+    originator: 'codex_cli_rs',
+    'OpenAI-Beta': 'responses=experimental',
+    'session_id': randomUUID().replace(/-/g, ''),
+  }
+  if (accountId) headers['chatgpt-account-id'] = accountId
+  return headers
+}
+
 export interface StreamCallbacks {
   onToken: (token: string) => void
   onDone: (fullText: string) => void
@@ -91,12 +161,45 @@ export interface ChatMessage {
   content: string
 }
 
+/**
+ * §orchestration — явная модель/провайдер/effort для ОДНОГО вызова.
+ *
+ * Нужен фазовому рану: planning/reviewing идут на одной модели, executing — на
+ * другой. Никакого неявного fallback: если providerId задан и недоступен,
+ * chatWithTools бросает ошибку, а не подставляет провайдера роли.
+ */
+export interface ModelOverride {
+  providerId?: string
+  modelId?: string
+  reasoningValue?: string
+}
+
 export class AIClient {
   private client: OpenAI
   private maxRetries = 6
 
-  constructor(private store: Store) {
+  constructor(private store: Store, private usageContext: AIUsageContext = {}) {
     this.client = this.createClient()
+  }
+
+  /** Wrap only SDK request creation; existing streaming/UI callbacks stay intact. */
+  private observeClient<T>(client: T, providerId: string, source: string, anthropic = false): T {
+    // SDK create overloads return APIPromise/Stream; our call sites await them.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const sdk = client as any
+    const wrap = (resource: { create: (...args: unknown[]) => unknown }, api: 'openai' | 'responses' | 'anthropic' | 'embedding'): void => {
+      const original = resource.create.bind(resource)
+      resource.create = (...args: unknown[]) => {
+        const params = args[0] as { model?: string } | undefined
+        return observeAIRequest(() => original(...args) as PromiseLike<unknown>, {
+          providerId, modelId: params?.model ?? '', source,
+          pricing: getModelPriceInfo(providerId, params?.model ?? '', this.store.get('customModels', []) as ModelMeta[]),
+        }, this.usageContext, api)
+      }
+    }
+    if (anthropic) wrap(sdk.messages, 'anthropic')
+    else { wrap(sdk.chat.completions, 'openai'); wrap(sdk.responses, 'responses'); wrap(sdk.embeddings, 'embedding') }
+    return client
   }
 
   private createClient(): OpenAI {
@@ -105,7 +208,7 @@ export class AIClient {
     // мульти-провайдерную систему. Если endpoint пуст, клиент всё равно
     // создаётся (для совместимости), но запросы без назначения упадут.
     const endpoint = (this.store.get('apiEndpoint') as string) || ''
-    return new OpenAI({ apiKey, baseURL: endpoint || undefined, defaultHeaders: this.identityHeaders() })
+    return this.observeClient(new OpenAI({ apiKey, baseURL: endpoint || undefined, defaultHeaders: this.identityHeaders() }), '', 'default')
   }
 
   reload(): void {
@@ -183,10 +286,10 @@ export class AIClient {
     return provider?.id === 'syntee-gateway' || provider?.type === 'syntee-gateway'
   }
 
-  private getModel(type: 'main' | 'fast' | 'fastContext' | 'vision' | 'summary' | 'router' | 'emotion' | 'subagent'): string {
+  private getModel(type: 'main' | 'fast' | 'memory' | 'vision' | 'summary' | 'router' | 'emotion' | 'subagent'): string {
     const defaults: Record<string, string> = {
       main: 'claude-sonnet-4-6', fast: 'mimo-v2.5-free',
-      fastContext: 'inclusionai/ling-3.0-flash:free',
+      memory: 'inclusionai/ling-3.0-flash:free',
       vision: 'gpt-4o', summary: 'claude-haiku-4-5',
       router: 'claude-haiku-4-5', emotion: 'claude-haiku-4-5',
       subagent: '',
@@ -226,6 +329,12 @@ export class AIClient {
       return { provider, apiKey: '__JWT__' }
     }
 
+    // ChatGPT-подписка (Codex): ключа нет — авторизация OAuth-токеном.
+    // Маркер подставится в getClientForRoleAsync вместе с codex-заголовками.
+    if (provider.type === 'openai-codex') {
+      return { provider, apiKey: CODEX_KEY_MARKER }
+    }
+
     // Round-robin: выбираем следующий ключ из списка
     const { key, updatedProviders } = getNextApiKey(providers || [], assignment.providerId)
     if (!key) return null
@@ -234,6 +343,33 @@ export class AIClient {
     this.store.set('providers', updatedProviders)
 
     return { provider, apiKey: key }
+  }
+
+  /**
+   * §orchestration — провайдер, заданный ЯВНО (фазовая модель), без участия
+   * modelAssignments. Возвращает null, если провайдер выключен/без baseUrl/без
+   * ключа: вызывающая сторона обязана бросить ошибку (fallback запрещён).
+   */
+  private getProviderInfoExplicit(providerId: string): { provider: Provider; apiKey: string } | null {
+    const providers = this.store.get('providers') as Provider[] | undefined
+    const provider = providers?.find(p => p.id === providerId && p.enabled)
+    if (!provider?.baseUrl) return null
+    if (provider.id === 'syntee-gateway' || provider.type === 'syntee-gateway') {
+      return { provider, apiKey: '__JWT__' }
+    }
+    if (provider.type === 'openai-codex') {
+      return { provider, apiKey: CODEX_KEY_MARKER }
+    }
+    const { key, updatedProviders } = getNextApiKey(providers || [], providerId)
+    if (!key) return null
+    this.store.set('providers', updatedProviders)
+    return { provider, apiKey: key }
+  }
+
+  /** Responses-API нужен модели по её провайдеру (фазовый override). */
+  private usesResponsesApiForProvider(model: string, provider: Provider | undefined): boolean {
+    if (this.responsesOnlyModels.has(model)) return true
+    return provider?.type === 'openai-codex'
   }
 
   /**
@@ -246,11 +382,19 @@ export class AIClient {
   private getReasoningMeta(
     model: string,
     role: string,
+    providerIdOverride?: string,
   ): { reasoning?: { supported: boolean; levels: string[] }; reasoningOptions?: ReasoningOptionSpec[] } | null {
-    const providerId = this.getProviderInfoForRole(role)?.provider.id
+    const providerId = providerIdOverride ?? this.getProviderInfoForRole(role)?.provider.id
     if (!providerId) return null
     if (providerId === 'syntee-gateway') {
       return getGatewayModelsCache().find(m => m.id === model) ?? null
+    }
+    // ChatGPT-подписка: уровни reasoning берём из живого каталога бэкенда
+    // (supported_reasoning_levels), который сохранён в cachedModels при фетче.
+    if (providerId === 'openai-codex') {
+      const cached = this.store.get('cachedModels', []) as ModelMeta[] | undefined
+      const found = cached?.find(m => m.id === model && m.providerId === providerId)
+      return found?.reasoningOptions ? { reasoningOptions: found.reasoningOptions } : null
     }
     const cat = getCatalogModel(providerId, model)
     return cat?.reasoningOptions ? { reasoningOptions: cat.reasoningOptions } : null
@@ -288,9 +432,69 @@ export class AIClient {
       if (!token) {
         throw new Error('Not authenticated with Syntee-Gateway. Sign in via Profile → Sign In.')
       }
-      return new OpenAI({ apiKey: token, baseURL: info.provider.baseUrl, defaultHeaders: this.identityHeaders() })
+      return this.observeClient(new OpenAI({ apiKey: token, baseURL: info.provider.baseUrl, defaultHeaders: this.identityHeaders() }), info.provider.id, type)
     }
-    return new OpenAI({ apiKey: info.apiKey, baseURL: info.provider.baseUrl, defaultHeaders: this.providerHeaders(info.provider) })
+    if (info.apiKey === CODEX_KEY_MARKER) {
+      // ChatGPT-подписка: apiKey = access_token (SDK сам поставит Bearer),
+      // плюс заголовки бэкенда Codex. accountId нужен для chatgpt-account-id.
+      let token: string | null = null
+      let accountId: string | null = null
+      if (!isMainThread) {
+        token = getWorkerCodexToken()
+        accountId = getCodexAccountIdFromWorker()
+      } else {
+        const { getCodexAccessToken, getCodexAccountId } = await import('../../main/services/codexAuth')
+        token = await getCodexAccessToken()
+        accountId = getCodexAccountId()
+      }
+      if (!token) {
+        throw new Error('ChatGPT не подключён — войдите по подписке в Настройках → ИИ и модели.')
+      }
+      return this.observeClient(new OpenAI({
+        apiKey: token,
+        baseURL: info.provider.baseUrl,
+        defaultHeaders: { ...this.identityHeaders(), ...codexHeaders(accountId) },
+      }), info.provider.id, type)
+    }
+    return this.observeClient(new OpenAI({ apiKey: info.apiKey, baseURL: info.provider.baseUrl, defaultHeaders: this.providerHeaders(info.provider) }), info.provider.id, type)
+  }
+
+  /**
+   * Codex access-токен: в worker — из workerData (main обновляет его при
+   * входе/refresh), в main-процессе — напрямую из codexAuth (с авто-refresh).
+   */
+  private async resolveCodexToken(): Promise<string | null> {
+    if (!isMainThread) return getWorkerCodexToken()
+    try {
+      const { getCodexAccessToken } = await import('../../main/services/codexAuth')
+      return await getCodexAccessToken()
+    } catch {
+      return null
+    }
+  }
+
+  /** account id подписки (заголовок chatgpt-account-id). */
+  private async resolveCodexAccountId(): Promise<string | null> {
+    if (!isMainThread) return getCodexAccountIdFromWorker()
+    try {
+      const { getCodexAccountId } = await import('../../main/services/codexAuth')
+      return getCodexAccountId()
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * Быстрая проверка «роль назначена на открытый ChatGPT-провайдер» БЕЗ
+   * round-robin ротации ключей. Для выбора API-пути: Codex отвечает только
+   * через Responses API, а body требует store:false и не терпит max_output_tokens.
+   */
+  private isCodexRole(type: string): boolean {
+    const assignments = this.store.get('modelAssignments') as Array<{ role: string; providerId: string }> | undefined
+    const assignment = assignments?.find(a => a.role === type)
+    if (!assignment?.providerId) return false
+    const providers = this.store.get('providers') as Provider[] | undefined
+    return providers?.find(p => p.id === assignment.providerId)?.type === 'openai-codex'
   }
 
   /**
@@ -317,8 +521,25 @@ export class AIClient {
    * Известные заранее (muse-spark*) идут туда сразу; остальные определяются
    * автоматически: первая ошибка completions → пробуем /responses → запоминаем.
    */
+  /**
+   * prompt_cache_key — «липкий» роутинг OpenAI: запросы с одинаковым ключом
+   * попадают на тот же инстанс модели, что заметно повышает долю попаданий в
+   * prompt cache (у OpenAI кеш живёт на машине, а не в общем хранилище).
+   * Отправляется ТОЛЬКО официальному OpenAI и только моделям, которые этот
+   * параметр знают (gpt-5+/gpt-6): прочие OpenAI-совместимые эндпоинты
+   * отвечают 400 на незнакомое поле запроса, а нам нужен нулевой риск.
+   */
+  private promptCacheKeyParam(provider: Provider | undefined, model: string): Record<string, string> {
+    if (!provider || provider.type !== 'openai') return {}
+    if (!/^gpt-(5|6)/i.test(model)) return {}
+    const chatId = this.usageContext?.chatId
+    return chatId ? { prompt_cache_key: `syntee-${chatId}` } : {}
+  }
+
   private usesResponsesApi(model: string, modelType: string): boolean {
     if (this.responsesOnlyModels.has(model)) return true
+    // ChatGPT-подписка (Codex): chat/completions на этом бэкенде нет вообще.
+    if (this.isCodexRole(modelType)) return true
     return model.startsWith('muse-spark') && this.isOpencodeRole(modelType)
   }
 
@@ -342,6 +563,7 @@ export class AIClient {
     signal?: AbortSignal,
     maxOutputTokens?: number,
     reasoningExtra: Record<string, unknown> = {},
+    codex = false,
   ): Promise<string> {
     const systemMsg = messages[0]?.role === 'system' ? messages[0] : undefined
     const input = (systemMsg ? messages.slice(1) : messages).map(m => ({
@@ -353,7 +575,9 @@ export class AIClient {
       instructions: typeof systemMsg?.content === 'string' ? systemMsg.content : undefined,
       input,
       stream: true,
-      ...(maxOutputTokens ? { max_output_tokens: maxOutputTokens } : {}),
+      // Бэкенд Codex не принимает max_output_tokens и требует store:false.
+      ...(codex ? { store: false, include: ['reasoning.encrypted_content'] } : {}),
+      ...(maxOutputTokens && !codex ? { max_output_tokens: maxOutputTokens } : {}),
       // reasoning_effort → reasoning:{effort} (формат Responses API)
       ...responsesReasoningParam(reasoningExtra),
     }, { signal })
@@ -403,7 +627,7 @@ export class AIClient {
   async streamChat(
     messages: ChatMessage[],
     callbacks: StreamCallbacks,
-    modelType: 'main' | 'fast' | 'fastContext' | 'summary' = 'main',
+    modelType: 'main' | 'fast' | 'memory' | 'summary' = 'main',
     systemPrompt?: string,
     signal?: AbortSignal,
     temperatureOverride?: number,
@@ -444,16 +668,34 @@ export class AIClient {
     // Responses → запоминаем в responsesOnlyModels).
     if (this.usesResponsesApi(model, modelType)) {
       callbacks.onWaiting?.()
+      const isCodex = this.isCodexRole(modelType)
       try {
-        const text = await this.streamViaResponses(client, model, allMessages, callbacks, signal, DEFAULT_MAX_TOKENS, reasoningExtra)
+        const text = await this.streamViaResponses(client, model, allMessages, callbacks, signal, DEFAULT_MAX_TOKENS, reasoningExtra, isCodex)
         callbacks.onDone(text)
       } catch (err: unknown) {
-        const error = err as { name?: string; message?: string }
+        const error = err as { status?: number; name?: string; message?: string }
         if (error?.name === 'AbortError' || signal?.aborted) {
           callbacks.onDone('')
-        } else {
-          callbacks.onError(new Error(error?.message || String(err)))
+          return
         }
+        // 401 на Codex-бэкенде = access-токен протух: форс-рефреш и один ретрай.
+        if (isCodex && error?.status === 401) {
+          const fresh = await refreshCodexTokenAfter401()
+          if (fresh) {
+            try {
+              client = await this.getClientForRoleAsync(modelType)
+              const text = await this.streamViaResponses(client, model, allMessages, callbacks, signal, DEFAULT_MAX_TOKENS, reasoningExtra, true)
+              callbacks.onDone(text)
+              return
+            } catch (retryErr: unknown) {
+              callbacks.onError(new Error((retryErr as { message?: string })?.message || String(retryErr)))
+              return
+            }
+          }
+          callbacks.onError(new Error('ChatGPT-сессия истекла — подключите подписку заново (Настройки → ИИ и модели).'))
+          return
+        }
+        callbacks.onError(new Error(error?.message || String(err)))
       }
       return
     }
@@ -461,6 +703,8 @@ export class AIClient {
     let attempt = 0
     let retried401 = false
     let fullText = ''
+    // Usage текущего запроса — ровно один onUsage на вызов модели (см. ниже).
+    let requestUsage: { promptTokens: number; completionTokens: number; totalTokens: number } | null = null
     const deadlineMs = Date.now() + OVERALL_TIMEOUT_MS
 
     while (attempt <= this.maxRetries) {
@@ -481,19 +725,27 @@ export class AIClient {
         let thinkingDoneSent = false
         let inThinkTag = false
         let thinkBuffer = ''
+        // Провайдеры (gateway'и, DeepSeek через прокси) кладут `usage` в КАЖДЫЙ
+        // чанк, а не только в финальный. Раньше onUsage вызывался на каждом
+        // таком чанке, а воркер суммировал вызовы (accPromptTokens) → один и тот
+        // же prompt считался 2-3 раза: статистика хода показывала 400-450k при
+        // реальных 225k и «нормализовалась» на ходах с одним пакетом usage.
+        // Теперь берём ПОСЛЕДНИЙ пакет и отдаём его один раз, после стрима.
+        requestUsage = null
+
 
         for await (const chunk of stream) {
           if (signal?.aborted) break
 
-          // Реальные токены из провайдера — последний чанк содержит usage
+          // Реальные токены из провайдера — фиксируем последний пакет usage
           if (chunk.usage) {
             const u = chunk.usage as { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number }
             if (u.prompt_tokens != null) {
-              callbacks.onUsage?.({
+              requestUsage = {
                 promptTokens: u.prompt_tokens,
                 completionTokens: u.completion_tokens ?? 0,
                 totalTokens: u.total_tokens ?? (u.prompt_tokens + (u.completion_tokens ?? 0)),
-              })
+              }
             }
           }
 
@@ -589,14 +841,27 @@ export class AIClient {
           })
           fullText = res.choices[0]?.message?.content || ''
           if (fullText) callbacks.onToken(fullText)
+          const u = res.usage as { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | undefined
+          if (u?.prompt_tokens != null) {
+            requestUsage = {
+              promptTokens: u.prompt_tokens,
+              completionTokens: u.completion_tokens ?? 0,
+              totalTokens: u.total_tokens ?? (u.prompt_tokens + (u.completion_tokens ?? 0)),
+            }
+          }
         }
 
+        // Ровно один usage на один вызов модели.
+        if (requestUsage) callbacks.onUsage?.(requestUsage)
         callbacks.onDone(fullText)
         return
 
       } catch (err: unknown) {
         const error = err as { status?: number; message?: string; name?: string }
         if (error?.name === 'AbortError' || signal?.aborted) {
+          // Стоп посреди стрима: провайдер уже списал prompt — отдаём то, что
+          // успели получить, чтобы статистика хода и ledger не теряли вызов.
+          if (requestUsage) callbacks.onUsage?.(requestUsage)
           callbacks.onDone(fullText ?? '')
           return
         }
@@ -674,14 +939,18 @@ export class AIClient {
     systemPrompt?: string,
     maxTokens?: number,
     reasoningExtra: Record<string, unknown> = {},
+    codex = false,
   ): Promise<string> {
     const res = await client.responses.create({
       model,
       instructions: systemPrompt,
       input: messages.map(m => ({ role: m.role, content: m.content })),
-      // Reasoning-модели (muse-spark) сжигают бюджет на скрытые рассуждения —
-      // 1024 не хватает даже на короткий ответ → минимум 4096.
-      max_output_tokens: Math.max(maxTokens ?? 1024, 4096),
+      ...(codex
+        // Бэкенд Codex: store:false обязателен, max_output_tokens не принимается.
+        ? { store: false, include: ['reasoning.encrypted_content'] }
+        // Reasoning-модели (muse-spark) сжигают бюджет на скрытые рассуждения —
+        // 1024 не хватает даже на короткий ответ → минимум 4096.
+        : { max_output_tokens: Math.max(maxTokens ?? 1024, 4096) }),
       // reasoning_effort → reasoning:{effort} (формат Responses API)
       ...responsesReasoningParam(reasoningExtra),
     })
@@ -690,7 +959,7 @@ export class AIClient {
 
   async complete(
     messages: ChatMessage[],
-    modelType: 'main' | 'fast' | 'fastContext' | 'summary' | 'router' | 'emotion' = 'fast',
+    modelType: 'main' | 'fast' | 'memory' | 'summary' | 'router' | 'emotion' = 'fast',
     systemPrompt?: string,
     opts?: { model?: string; maxTokens?: number },
   ): Promise<string> {
@@ -707,7 +976,20 @@ export class AIClient {
 
     // ── Модели только с Responses API (muse-spark и runtime-выявленные) ─────
     if (this.usesResponsesApi(model, modelType)) {
-      return this.completeViaResponses(client, model, messages, systemPrompt, opts?.maxTokens, reasoningExtra)
+      const isCodex = this.isCodexRole(modelType)
+      try {
+        return await this.completeViaResponses(client, model, messages, systemPrompt, opts?.maxTokens, reasoningExtra, isCodex)
+      } catch (err: unknown) {
+        // 401 на Codex-бэкенде = access-токен протух: форс-рефреш и один ретрай.
+        const error = err as { status?: number }
+        if (isCodex && error?.status === 401) {
+          const fresh = await refreshCodexTokenAfter401()
+          if (!fresh) throw new Error('ChatGPT-сессия истекла — подключите подписку заново (Настройки → ИИ и модели).')
+          client = await this.getClientForRoleAsync(modelType)
+          return this.completeViaResponses(client, model, messages, systemPrompt, opts?.maxTokens, reasoningExtra, true)
+        }
+        throw err
+      }
     }
 
     let attempt = 0
@@ -854,6 +1136,7 @@ export class AIClient {
     signal: AbortSignal | undefined,
     maxTokens: number,
     reasoningExtra: Record<string, unknown>,
+    codex: boolean,
     cb: {
       onToken?: (token: string) => void
       onUsage?: (promptTokens: number, completionTokens: number, cacheReadTokens?: number, cacheWriteTokens?: number) => void
@@ -932,7 +1215,10 @@ export class AIClient {
       tool_choice: 'auto',
       stream: true,
       // Reasoning-модели сжигают бюджет на скрытые рассуждения → запас.
-      max_output_tokens: Math.max(maxTokens, 4096),
+      // Бэкенд Codex не принимает max_output_tokens и требует store:false.
+      ...(codex
+        ? { store: false, include: ['reasoning.encrypted_content'] }
+        : { max_output_tokens: Math.max(maxTokens, 4096) }),
       // reasoning_effort → reasoning:{effort} (формат Responses API)
       ...responsesReasoningParam(reasoningExtra),
     }, { signal })
@@ -1033,6 +1319,9 @@ export class AIClient {
     // index стабилен в рамках раунда (см. tc.index у провайдера) — по нему
     // Agent.ts матчит этот ранний сигнал с финальным tool_call.
     onToolCallStarted?: (index: number, toolName: string) => void,
+    // §orchestration — явная модель фазы (provider/model/effort). undefined =
+    // прежнее поведение: модель и провайдер берутся из назначений роли.
+    override?: ModelOverride,
   ): Promise<{ content: string; tool_calls?: unknown[]; reasoning?: string; hadStreamedTokens?: boolean; thinking_blocks?: Array<{ thinking: string; signature: string }> }> {
     // Slicing inherited history/compaction may leave orphan tool outputs.
     // Repair before both API paths, including gateways converting to Responses.
@@ -1040,10 +1329,23 @@ export class AIClient {
     const effectiveRole = role === 'subagent' ? 'subagent' as never : 'main'
     const subagentModel = role === 'subagent' ? this.getModel('subagent' as never) : ''
     const resolvedRole = (subagentModel && subagentModel !== '') ? effectiveRole : 'main'
-    const model = this.getModel(resolvedRole) || this.getModel('main')
-    const providerInfo = this.getProviderInfoForRole(resolvedRole)
+    // §orchestration: фазовая модель перекрывает роль ПОЛНОСТЬЮ (и модель, и
+    // провайдера, и reasoning). Провайдер резолвится явно — никакого
+    // «провайдера роли по умолчанию», иначе ран молча уедет на другую модель.
+    const model = override?.modelId || this.getModel(resolvedRole) || this.getModel('main')
+    const providerInfo = override?.providerId
+      ? this.getProviderInfoExplicit(override.providerId)
+      : this.getProviderInfoForRole(resolvedRole)
+    if (override?.providerId && !providerInfo) {
+      throw new Error(
+        `Orchestration: provider "${override.providerId}" is not available (disabled, missing base URL or API key). `
+        + 'Fix the orchestration model selection — no fallback provider is used.',
+      )
+    }
     // Для syntee-gateway apiKey === '__JWT__' — реальный JWT получаем ниже.
     const isGateway = providerInfo?.apiKey === '__JWT__'
+    // ChatGPT-подписка: ключа нет, токен и accountId резолвим отдельно.
+    const isCodex = providerInfo?.apiKey === CODEX_KEY_MARKER
     let gatewayToken: string | null = null
     if (isGateway) {
       // Worker thread не имеет доступа к electron-store/tokenStore.
@@ -1065,10 +1367,18 @@ export class AIClient {
     }
     const temperature = DEFAULT_TEMPERATURE
     const maxTokensRaw = DEFAULT_MAX_TOKENS
-    const reasoningValue = (this.store.get('reasoningValue') as string) || ''
+    // §orchestration: effort фазы (если задан) перекрывает глобальный тумблер.
+    const reasoningValue = override?.reasoningValue ?? ((this.store.get('reasoningValue') as string) || '')
     const reasoningExtra = reasoningValue
-      ? buildReasoningParams(reasoningValue, this.getReasoningMeta(model, resolvedRole))
+      ? buildReasoningParams(
+          reasoningValue,
+          this.getReasoningMeta(model, resolvedRole, override?.providerId),
+        )
       : {}
+    // Responses-API решается провайдером фазы, а не ролью чата.
+    const responsesApi = override?.providerId
+      ? this.usesResponsesApiForProvider(model, providerInfo?.provider)
+      : this.usesResponsesApi(model, resolvedRole)
 
     // Для Anthropic extended thinking: max_tokens ВКЛЮЧАЕТ reasoning токены.
     // Если budget_tokens > max_tokens, API обрежет на max_tokens и ответ будет пустой.
@@ -1116,15 +1426,24 @@ export class AIClient {
       const visualPayload = summarizeImagePayload(messages)
       if (visualPayload.images) log('[vision:send]', { model, provider: providerInfo.provider.id, api: 'anthropic', format: 'image/source', ...visualPayload })
       const anthropicApiKey = isGateway ? gatewayToken! : providerInfo.apiKey
-      const anthropicClient = new Anthropic({
+      const anthropicClient = this.observeClient(new Anthropic({
         apiKey: anthropicApiKey,
         baseURL: providerInfo.provider.baseUrl,
         defaultHeaders: this.identityHeaders(),
-      })
+      }), providerInfo.provider.id, resolvedRole, true)
       return chatWithToolsAnthropic(
         anthropicClient, messages, tools, signal, model, temperature, maxTokens, reasoningExtra,
         { onToken, onRateLimit, onRetry, onUsage, onThinkingToken, onThinkingDone, onToolCallStarted }
       )
+    }
+
+    // cacheAnchor — служебный маркер Anthropic-конвертера (cache_control на
+    // последнем блоке сообщения). Anthropic-ветка выше уже отработала и
+    // вернулась; OpenAI-совместимые эндпоинты отклоняют незнакомые поля
+    // сообщения (400 Unrecognized request argument), поэтому дальше маркер
+    // обязан быть снят с массива ДО отправки (в т.ч. через /responses).
+    for (const m of messages) {
+      if ((m as { cacheAnchor?: boolean }).cacheAnchor) delete (m as { cacheAnchor?: boolean }).cacheAnchor
     }
 
     // Native Anthropic above supports images inside tool_result. OpenAI-compatible
@@ -1137,33 +1456,65 @@ export class AIClient {
     }
     if (routedVisualPayload.images) log('[vision:send]', {
       model, provider: providerInfo?.provider.id ?? 'default',
-      api: this.usesResponsesApi(model, resolvedRole) ? 'responses' : 'chat-completions',
+      api: responsesApi ? 'responses' : 'chat-completions',
       format: 'user/image_url', ...routedVisualPayload,
     })
 
-    // OpenAI-совместимый путь (включая syntee-gateway через JWT)
+    // OpenAI-совместимый путь (включая syntee-gateway через JWT и Codex-подписку)
+    let codexToken: string | null = null
+    let codexHeaderExtras: Record<string, string> = {}
+    if (isCodex) {
+      codexToken = getWorkerCodexToken() ?? await this.resolveCodexToken()
+      if (!codexToken) {
+        throw new Error('ChatGPT не подключён — войдите по подписке в Настройках → ИИ и модели.')
+      }
+      codexHeaderExtras = codexHeaders(getCodexAccountIdFromWorker() ?? await this.resolveCodexAccountId())
+    }
     let client = providerInfo
-      ? new OpenAI({
-          apiKey: isGateway ? gatewayToken! : providerInfo.apiKey,
+      ? this.observeClient(new OpenAI({
+          apiKey: isGateway ? gatewayToken! : isCodex ? codexToken! : providerInfo.apiKey,
           baseURL: providerInfo.provider.baseUrl,
-          defaultHeaders: this.providerHeaders(providerInfo.provider),
-        })
+          defaultHeaders: isCodex
+            ? { ...this.identityHeaders(), ...codexHeaderExtras }
+            : this.providerHeaders(providerInfo.provider),
+        }), providerInfo.provider.id, resolvedRole)
       : this.client
 
     // ── Модели только с Responses API (muse-spark и runtime-выявленные) ─────
     // Известные модели идут в /responses сразу; остальные — авто-фоллбэком
     // в catch ниже (completions упал → пробуем Responses → запоминаем).
-    if (this.usesResponsesApi(model, resolvedRole)) {
-      return this.chatWithToolsViaResponses(client, model, messages, tools, signal, maxTokens, reasoningExtra, {
+    if (responsesApi) {
+      const viaResponses = () => this.chatWithToolsViaResponses(client, model, messages, tools, signal, maxTokens, reasoningExtra, isCodex, {
         onToken, onUsage, onThinkingToken, onThinkingDone, onToolCallStarted,
       })
+      if (!isCodex) return viaResponses()
+      try {
+        return await viaResponses()
+      } catch (err: unknown) {
+        // 401 на Codex-бэкенде = access-токен протух: форс-рефреш и один ретрай.
+        if ((err as { status?: number })?.status !== 401) throw err
+        const fresh = await refreshCodexTokenAfter401()
+        if (!fresh) throw new Error('ChatGPT-сессия истекла — подключите подписку заново (Настройки → ИИ и модели).')
+        setCodexToken(fresh)
+        client = new OpenAI({
+          apiKey: fresh,
+          baseURL: providerInfo!.provider.baseUrl,
+          defaultHeaders: { ...this.identityHeaders(), ...codexHeaderExtras },
+        })
+        return viaResponses()
+      }
     }
 
     let attempt = 0
     let retried401 = false
+    // Usage текущего вызова модели. Объявлен вне попытки, чтобы отдать его и
+    // при Abort/ошибке после получения пакета; сбрасывается на каждой попытке,
+    // иначе ретрай сложил бы usage двух запросов в один.
+    let usageOfRequest: { promptTokens: number; completionTokens: number; cacheReadTokens?: number } | null = null
     const maxAttempts = 5
     const deadlineMs = Date.now() + OVERALL_TIMEOUT_MS
     while (attempt < maxAttempts) {
+      usageOfRequest = null
       if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
       try {
         console.log('[AIClient] chatWithTools: model=%s attempt=%d/%d messages=%d tools=%d', model, attempt + 1, maxAttempts, messages.length, tools.length)
@@ -1175,6 +1526,7 @@ export class AIClient {
           tool_choice: 'auto',
           stream: true,
           stream_options: { include_usage: true },
+          ...this.promptCacheKeyParam(providerInfo?.provider, model),
           temperature,
           max_tokens: maxTokens,
           ...reasoningExtra,
@@ -1198,9 +1550,22 @@ export class AIClient {
               prompt_tokens_details?: { cached_tokens?: number }
             }
             if (usage.prompt_tokens != null) {
-              // OpenAI/прокси может вернуть cached_tokens — передаём как cacheReadTokens.
-              // cacheWriteTokens для OpenAI не применим (автокэширование без маркеров).
-              onUsage?.(usage.prompt_tokens, usage.completion_tokens ?? 0, usage.prompt_tokens_details?.cached_tokens)
+              // Кеш-чтения разбирает cacheReadTokensOf: OpenAI/OpenRouter —
+              // prompt_tokens_details.cached_tokens, DeepSeek — отдельные
+              // prompt_cache_hit_tokens (prompt_tokens у него уже total),
+              // прочие совместимые — cached_tokens/cache_hit_tokens.
+              // cacheWriteTokens для [OI] не применим (автокеширование без
+              // маркеров). Провайдер (gateway, DeepSeek через прокси) может
+              // прислать usage в НЕСКОЛЬКИХ чанках. Раньше onUsage звался на
+              // каждый пакет, а воркер складывал вызовы (accPromptTokens) →
+              // один prompt считался 2-3 раза: «Вход за ход» показывал 400k при
+              // реальных 225k, и цифра гуляла от хода к ходу. Запоминаем
+              // последний пакет и отдаём его один раз, после цикла.
+              usageOfRequest = {
+                promptTokens: usage.prompt_tokens,
+                completionTokens: usage.completion_tokens ?? 0,
+                cacheReadTokens: cacheReadTokensOf(usage),
+              }
             }
           }
           const delta = chunk.choices[0]?.delta
@@ -1260,6 +1625,12 @@ export class AIClient {
           onThinkingDone?.(Date.now() - thinkingStartMs)
         }
 
+        // Ровно один usage на один вызов модели (провайдер мог дублировать
+        // пакет usage в нескольких чанках — см. комментарий в цикле).
+        if (usageOfRequest) {
+          onUsage?.(usageOfRequest.promptTokens, usageOfRequest.completionTokens, usageOfRequest.cacheReadTokens)
+        }
+
         // Собираем tool_calls в финальный формат
         const tool_calls = Object.values(toolCallMap).length > 0
           ? Object.values(toolCallMap).map(tc => ({
@@ -1284,7 +1655,14 @@ export class AIClient {
         log('[AIClient] chatWithTools CATCH: status=%s statusCode=%s name=%s msg=%s (attempt=%d/%d)',
           error?.status ?? '—', error?.statusCode ?? '—', error?.name ?? '—',
           (error?.message ?? String(err)).slice(0, 200), attempt + 1, maxAttempts)
-        if (error?.name === 'AbortError' || signal?.aborted) throw err
+        if (error?.name === 'AbortError' || signal?.aborted) {
+          // Стоп посреди стрима: провайдер уже списал prompt — отдаём usage,
+          // чтобы статистика хода и ledger не теряли оплаченный вызов.
+          if (usageOfRequest) {
+            onUsage?.(usageOfRequest.promptTokens, usageOfRequest.completionTokens, usageOfRequest.cacheReadTokens)
+          }
+          throw err
+        }
         const errMsg = error?.message ?? String(err)
         const errLower = errMsg.toLowerCase()
         // ── Авто-фоллбэк на Responses API (только opencode-провайдеры) ──────
@@ -1292,12 +1670,12 @@ export class AIClient {
         // пробуем /responses ДО сетевых ретраев (для таких моделей ретраи
         // completions бессмысленны — в логе это выглядело как 5×500).
         // Успех → запоминаем модель (в следующий раз идём в /responses сразу).
-        if (this.isOpencodeRole(resolvedRole) && !this.usesResponsesApi(model, resolvedRole)
+        if (!override?.providerId && this.isOpencodeRole(resolvedRole) && !responsesApi
           && !signal?.aborted
           && this.isCompletionsUnsupported({ status: realStatus || undefined, message: errMsg })) {
           try {
             log('[AIClient] completions не поддерживается (model=%s) — авто-фоллбэк на Responses API', model)
-            const result = await this.chatWithToolsViaResponses(client, model, messages, tools, signal, maxTokens, reasoningExtra, {
+            const result = await this.chatWithToolsViaResponses(client, model, messages, tools, signal, maxTokens, reasoningExtra, isCodex, {
               onToken, onUsage, onThinkingToken, onThinkingDone, onToolCallStarted,
             })
             this.responsesOnlyModels.add(model)
@@ -1345,7 +1723,7 @@ export class AIClient {
           const fresh = await refreshGatewayTokenAfter401()
           if (fresh) {
             gatewayToken = fresh
-            client = new OpenAI({ apiKey: fresh, baseURL: providerInfo!.provider.baseUrl, defaultHeaders: this.identityHeaders() })
+            client = this.observeClient(new OpenAI({ apiKey: fresh, baseURL: providerInfo!.provider.baseUrl, defaultHeaders: this.identityHeaders() }), providerInfo!.provider.id, resolvedRole)
             continue
           }
           throw new Error('Syntee session expired — sign in again (Profile → Sign In).')
@@ -1420,7 +1798,7 @@ export class AIClient {
             { type: 'image_url', image_url: { url: `data:${mime || 'image/png'};base64,${imageBase64}`, detail: 'high' } },
             { type: 'text', text: prompt },
           ]}],
-          stream: true, max_tokens: 4096, temperature: 0,
+          stream: true, stream_options: { include_usage: true }, max_tokens: 4096, temperature: 0,
         }, { signal: controller.signal })
         let fullText = ''
         for await (const chunk of stream) {

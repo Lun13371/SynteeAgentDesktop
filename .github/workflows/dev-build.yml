@@ -1,0 +1,117 @@
+name: Dev build
+
+# Проверка сборки на каждый пуш в dev: приложение должно компилироваться под
+# обе платформы. Упаковки здесь нет намеренно — артефакты и установщики
+# собираются только в release.yml по тегу.
+
+on:
+  push:
+    branches: [dev]
+  workflow_dispatch:
+
+concurrency:
+  group: dev-build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Windows (compile)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      SYNTEE_API_URL: https://syntee.fun
+      SYNTEE_WEB_URL: https://syntee.fun
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: Sidecar
+
+      # node-pty и better-sqlite3 приходят с NAPI-prebuild'ами под win32-x64,
+      # поэтому electron-rebuild в CI не нужен. Без --ignore-scripts
+      # postinstall тянет `electron-builder install-app-deps`, который на
+      # windows-latest падает при пересборке нативных модулей MSVC.
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Fetch Electron binary
+        run: node node_modules/electron/install.js
+
+      - name: Patch native build config
+        run: node scripts/patch-node-pty-spectre.mjs
+
+      - name: Build Rust sidecar
+        run: npm run build:sidecar
+
+      - name: Build application
+        run: npm run build
+
+      - name: Verify bundle output
+        shell: pwsh
+        run: |
+          foreach ($f in 'out/main/index.js', 'out/preload/index.js', 'out/renderer/index.html') {
+            if (-not (Test-Path $f)) { throw "Отсутствует артефакт сборки: $f" }
+          }
+          "Windows bundle OK"
+
+  linux:
+    name: Linux (compile)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      SYNTEE_API_URL: https://syntee.fun
+      SYNTEE_WEB_URL: https://syntee.fun
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: Sidecar
+
+      - name: System dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake pkg-config
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Rust sidecar
+        run: bash Sidecar/scripts/build-linux.sh
+
+      - name: Build application
+        run: npm run build
+
+      - name: Verify bundle output
+        run: |
+          for f in out/main/index.js out/preload/index.js out/renderer/index.html; do
+            test -f "$f" || { echo "::error::Отсутствует артефакт сборки: $f"; exit 1; }
+          done
+          test -x resources/sidecar/syntee-sidecar || { echo "::error::Sidecar не собран"; exit 1; }
+          echo "Linux bundle OK"

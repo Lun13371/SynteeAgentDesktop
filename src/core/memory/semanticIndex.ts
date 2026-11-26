@@ -30,8 +30,9 @@ import {
   sidecarSemanticIndex,
   sidecarSemanticSearch,
   type SidecarSemanticHit,
-} from '../context/fastContext/sidecarClient'
+} from '../sidecar/sidecarClient'
 import { perfMark, perfEvent } from '../performanceDiagnostics'
+import { getDB } from '../db/handle'
 
 // ─── Типы ────────────────────────────────────────────────────────────────────
 
@@ -91,9 +92,10 @@ const DOWNLOAD_RETRY_MS = 5 * 60 * 1000
  * инференс в Rust, поэтому и качать должен кто-то без ONNX в main — иначе
  * вернули бы 500 МБ и блокировки, от которых уходили. Это два HTTP-запроса.
  *
- * Возвращает true, если модель на месте.
+ * Возвращает true, если модель на месте. Экспортируется и для семантического
+ * слоя карты (mapSemantic) — скачивание общее, состояние ретраев общее.
  */
-async function ensureModelFiles(): Promise<boolean> {
+export async function ensureModelFiles(): Promise<boolean> {
   if (resolveSemanticModelPaths()) return true
   const cacheDir = process.env.TRANSFORMERS_CACHE
   if (!cacheDir) return false
@@ -152,6 +154,18 @@ export async function runSemanticIndexingOnce(): Promise<void> {
   _running = true
   const cycleStarted = perfMark()
   try {
+    // An empty profile needs neither the model download nor an ONNX session.
+    // Existing vectors still require a cycle so deleted source rows get pruned.
+    const work = getDB().prepare(`
+      SELECT EXISTS(SELECT 1 FROM memory_items)
+        OR EXISTS(SELECT 1 FROM messages WHERE role IN ('user', 'assistant'))
+        OR EXISTS(SELECT 1 FROM chat_summaries)
+        OR EXISTS(SELECT 1 FROM agent_logs)
+        OR EXISTS(SELECT 1 FROM pinned_messages pm JOIN messages m ON m.id = pm.message_id)
+        OR EXISTS(SELECT 1 FROM semantic_embeddings) AS hasWork
+    `).get() as { hasWork: number }
+    if (!work.hasWork) return
+
     if (!await ensureModelFiles()) {
       console.log('[semanticIndex] E5 model unavailable — skipping cycle (lexical search unaffected)')
       return

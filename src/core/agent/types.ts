@@ -1,12 +1,12 @@
 import type { FileCacheEntry } from '../context/fileCacheTypes'
-import type { QuestionSpec, QuestionAnswer, AllowScope } from '../../shared/types'
+import type { QuestionSpec, QuestionAnswer, AllowScope, SteerAttachmentMeta } from '../../shared/types'
 import type Store from 'electron-store'
 
 export interface AgentStep {
   // tool_call_pending — модель только начала генерировать этот вызов (имя
   // уже известно, аргументы ещё стримятся) — ранний сигнал для UI, чтобы
   // блок тула появлялся сразу, а не после долгой генерации большого diff/content.
-  type: 'thought' | 'tool_call_pending' | 'tool_call' | 'tool_result' | 'tool_result_update' | 'answer' | 'steer'
+  type: 'thought' | 'tool_call_pending' | 'tool_call' | 'tool_result' | 'tool_result_update' | 'answer' | 'steer' | 'hint' | 'janitor'
   toolName?: string
   toolArgs?: Record<string, unknown>
   content: string
@@ -25,12 +25,23 @@ export interface AgentStep {
    *  карточки в renderer) и флаг, что она уже вставлена в messages. */
   steerId?: string
   steerApplied?: boolean
+  /** type:'steer' — вложения реплики (чипы/миниатюры в карточке, БД шага). */
+  attachments?: SteerAttachmentMeta[]
   // Связывает финальный tool_call с более ранним tool_call_pending той же
   // генерации (см. onToolCallStarted) — фронтенд заменяет pending-карточку
   // на настоящую вместо создания второго блока.
   pendingCallId?: string
   /** Code Mode execution source and internal tool trace, rendered by expandable tool UI. */
-  codeMode?: { code: string; trace: Array<{ name: string; args: unknown; result: string; status: 'success' | 'failure' }> }
+  codeMode?: { code: string; trace: Array<{ id?: string; name: string; args: unknown; result: string; status: 'success' | 'failure' | 'running' }> }
+  /** type:'hint' — подсказка от watcher-агента, инжектированная между ходами. */
+  hintSource?: import('../../shared/assistants').HintSource
+  hintId?: string
+  /** type:'janitor' — действие по оптимизации контекста. */
+  janitorKind?: string
+  janitorTokensSaved?: number
+  janitorArchiveId?: string
+  /** type:'janitor' — все действия одного скана (одна карточка на скан). */
+  janitorActions?: Array<{ kind: string; description: string; tokensSaved: number; archiveId?: string }>
 }
 
 export interface ContextCountedInfo {
@@ -46,6 +57,13 @@ export interface ContextCountedInfo {
 
 export interface AgentCallbacks {
   onStep: (step: AgentStep) => void
+  /**
+   * Живой трейс вложенных тулов execute_code: запись приходит ДВАЖДЫ —
+   * сначала со status:'running' (вызов начался), затем финальная
+   * (success/failure) с тем же id. UI апсертит строку по id, поэтому видно
+   * «что выполняется сейчас», а не только итог скрипта.
+   */
+  onCodeTrace?: (entry: { id?: string; name: string; args: unknown; result: string; status: 'success' | 'failure' | 'running'; diff?: string }) => void
   /**
    * §rollback-live — файл изменён тулом (write_file/edit_file): отдаём
    * {path, contentBefore} СРАЗУ после правки, а не только в финальном
@@ -74,8 +92,8 @@ export interface AgentCallbacks {
    * (см. Agent.recordAllowlist).
    */
   onConfirm?: (toolName: string, args: Record<string, unknown>) => Promise<boolean | { approved: boolean; always?: AllowScope; match?: 'action' | 'tool' }>
-  approvalMode?: 'auto' | 'ask'
-  onSpawnAgent?: (opts: { id: string; task: string; model?: string; approvalMode?: 'auto' | 'ask' | 'full'; isolation?: 'auto' | 'worktree' | 'none'; role?: string; callId?: string }) => Promise<{ summary: string; error?: string }>
+  approvalMode?: import('../../shared/types').ApprovalMode
+  onSpawnAgent?: (opts: { id: string; task: string; model?: string; isolation?: 'auto' | 'worktree' | 'none'; role?: string; callId?: string }) => Promise<{ summary: string; error?: string }>
   onGetAgentStatus?: (agentId: string) => Promise<{ status: string; currentStep?: string; stepsCount: number } | null>
   /**
    * SPA-fallback для fetch_page: рендерит страницу через скрытый BrowserWindow
@@ -99,7 +117,7 @@ export interface AgentCallbacks {
    * Вызов MCP-тула (round-trip в main-процесс, где живёт McpManager).
    * fullToolName = mcp__serverName__toolName. Возвращает {success, output, error?}.
    */
-  onMcpCall?: (fullToolName: string, args: Record<string, unknown>) => Promise<{ success: boolean; output: string; error?: string }>
+  onMcpCall?: (fullToolName: string, args: Record<string, unknown>, signal?: AbortSignal) => Promise<{ success: boolean; output: string; error?: string }>
   /**
    * Проверка, нужно ли подтверждение для MCP-тула. Если вернёт true —
    * агент запросит одобрение через onConfirm (как для опасных тулов).
@@ -139,11 +157,18 @@ export interface AgentCallbacks {
    */
   onQuestion?: (questions: QuestionSpec[]) => Promise<QuestionAnswer[]>
   /**
-   * Progress callback для долгих тулов (например get_fast_context):
+   * Progress callback для долгих тулов:
    * транслирует stage-прогресс в main для live-индикации этапов в UI.
    */
   onToolProgress?: (p: { toolName: string; stage: string; detail?: string; filesProcessed?: number; filesTotal?: number; filesFound?: Array<{ path: string; score: number; why: string }> }) => void
-  /** AbortSignal для долгих тулов — позволяет отменить get_fast_context и т.п. */
+  /**
+   * §orchestration — прогресс фазового рана. Одно событие на переход фазы:
+   * 'running' при входе в фазу, 'done'/'blocked' при выходе. UI накапливает
+   * фазы по startedAt (см. renderer/utils/orchestrationProgress.ts).
+   * Не приходит для обычных (неоркестрированных) ранов.
+   */
+  onOrchestrationProgress?: (progress: import('../../shared/orchestration').OrchestrationProgress) => void
+  /** AbortSignal для долгих тулов — позволяет отменить долгий tool-call. */
   signal?: AbortSignal
   /**
    * save_memory-тул: сохранить факт в долгосрочную память. Round-trip в main-
@@ -193,6 +218,30 @@ export interface AgentCallbacks {
     }>
     error?: string
   }>
+  /**
+   * project_map-тул: чтение графа кода (code_map_* + семантика). Round-trip
+   * в main-процесс: в worker-потоке БД не инициализирована (getDB бросает
+   * «DB not initialized»). Возвращает готовый ToolResult — вся логика тула
+   * (mapStore/mapSemantic/sidecar) выполняется в main.
+   */
+  onProjectMap?: (args: {
+    action: 'search' | 'semantic' | 'callers' | 'callees' | 'file' | 'overview'
+      | 'god' | 'communities' | 'path' | 'explain' | 'affected'
+    query?: string
+    /** Второй узел для action=path. */
+    to?: string
+    path?: string
+    nodeId?: string
+    limit?: number
+    /** Макс. глубина для path/affected. */
+    depth?: number
+    /** Ограничение типов рёбер для path/affected. */
+    relations?: Array<'calls' | 'references' | 'imports'>
+    /** Бюджет ответа в токенах. */
+    budget?: number
+    /** Проект чата — тул работает только в контексте проекта. */
+    projectId?: string
+  }) => Promise<{ success: boolean; output: string; error?: string }>
   /**
    * manage_dots-тул: управление Dot'ами (always-on фоновые агенты).
    * Round-trip в main-процесс, где живёт DotManager. Возвращает
@@ -253,6 +302,9 @@ export interface AgentSummaryDetails {
   // изменённого файла. contentBefore = null = файл был создан этим turn'ом.
   // Перегоняется в file_snapshots (DB) на main-стороне для checkpoint/rewind.
   fileSnapshots: Array<{ path: string; contentBefore: string | null }>
+  /** §orchestration — атрибуция по моделям-ролям и история фаз (только для
+   *  оркестрированных ранов; undefined у обычных). */
+  orchestration?: import('./orchestration').OrchestrationRunSummary
 }
 
 export type ContentPart =
@@ -307,9 +359,6 @@ export type AgentRuntimeOptions = {
   /** Режим планирования активен — defense-in-depth в executeTool выдаёт
     *  явное напоминание вместо generic-блока (см. Agent.ts ~line 469). */
   planningMode?: boolean
-  /** Persona — single-select run mode. Read-only personas get an explicit
-    *  reminder in defense-in-depth (same mechanism as planningMode). */
-  persona?: import('../../shared/modes').PersonaId
   /** §roles — role of this sub-agent (researcher/editor/implementer/...).
     *  When set, defense-in-depth in executeTool issues a role-specific
     *  blocked message for tools outside the role's allowlist. */
@@ -318,6 +367,13 @@ export type AgentRuntimeOptions = {
     *  поддерживает vision). Agent.run встраивает их в user-сообщение
     *  как multipart content вместо текстового описания от vision-модели. */
   imageParts?: ContentPart[]
+  /**
+   * §orchestration — снимок фазовых моделей. Если задан, тот же самый цикл
+   * Agent.run() исполняет фазы planning → executing → reviewing/replanning
+   * на ЯВНО выбранных моделях с read-only allowlist'ом для исследовательских
+   * фаз. undefined = обычное поведение без изменений.
+   */
+  orchestration?: import('../../shared/orchestration').OrchestrationRun
 
 }
 

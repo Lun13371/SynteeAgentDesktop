@@ -1,9 +1,10 @@
-import { promises as fs } from 'node:fs'
+import { constants, promises as fs } from 'node:fs'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { spawn, type ChildProcess } from 'node:child_process'
 import Database from 'better-sqlite3'
 import type { BrowserDataPage, BrowserImportOptions, BrowserImportResult, BrowserImportSource } from '../../shared/browserImport'
+import { userConfigDirectory } from '../platform/xdg'
 
 type Item = BrowserDataPage['items'][number]
 type Source = BrowserImportSource & { directory: string }
@@ -18,21 +19,52 @@ const LOCAL_STATE_BYTES = 2 * 1024 * 1024
 export type ChromeProfile = { id: string; name: string }
 export type ChromeDiscovery = { available: boolean; profiles: ChromeProfile[] }
 
-function chromeCandidates(): string[] {
+function chromeConfigDirectory(fallback = userConfigDirectory()): string {
+  const configured = process.env.CHROME_CONFIG_HOME
+  return configured && path.isAbsolute(configured) ? configured : fallback
+}
+
+function sameDirectory(first: string, second: string): boolean {
+  return process.platform === 'win32' ? first.toLowerCase() === second.toLowerCase() : first === second
+}
+
+function chromeCandidates(names: string[] = []): string[] {
   const env = process.env
+  if (process.platform === 'linux') {
+    return (env.PATH || '').split(path.delimiter).filter(directory => path.isAbsolute(directory))
+      .flatMap(directory => names.map(name => path.join(directory, name)))
+  }
   return [
     env.LOCALAPPDATA && path.join(env.LOCALAPPDATA, 'Google', 'Chrome', 'Application', 'chrome.exe'),
     env.PROGRAMFILES && path.join(env.PROGRAMFILES, 'Google', 'Chrome', 'Application', 'chrome.exe'),
     env['PROGRAMFILES(X86)'] && path.join(env['PROGRAMFILES(X86)'], 'Google', 'Chrome', 'Application', 'chrome.exe'),
   ].filter((v): v is string => !!v)
 }
-async function findChromeExe(): Promise<string | null> {
-  for (const candidate of chromeCandidates()) {
-    try { if ((await fs.stat(candidate)).isFile()) return candidate } catch { /* absent */ }
+async function findChromeExe(names: string[] = []): Promise<string | null> {
+  for (const candidate of chromeCandidates(names)) {
+    try {
+      if (!(await fs.stat(candidate)).isFile()) continue
+      if (process.platform === 'linux') await fs.access(candidate, constants.X_OK)
+      return candidate
+    } catch { /* absent */ }
   }
   return null
 }
 async function discoverChromeUserData(): Promise<{ root: string; exe: string } | null> {
+  if (process.platform === 'linux') {
+    const configDirectory = chromeConfigDirectory()
+    for (const [directory, commands] of [
+      ['google-chrome', ['google-chrome-stable', 'google-chrome']],
+      ['chromium', ['chromium', 'chromium-browser']]
+    ] as const) {
+      const exe = await findChromeExe([...commands])
+      if (!exe) continue
+      const override = process.env.CHROME_USER_DATA_DIR
+      const root = override && path.isAbsolute(override) ? override : path.join(configDirectory, directory)
+      try { if ((await fs.stat(root)).isDirectory()) return { root, exe } } catch { /* absent */ }
+    }
+    return null
+  }
   const exe = await findChromeExe()
   const local = process.env.LOCALAPPDATA
   if (!exe || !local) return null
@@ -48,7 +80,7 @@ export async function discoverChromeProfiles(): Promise<ChromeDiscovery> {
   const names: Record<string, string> = {}
   try {
     const state = await readJSON(path.join(found.root, 'Local State'), LOCAL_STATE_BYTES)
-    const cache = isObject(state) && isObject(state.profile?.info_cache) ? state.profile.info_cache : {}
+    const cache = isObject(state) && isObject(state.profile) && isObject(state.profile.info_cache) ? state.profile.info_cache : {}
     for (const [id, value] of Object.entries(cache)) {
       if (isObject(value) && typeof value.name === 'string' && CHROME_PROFILE.test(id)) names[id] = value.name.slice(0, 200)
     }
@@ -108,13 +140,13 @@ function safeURL(value: unknown): value is string {
 async function containedFile(directory: string, name: string): Promise<string> {
   const file = path.join(directory, name)
   const real = await fs.realpath(file)
-  if (path.dirname(real).toLowerCase() !== directory.toLowerCase()) throw new Error('Ссылка за пределы профиля запрещена')
+  if (!sameDirectory(path.dirname(real), directory)) throw new Error('Ссылка за пределы профиля запрещена')
   return real
 }
 
 export class BrowserImporter {
   constructor(
-    private readonly localAppData: string,
+    private readonly configDirectory: string,
     private readonly userData: string,
     private readonly profiles: () => Array<{ id: string; name: string }>,
     private readonly register: (profile: { id: string; name: string }) => void,
@@ -122,9 +154,18 @@ export class BrowserImporter {
 
   private async discover(): Promise<Source[]> {
     const result: Source[] = []
-    if (!this.localAppData) return result
-    for (const browser of ['chrome', 'edge'] as const) {
-      const root = path.join(this.localAppData, browser === 'chrome' ? 'Google/Chrome/User Data' : 'Microsoft/Edge/User Data')
+    if (!this.configDirectory) return result
+    const locations: Array<{ browser: BrowserImportSource['browser']; name: string; root: string }> = process.platform === 'linux'
+      ? [
+        { browser: 'chrome', name: 'Chrome', root: path.join(chromeConfigDirectory(this.configDirectory), 'google-chrome') },
+        { browser: 'chromium', name: 'Chromium', root: path.join(chromeConfigDirectory(this.configDirectory), 'chromium') },
+        { browser: 'edge', name: 'Edge', root: path.join(this.configDirectory, 'microsoft-edge') },
+      ]
+      : [
+        { browser: 'chrome', name: 'Chrome', root: path.join(this.configDirectory, 'Google/Chrome/User Data') },
+        { browser: 'edge', name: 'Edge', root: path.join(this.configDirectory, 'Microsoft/Edge/User Data') },
+      ]
+    for (const { browser, name, root } of locations) {
       let realRoot: string
       let entries: string[]
       try { realRoot = await fs.realpath(root); entries = await fs.readdir(root) } catch { continue }
@@ -133,13 +174,13 @@ export class BrowserImporter {
         let directory: string
         try {
           directory = await fs.realpath(path.join(root, entry))
-          if (path.dirname(directory).toLowerCase() !== realRoot.toLowerCase() || !(await fs.stat(directory)).isDirectory()) continue
+          if (!sameDirectory(path.dirname(directory), realRoot) || !(await fs.stat(directory)).isDirectory()) continue
         } catch { continue }
         const exists = async (name: string): Promise<boolean> => {
           try { return (await fs.stat(await containedFile(directory, name))).isFile() } catch { return false }
         }
         const bookmarks = await exists('Bookmarks'); const history = await exists('History')
-        if (bookmarks || history) result.push({ id: `${browser}:${entry}`, browser, name: `${browser === 'chrome' ? 'Chrome' : 'Edge'} — ${entry}`, bookmarks, history, directory })
+        if (bookmarks || history) result.push({ id: `${browser}:${entry}`, browser, name: `${name} — ${entry}`, bookmarks, history, directory })
       }
     }
     return result

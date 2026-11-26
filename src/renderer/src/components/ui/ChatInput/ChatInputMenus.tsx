@@ -9,12 +9,16 @@ import type { PluginAutoResult } from '../../../utils/pluginExtApi'
 interface ChatInputMenusProps {
   slashCmds: SlashCommand[]
   slashIdx: number
+  /** Введённый запрос без '/' — подсветка совпадающего префикса в SlashMenu. */
+  slashQuery?: string
   mentionItems: MentionItem[]
   mentionIdx: number
   argPickerCmd: SlashCommand | null
   argPickerLevel: number
   argPickerChoices: string[]
   argPickerIdx: number
+  /** Частично введённый префикс текущего аргумента — подсветка в пикере. */
+  argPrefix?: string
   boxRef: React.RefObject<HTMLElement | null>
   onSelectCommand: (cmd: SlashCommand) => void
   onCloseSlash: () => void
@@ -37,12 +41,14 @@ interface ChatInputMenusProps {
 export function ChatInputMenus({
   slashCmds,
   slashIdx,
+  slashQuery,
   mentionItems,
   mentionIdx,
   argPickerCmd,
   argPickerLevel,
   argPickerChoices,
   argPickerIdx,
+  argPrefix,
   boxRef,
   onSelectCommand,
   onCloseSlash,
@@ -61,6 +67,7 @@ export function ChatInputMenus({
       <SlashMenu
         commands={slashCmds}
         selectedIndex={slashIdx}
+        query={slashQuery}
         anchorRef={anchor}
         onSelect={onSelectCommand}
         onClose={onCloseSlash}
@@ -75,12 +82,14 @@ export function ChatInputMenus({
         onClose={onCloseMention}
       />
 
-      {/* Пикер аргументов команды (многоуровневый enum-пикер) */}
+      {/* Пикер аргументов команды (многоуровневый enum-пикер;
+          пустой choices + заданная команда = free-text подсказка) */}
       <CommandArgMenu
         cmd={argPickerCmd}
         level={argPickerLevel}
         choices={argPickerChoices}
         selectedIndex={argPickerIdx}
+        prefix={argPrefix}
         anchorRef={anchor}
         onSelect={onSelectArgChoice}
         onClose={onCloseArgPicker}

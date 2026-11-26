@@ -6,56 +6,155 @@
   background: var(--glass-bg, rgba(18,18,28,0.97));
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
-  padding: 8px;
-  max-height: 260px;
+  padding: 6px;
+  max-height: 300px;
   overflow-y: auto;
   box-shadow: 0 8px 32px rgba(var(--shadow-rgb), 0.5);
   font-size: 12px;
   visibility: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 .slash-menu::-webkit-scrollbar { width: 3px; }
 .slash-menu::-webkit-scrollbar-thumb { background: var(--overlay-4); border-radius: 2px; }
 
+/* ── Хедер: заголовок + счётчик + клавиши ─────────────────────────────────── */
+.slash-menu-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px 8px;
+  margin-bottom: 2px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  position: sticky;
+  top: 0;
+  background: inherit;
+  z-index: 1;
+}
+.slash-menu-head-title {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.slash-menu-head-count {
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+.slash-menu-head-keys {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--overlay-6);
+  white-space: nowrap;
+}
+
+.slash-menu-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+/* ── Строка команды: двухэтажная (имя+чипы аргументов / описание) ─────────── */
 .slash-menu-item {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 9px;
   width: 100%;
   padding: 7px 10px;
-  border-radius: 8px;
+  border-radius: 9px;
   border: none;
   background: transparent;
   cursor: pointer;
   text-align: left;
   transition: background 0.1s;
+  position: relative;
 }
 .slash-menu-item:hover { background: var(--overlay-3); }
 .slash-menu-item--active { background: color-mix(in srgb, var(--accent) 16%, transparent) !important; }
+/* Акцентная планка слева у активной строки */
+.slash-menu-item--active::before {
+  content: '';
+  position: absolute;
+  left: 3px;
+  top: 8px;
+  bottom: 8px;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+}
 
 .slash-menu-icon {
   flex-shrink: 0;
-  color: color-mix(in srgb, var(--accent) 85%, transparent);
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
   display: flex;
   align-items: center;
+  justify-content: center;
+  color: color-mix(in srgb, var(--accent) 85%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.slash-menu-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+.slash-menu-title {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
 }
 .slash-menu-label {
   font-size: 13px;
   font-weight: 600;
   color: var(--text-secondary);
-  min-width: 68px;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
+.slash-menu-label-dim { color: var(--overlay-6); }
+.slash-menu-label-match { color: var(--accent); }
+
+/* Чип аргумента — как в Discord: имя аргумента в «слоте» */
+.slash-menu-arg {
+  font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--text-muted);
+  background: var(--overlay-3);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 5px;
+  line-height: 16px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 160px;
+}
+.slash-menu-arg--req {
+  color: #f87171;
+  border-color: rgba(248, 113, 113, 0.35);
+  background: rgba(248, 113, 113, 0.08);
+}
+
 .slash-menu-desc {
   font-size: 12px;
   color: var(--text-muted);
-  flex: 1;
-}
-.slash-menu-hint {
-  font-size: 11px;
-  color: var(--overlay-6);
-  font-style: italic;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
+.slash-menu-item--active .slash-menu-desc { color: var(--text-secondary); }
 
 .slash-menu-source {
   flex-shrink: 0;

@@ -3,6 +3,7 @@ import type { BrowserWindow } from 'electron'
 import { ipcMain } from 'electron'
 import { getAllProjects } from '../../core/db/projects'
 import { runGit } from '../git/runGit'
+import { refreshBranches } from '../git/refresh'
 import type { MainWindow } from '../windows/MainWindow'
 import type { NotificationManager } from './NotificationManager'
 import { IPC_EVENTS } from '../../shared/constants'
@@ -206,7 +207,12 @@ export class GitSyncManager {
       if (!branch) return null
       const upstream = (await runGit(workdir, ['rev-parse', '--abbrev-ref', `${branch}@{upstream}`], { timeoutMs: FETCH_TIMEOUT_MS })).trim()
       if (!upstream) return null
-      await runGit(workdir, ['fetch', '--prune'], { timeoutMs: FETCH_TIMEOUT_MS })
+      // Обновляем удалённые refs тем же singleton-обновлятором, что панель, граф
+      // и чип «Обзор» (src/main/git/refresh.ts): один fetch на репозиторий, без
+      // конкурирующих fetch'ей и без интерактива. Поведение при неудаче прежнее:
+      // не строим сводку/бейдж, причину пишем только в лог (ниже, в catch).
+      const refreshed = await refreshBranches(workdir)
+      if (!refreshed.success) throw new Error(refreshed.error ?? 'git fetch failed')
       const counts = parseCounts(await runGit(workdir, ['rev-list', '--left-right', '--count', '@{u}...HEAD'], { timeoutMs: FETCH_TIMEOUT_MS }))
       const commits = parseCommits(await runGit(workdir, [
         'log', 'HEAD..@{u}', `--format=%H%x1f%h%x1f%an%x1f%ad%x1f%s%x1e`, '--date=short', `--max-count=${MAX_COMMITS}`,

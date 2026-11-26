@@ -1,6 +1,6 @@
 /**
  * Простой файловый логгер для дебага.
- * Пишет в C:\Projects\SynteeHelper\logs\debug.log
+ * Пишет в logs/debug.log в каталоге данных приложения или рабочем каталоге отладки.
  *
  * ВАЖНО: этот модуль импортируется и главным процессом, и worker_threads
  * (ai-worker.ts → AIClient.ts → logger). Транкация лога при старте должна
@@ -12,15 +12,26 @@
  */
 import * as fs from 'fs'
 import * as path from 'path'
+import { homedir } from 'os'
 import { isMainThread } from 'worker_threads'
 
-const logDir = path.join('C:\\Projects\\SynteeHelper', 'logs')
+const xdgConfigHome = process.env.XDG_CONFIG_HOME ?? ''
+const configHome = path.isAbsolute(xdgConfigHome) ? xdgConfigHome : path.join(homedir(), '.config')
+const defaultDataDir = process.platform === 'win32'
+  ? 'C:\\Projects\\SynteeHelper'
+  : path.join(configHome, 'SynteeHelper')
+const logDir = path.join(process.env.SYNTEE_USER_DATA_DIR || defaultDataDir, 'logs')
 const logFile = path.join(logDir, 'debug.log')
 
-if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true })
-
-if (isMainThread) {
-  fs.writeFileSync(logFile, `=== SynteeHelper Debug Log — ${new Date().toISOString()} ===\n`)
+let loggingEnabled = true
+try {
+  fs.mkdirSync(logDir, { recursive: true })
+  if (isMainThread) {
+    fs.writeFileSync(logFile, `=== SynteeHelper Debug Log — ${new Date().toISOString()} ===\n`)
+  }
+} catch (error) {
+  loggingEnabled = false
+  console.warn('[logger] Не удалось открыть файл журнала:', error)
 }
 
 let _buffer: string[] = []
@@ -53,6 +64,7 @@ function scheduleFlush(): void {
 process.on('exit', flushBufferSync)
 
 export function log(...args: unknown[]): void {
+  if (!loggingEnabled) return
   const line = `[${new Date().toISOString()}] ${args.map(a =>
     typeof a === 'string' ? a : JSON.stringify(a)
   ).join(' ')}\n`

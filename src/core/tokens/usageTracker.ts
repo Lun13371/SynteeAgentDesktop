@@ -14,6 +14,8 @@ import { getGatewayModelsCache, GATEWAY_PROVIDER_ID } from './gatewayModelsCache
 import { BUILTIN_MODELS } from '../../shared/data/builtinModels'
 import { IMAGE_TOKEN_COST } from '../../shared/imageFormat'
 import { getModelPrice as getModelPriceStatic, type ModelPrice } from './ModelPricing'
+import { API_OVERHEAD_TOKENS, contextPct, contextStatus } from '../../shared/contextUsage'
+import type { ModelMeta } from '../../shared/types'
 
 // ─── Кэшированный энкодер ──────────────────────────────────────────────────────
 
@@ -84,6 +86,8 @@ type MessageLike = {
   tool_calls?: unknown
   tool_call_id?: string
   name?: string
+  reasoning_content?: string
+  thinking_blocks?: Array<{ thinking: string; signature: string }>
 }
 
 /**
@@ -126,6 +130,44 @@ function estimateMessageTokens(m: MessageLike): number {
   }
   if (m.tool_call_id) n += estimateTokens(m.tool_call_id)
   if (m.name) n += estimateTokens(m.name)
+  n += thinkingTokens(m)
+  return n
+}
+
+/**
+ * Reasoning одного сообщения — как список строк, которые РЕАЛЬНО попадают
+ * в счёт провайдера.
+ *
+ * Замерено на живых чатах (диагностика по syntee.db + prompt_tokens от API):
+ *   chat 6c9b7189: content 132 453 + tool_calls 42 353 + overhead 2 096
+ *                  + system/tools ≈ 206k  →  real 207 491
+ *                  а reasoning_content в истории весит ещё 191 375 токенов;
+ *   chat a91ae98a: content 113 130 + tool_calls 77 696 + overhead 2 760
+ *                  + system/tools ≈ 218k  →  real 219 382
+ *                  reasoning_content в истории — 172 322 токена.
+ *
+ * То есть `reasoning_content` в исторических assistant-сообщениях провайдер
+ * НЕ считает (DeepSeek/gateway поле принимают, но в prompt_tokens не включают).
+ * Мы же его отправляем (LiteLLM-прокси для GLM иначе отдаёт 400), и старая
+ * оценка складывала его в контекст — отсюда «накручено на 100k+».
+ *
+ * `thinking_blocks` (нативный Anthropic extended thinking) — наоборот, часть
+ * входа и считается. Поэтому: считаем блоки, reasoning_content — никогда.
+ * Остаточный перекос для моделей, которые reasoning_content всё же учитывают,
+ * выравнивает калибровка (recordEstimateCalibration).
+ *
+ * Единый источник и для синхронного, и для Rust-пути (parity обязательна:
+ * иначе оценка зависит от того, доступен ли sidecar).
+ */
+function reasoningParts(m: MessageLike): string[] {
+  const blocks = m.thinking_blocks ?? []
+  if (blocks.length) return blocks.flatMap(block => [block.thinking, block.signature])
+  return []
+}
+
+function thinkingTokens(m: MessageLike): number {
+  let n = 0
+  for (const part of reasoningParts(m)) n += estimateTokens(part)
   return n
 }
 
@@ -161,7 +203,7 @@ function messageTokenFingerprint(m: MessageLike): string {
   }
   let toolCalls = ''
   try { toolCalls = m.tool_calls ? JSON.stringify(m.tool_calls) : '' } catch { toolCalls = String(m.tool_calls) }
-  return JSON.stringify([1, m.role, content, toolCalls, m.tool_call_id ?? '', m.name ?? ''])
+  return JSON.stringify([2, m.role, content, toolCalls, m.tool_call_id ?? '', m.name ?? '', m.reasoning_content, m.thinking_blocks])
 }
 
 function getCachedMessageTokens(m: MessageLike): number {
@@ -242,6 +284,7 @@ function messageTokenParts(m: MessageLike): string[] {
   }
   if (m.tool_call_id) parts.push(m.tool_call_id)
   if (m.name) parts.push(m.name)
+  parts.push(...reasoningParts(m))
   return parts
 }
 
@@ -299,16 +342,16 @@ export async function truncateToTokensAsync(
     } catch { /* fall through to the JS path */ }
   }
   if (estimateTokens(text) <= maxTokens) return { text, tokens: estimateTokens(text), truncated: false }
-  const words = text.split(/\s+/)
-  let out = ''
-  let used = 0
-  for (const word of words) {
-    const cost = estimateTokens(word)
-    if (used + cost > maxTokens) break
-    out += (out ? ' ' : '') + word
-    used += cost
+  let low = 0
+  let high = text.length
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2)
+    if (estimateTokens(text.slice(0, middle)) <= maxTokens) low = middle
+    else high = middle - 1
   }
-  return { text: out, tokens: used, truncated: true }
+  const prefix = text.slice(0, low)
+  const trimmed = /[\uD800-\uDBFF]$/.test(prefix) ? prefix.slice(0, -1) : prefix
+  return { text: trimmed, tokens: estimateTokens(trimmed), truncated: true }
 }
 
 // ─── Единые пороги компакции контекста ────────────────────────────────────────
@@ -373,15 +416,120 @@ export interface UsageSnapshot {
 // Agent.ts импортируют TOOL_SCHEMAS_OVERHEAD отсюда (раньше значение было
 // продублировано в нескольких местах с риском рассинхрона).
 export const TOOL_SCHEMAS_OVERHEAD = 4200
-const API_OVERHEAD = 100
+const API_OVERHEAD = API_OVERHEAD_TOKENS
+
+// ─── Калибровка оценки по реальным токенам ───────────────────────────────────
+//
+// tiktoken (cl100k_base) — не токенизатор модели. Для русского текста и кода
+// он даёт систематически больше токенов, чем реальные токенизаторы современных
+// моделей: на живых логах оценка истории 478k против реальных 252k (×1.9).
+// Пороги компакции и «аварийный клапан» считают по оценке, поэтому завышение
+// вредно: клапан срабатывает раньше, а кольцо показывает цифру, которой нет.
+//
+// Лечим без смены токенизатора: после каждого real-ответа провайдера знаем
+// точное значение и сравниваем с оценкой того же запроса → ведём EWMA-коэффициент
+// на пару provider:model. Коэффициент применяется к следующим оценкам.
+// Калибровка живёт в памяти процесса; main персистит её (electron-store) и
+// передаёт воркерам через workerData при старте.
+
+const CALIBRATION_MIN = 0.35
+const CALIBRATION_MAX = 1.5
+const CALIBRATION_ALPHA = 0.3
+/**
+ * Версия семантики оценки. Меняется при ЛЮБОМ изменении того, что входит в
+ * estimateMessagesTokens (сейчас — исключение reasoning_content из счёта).
+ * Коэффициенты, выученные на старой семантике, несовместимы: они компенсировали
+ * прошлый перекос и теперь занизили бы контекст. Входит в ключ, поэтому старые
+ * записи просто перестают читаться и не требуют миграции стора.
+ */
+const CALIBRATION_EPOCH = 'v2'
+const _calibration = new Map<string, number>()
+let _calibrationKey = ''
+let _calibrationListener: ((entries: Record<string, number>) => void) | null = null
+
+/** main: вызывается при изменении — чтобы сохранить коэффициенты в стор. */
+export function setCalibrationListener(listener: ((entries: Record<string, number>) => void) | null): void {
+  _calibrationListener = listener
+}
+
+/** Ключ калибровки пары provider:model — единая формула для всех вызывающих. */
+export function calibrationKey(providerId: string | undefined, modelId: string | undefined): string {
+  return providerId || modelId ? `${CALIBRATION_EPOCH}:${providerId ?? ''}:${modelId ?? ''}` : ''
+}
+
+/**
+ * Модель по умолчанию для текущего потока (воркер обслуживает один ран).
+ *
+ * В main-процессе параллельно живут разные чаты с разными моделями, поэтому
+ * там ключ передаётся явно в опциях снапшота и в recordEstimateCalibration —
+ * иначе расчёт для чата B мог бы применить коэффициент чата A.
+ */
+export function setCalibrationModel(providerId: string, modelId: string): void {
+  _calibrationKey = calibrationKey(providerId, modelId)
+}
+
+export function exportCalibration(): Record<string, number> {
+  return Object.fromEntries(_calibration)
+}
+
+/** main (из стора) и worker (из workerData) загружают общие коэффициенты. */
+export function importCalibration(entries: Record<string, number> | undefined | null): void {
+  if (!entries) return
+  for (const [key, value] of Object.entries(entries)) {
+    if (typeof value === 'number' && Number.isFinite(value) && value > 0) _calibration.set(key, value)
+  }
+}
+
+/**
+ * Учимся на паре «оценка того же запроса → реальный prompt_tokens».
+ * Игнорируем выбросы: real должен быть в пределах 0.3x…3x от оценки, иначе
+ * это не систематическая ошибка токенизатора, а другой запрос.
+ *
+ * `key` — явная пара provider:model (main-процесс); без него берётся
+ * активная модель потока (воркер).
+ */
+export function recordEstimateCalibration(
+  estimated: number,
+  realTokens: number,
+  key: string = _calibrationKey,
+): void {
+  if (!key || !(estimated > 0) || !(realTokens > 0)) return
+  const ratio = realTokens / estimated
+  if (ratio < 0.3 || ratio > 3) return
+  const previous = _calibration.get(key)
+  // Первое наблюдение берём целиком (alpha=1): ждать 5-6 раундов EWMA опасно —
+  // всё это время кольцо и пороги компакции работают на неверной шкале.
+  const alpha = previous === undefined ? 1 : CALIBRATION_ALPHA
+  const base = previous ?? 1
+  const next = Math.min(CALIBRATION_MAX, Math.max(CALIBRATION_MIN, base * (1 - alpha) + ratio * alpha))
+  if (previous !== undefined && Math.abs(next - previous) < 0.005) return
+  _calibration.set(key, next)
+  try { _calibrationListener?.(exportCalibration()) } catch { /* калибровка не должна ломать подсчёт */ }
+}
+
+/** Текущий коэффициент (1 — калибровки ещё нет). */
+export function estimateCalibrationFactor(key: string = _calibrationKey): number {
+  return (key && _calibration.get(key)) || 1
+}
+
+/**
+ * Оценка текста в той же шкале, что и снапшоты контекста (с калибровкой).
+ *
+ * Нужна всем, кто показывает «сэкономлено токенов» (janitor, economist):
+ * иначе цифра считается сырым cl100k (×1.9 к реальности), а рядом в кольце
+ * контекста стоит калиброванное значение — два разных числа про одно и то же.
+ */
+export function estimateTokensCalibrated(text: string, key: string = _calibrationKey): number {
+  return Math.round(estimateTokens(text) * estimateCalibrationFactor(key))
+}
 
 export function buildSnapshotFromReal(
   real: RealUsage,
   limit: number,
   prevBreakdown?: UsageSnapshot['breakdown'],
 ): UsageSnapshot {
-  const pct = Math.min(100, Math.round(real.promptTokens / limit * 100))
-  const status = pct >= 85 ? 'critical' : pct >= 60 ? 'warn' : 'ok'
+  const pct = contextPct(real.promptTokens, limit)
+  const status = contextStatus(pct)
 
   // Раньше breakdown наследовался verbatim из последнего estimate-эмиттера —
   // это показывало ЧУЖОЙ breakdown под видом 'real' (т.к. источники считали
@@ -459,21 +607,28 @@ export function computeContextSnapshot(
     /** Exact schemas sent to the model (including enabled external tools). */
     toolSchemas?: unknown[]
     toolResultTokens?: number
+    /** Явная пара provider:model (main-процесс); иначе активная модель потока. */
+    calibrationKey?: string
   } = {},
 ): UsageSnapshot {
-  const historyTokens = estimateMessagesTokensFull(messages)
-  const systemPromptTokens = opts.systemPrompt ? estimateTokens(opts.systemPrompt) + 4 : 0
+  // Калибровка: tiktoken ≠ токенизатор модели. Коэффициент выучен на реальных
+  // prompt_tokens (recordEstimateCalibration) и применяется ко всем частям,
+  // чтобы сумма breakdown оставалась равной estimated.
+  const factor = estimateCalibrationFactor(opts.calibrationKey)
+  const scale = (value: number): number => Math.round(value * factor)
+  const historyTokens = scale(estimateMessagesTokensFull(messages))
+  const systemPromptTokens = opts.systemPrompt ? scale(estimateTokens(opts.systemPrompt) + 4) : 0
   const toolSchemasTokens = opts.includeToolSchemas === true
     ? opts.toolSchemas !== undefined
-      ? (opts.toolSchemas.length ? estimateTokens(JSON.stringify(opts.toolSchemas)) : 0)
-      : TOOL_SCHEMAS_OVERHEAD
+      ? scale(opts.toolSchemas.length ? estimateTokens(JSON.stringify(opts.toolSchemas)) : 0)
+      : scale(TOOL_SCHEMAS_OVERHEAD)
     : 0
-  const currentMsgTokens = opts.currentMsgTokens ?? 0
-  const toolResultTokens = opts.toolResultTokens ?? 0
+  const currentMsgTokens = scale(opts.currentMsgTokens ?? 0)
+  const toolResultTokens = scale(opts.toolResultTokens ?? 0)
 
   const estimated = historyTokens + systemPromptTokens + toolSchemasTokens + currentMsgTokens + toolResultTokens + API_OVERHEAD
-  const pct = Math.min(100, Math.round(estimated / limit * 100))
-  const status = pct >= 85 ? 'critical' : pct >= 60 ? 'warn' : 'ok'
+  const pct = contextPct(estimated, limit)
+  const status = contextStatus(pct)
 
   return {
     estimated,
@@ -491,6 +646,22 @@ export function computeContextSnapshot(
   }
 }
 
+/** Account for the exact messages and schemas of one provider request. */
+export function computeRequestContextSnapshot(
+  messages: MessageLike[],
+  limit: number,
+  toolSchemas: unknown[],
+  calibration?: string,
+): UsageSnapshot {
+  const system = messages[0]?.role === 'system' ? messages[0] : undefined
+  return computeContextSnapshot(system ? messages.slice(1) : messages, limit, {
+    systemPrompt: typeof system?.content === 'string' ? system.content : undefined,
+    includeToolSchemas: true,
+    toolSchemas,
+    calibrationKey: calibration,
+  })
+}
+
 export function buildSnapshotFromEstimate(
   messages: Array<{ role: string; content: string }>,
   limit: number,
@@ -499,6 +670,9 @@ export function buildSnapshotFromEstimate(
     currentMsgTokens?: number
     toolResultTokens?: number
     includeToolSchemas?: boolean
+    /** Реальные схемы запроса; без них используется грубая константа. */
+    toolSchemas?: unknown[]
+    calibrationKey?: string
   } = {},
 ): UsageSnapshot {
   // Тонкая обёртка: history=messages (без system), system/tools/current — опциями.
@@ -506,13 +680,35 @@ export function buildSnapshotFromEstimate(
     systemPrompt: opts.systemPrompt,
     currentMsgTokens: opts.currentMsgTokens,
     includeToolSchemas: opts.includeToolSchemas,
+    toolSchemas: opts.toolSchemas,
     toolResultTokens: opts.toolResultTokens,
+    calibrationKey: opts.calibrationKey,
   })
 }
 
 // ─── Сессионная стоимость ─────────────────────────────────────────────────────
 // Map<chatId, { totalCents, requests }> — живёт пока жив процесс
 const sessionCosts = new Map<string, { totalCents: number; requests: number }>()
+
+/** Tariff estimate from provider token usage, never an authoritative invoice.
+ * Unknown cache rates use the ordinary input price rather than free tokens.
+ */
+export function calculateUsageCost(
+  pricing: ModelPrice | null,
+  inputTokens: number,
+  outputTokens: number,
+  cacheReadTokens = 0,
+  cacheWriteTokens = 0,
+): number | null {
+  if (!pricing || ![pricing.inputPerM, pricing.outputPerM, inputTokens, outputTokens]
+    .every(value => Number.isFinite(value) && value >= 0)) return null
+  const read = Math.min(inputTokens, Math.max(0, Number.isFinite(cacheReadTokens) ? cacheReadTokens : 0))
+  const write = Math.min(inputTokens - read, Math.max(0, Number.isFinite(cacheWriteTokens) ? cacheWriteTokens : 0))
+  const cacheRate = (rate: number | undefined): number =>
+    rate != null && Number.isFinite(rate) && rate >= 0 ? rate : pricing.inputPerM
+  return ((inputTokens - read - write) * pricing.inputPerM + outputTokens * pricing.outputPerM
+    + read * cacheRate(pricing.cacheReadPerM) + write * cacheRate(pricing.cacheWritePerM)) / 1_000_000
+}
 
 export function recordSessionCost(
   chatId: string,
@@ -537,15 +733,8 @@ export function recordSessionCost(
   //     AIClient нормализует: totalPrompt = input + cache_read + cache_creation
   //
   // Поэтому nonCachedInput = promptTokens - cacheRead - cacheWrite
-  const nonCachedInput = Math.max(0, inputTokens - (cacheReadTokens ?? 0) - (cacheWriteTokens ?? 0))
-  let cents = (nonCachedInput / 1_000_000) * pricing.inputPerM
-  cents += (outputTokens / 1_000_000) * pricing.outputPerM
-  if (cacheReadTokens && pricing.cacheReadPerM) {
-    cents += (cacheReadTokens / 1_000_000) * pricing.cacheReadPerM
-  }
-  if (cacheWriteTokens && pricing.cacheWritePerM) {
-    cents += (cacheWriteTokens / 1_000_000) * pricing.cacheWritePerM
-  }
+  const cents = calculateUsageCost(pricing, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens)
+  if (cents == null) return null
 
   const entry = sessionCosts.get(chatId) ?? { totalCents: 0, requests: 0 }
   entry.totalCents += cents
@@ -564,7 +753,7 @@ export function resetSessionCost(chatId: string): void {
 
 // ─── Цены моделей (catalog → builtin → static pricing table) ──────────────────
 
-export function getModelPriceInfo(providerId: string, modelId: string): ModelPrice | null {
+export function getModelPriceInfo(providerId: string, modelId: string, customModels: ModelMeta[] = []): ModelPrice | null {
   if (!modelId) return null
 
   // 1. Модели Syntee-Gateway — цены отдаёт сам gateway (pricing per_1k →
@@ -572,17 +761,27 @@ export function getModelPriceInfo(providerId: string, modelId: string): ModelPri
   // substring-матчингом подменяет модель похожей (glm-5.3 → zai:glm-5).
   if (providerId === GATEWAY_PROVIDER_ID) {
     const gw = getGatewayModelsCache().find(m => m.id === modelId)
-    if (gw && (gw.inputPrice != null || gw.outputPrice != null)) {
+    if (gw && gw.inputPrice != null && gw.outputPrice != null
+      && [gw.inputPrice, gw.outputPrice].every(p => Number.isFinite(p) && p >= 0)) {
       return {
-        inputPerM: Math.round((gw.inputPrice ?? 0) * 100),
-        outputPerM: Math.round((gw.outputPrice ?? 0) * 100),
+        inputPerM: (gw.inputPrice ?? 0) * 100,
+        outputPerM: (gw.outputPrice ?? 0) * 100,
       }
     }
+    // A similarly named public model is not the gateway's actual tariff.
+    return null
+  }
+
+  // Explicit user tariffs belong to the exact provider+model pair only.
+  const custom = Array.isArray(customModels) ? customModels.find(m => m.providerId === providerId && m.id === modelId) : undefined
+  if (custom && custom.inputPrice != null && custom.outputPrice != null
+    && [custom.inputPrice, custom.outputPrice].every(p => Number.isFinite(p) && p >= 0)) {
+    return { inputPerM: custom.inputPrice * 100, outputPerM: custom.outputPrice * 100 }
   }
 
   // 2. Каталог models.dev
   const fromCatalog = getCatalogModel(providerId, modelId)
-  if (fromCatalog && (fromCatalog.inputPricePerM > 0 || fromCatalog.outputPricePerM > 0)) {
+  if (fromCatalog && (fromCatalog.hasPricing || fromCatalog.inputPricePerM > 0 || fromCatalog.outputPricePerM > 0)) {
     return {
       inputPerM: fromCatalog.inputPricePerM,
       outputPerM: fromCatalog.outputPricePerM,
@@ -594,7 +793,7 @@ export function getModelPriceInfo(providerId: string, modelId: string): ModelPri
   // 3. Builtin модели (цены в $ за 1M → переводим в центы ×100)
   const builtin = BUILTIN_MODELS.find(m => m.id === modelId && (providerId ? m.providerId === providerId : true))
   if (builtin?.inputPrice != null && builtin?.outputPrice != null) {
-    return { inputPerM: Math.round(builtin.inputPrice * 100), outputPerM: Math.round(builtin.outputPrice * 100) }
+    return { inputPerM: builtin.inputPrice * 100, outputPerM: builtin.outputPrice * 100 }
   }
 
   // 4. Статичная таблица ModelPricing (substring fallback)

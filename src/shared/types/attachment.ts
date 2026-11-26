@@ -14,7 +14,7 @@
  *           summary + последние сообщения, клик в чате → переход в чат).
  *  'project' — ссылка на проект (@пикер; инлайнится имя+workdir+контекст,
  *           клик → переход в последний чат проекта). */
-export type AttachmentKind = 'file' | 'image' | 'audio' | 'video' | 'skill' | 'command' | 'chat' | 'project'
+export type AttachmentKind = 'file' | 'image' | 'audio' | 'video' | 'skill' | 'command' | 'chat' | 'project' | 'mcp'
 
 /** Источник прикрепления (для UI-бейджа и логирования).
  *  'reply' — вложение пришло из реплайнутого сообщения (дублируется в
@@ -38,6 +38,8 @@ export type AttachmentSource = 'mention' | 'dragdrop' | 'paste' | 'dialog' | 're
  *  - skillId / commandName: для kind='skill'/'command' — идентификатор сущности.
  *  - chatId / projectId: для kind='chat'/'project' — ссылка на сущность
  *    (path у них нет — файловой привязки нет).
+ *  - mcpServerId: для kind='mcp' — id MCP-сервера (McpManager). Main инжектит
+ *    имя сервера и его инструменты в контекст этого запроса.
  *  - snippet: краткий preview содержимого (первые ~200 символов) для tooltip.
  */
 export interface Attachment {
@@ -56,6 +58,8 @@ export interface Attachment {
   chatId?: string
   /** ID проекта (для kind='project') — ссылка на проект. */
   projectId?: string
+  /** ID MCP-сервера (для kind='mcp') — его инструменты инжектятся в запрос. */
+  mcpServerId?: string
   snippet?: string
   /** Время прикрепления (для сортировки недавних в @-пикере). */
   attachedAt: number
@@ -68,8 +72,6 @@ export interface Attachment {
  * в message.attachmentResult для отображения после рестарта. Live-стриминг
  * идёт через toolProgress['process_attachments'] с полями {stage, detail,
  * filesProcessed, filesTotal}.
- *
- * Структура как у FastContextResultData — files[], summary, ms.
  */
 export interface AttachmentProcessingFile {
   name: string
@@ -88,6 +90,21 @@ export interface AttachmentProcessingResult {
   totalImages: number
   ms: number
   hasErrors: boolean
+}
+
+/**
+ * Лёгкие метаданные вложения §steer (ToolStep.attachments): их достаточно
+ * InlineAttachmentRenderer для чипов/миниатюр в карточке реплики. Полные
+ * Attachment не храним — dataUrl (base64-превью из paste) и snippet не нужны
+ * в БД, файлы уже лежат на диске в draft-attachments.
+ */
+export interface SteerAttachmentMeta {
+  id: string
+  kind: AttachmentKind
+  name: string
+  path?: string
+  mime?: string
+  size?: number
 }
 
 /**

@@ -14,13 +14,13 @@ async function run() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'syntee-chrome-smoke-'))
   const originalLoad = Module._load
   const originalTs = Module._extensions['.ts']
-  const savedEnv = Object.fromEntries(['LOCALAPPDATA', 'PROGRAMFILES', 'PROGRAMFILES(X86)'].map(k => [k, process.env[k]]))
+  const savedEnv = Object.fromEntries(['LOCALAPPDATA', 'PROGRAMFILES', 'PROGRAMFILES(X86)', 'XDG_CONFIG_HOME', 'CHROME_CONFIG_HOME', 'CHROME_USER_DATA_DIR', 'PATH'].map(k => [k, process.env[k]]))
   try {
     const local = path.join(root, 'local')
     const programFiles = path.join(root, 'program-files')
-    const exe = path.join(local, 'Google', 'Chrome', 'Application', 'chrome.exe')
-    const userData = path.join(local, 'Google', 'Chrome', 'User Data')
-    fs.mkdirSync(path.dirname(exe), { recursive: true }); fs.writeFileSync(exe, 'fixture executable')
+    const exe = path.join(local, process.platform === 'linux' ? 'bin/google-chrome-stable' : 'Google/Chrome/Application/chrome.exe')
+    const userData = path.join(local, process.platform === 'linux' ? 'google-chrome' : 'Google/Chrome/User Data')
+    fs.mkdirSync(path.dirname(exe), { recursive: true }); fs.writeFileSync(exe, 'fixture executable', { mode: 0o755 })
     for (const id of ['Default', 'Profile 1']) fs.mkdirSync(path.join(userData, id), { recursive: true })
     fs.mkdirSync(path.join(programFiles, 'Google', 'Chrome', 'Application'), { recursive: true })
     fs.writeFileSync(path.join(userData, 'Local State'), JSON.stringify({ profile: { info_cache: {
@@ -29,6 +29,10 @@ async function run() {
     process.env.LOCALAPPDATA = local
     process.env.PROGRAMFILES = programFiles
     delete process.env['PROGRAMFILES(X86)']
+    process.env.XDG_CONFIG_HOME = local
+    delete process.env.CHROME_CONFIG_HOME
+    delete process.env.CHROME_USER_DATA_DIR
+    if (process.platform === 'linux') process.env.PATH = path.dirname(exe)
 
     Module._extensions['.ts'] = (mod, filename) => mod._compile(ts.transpileModule(fs.readFileSync(filename, 'utf8'), {
       compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true }
@@ -61,6 +65,15 @@ async function run() {
     const failing = openChromeProfile('Default', undefined, () => { calls++; const child = new EventEmitter(); child.unref = () => assert.fail('failed launch must not unref'); setImmediate(() => child.emit('error', new Error('fixture spawn failure'))); return child })
     assert.deepEqual(await failing, { ok: false, error: 'fixture spawn failure' })
     assert.equal(calls, 2)
+    if (process.platform === 'linux') {
+      const chromiumRoot = path.join(local, 'chromium')
+      fs.mkdirSync(path.join(chromiumRoot, 'Default'), { recursive: true })
+      fs.renameSync(exe, path.join(path.dirname(exe), 'chromium'))
+      assert.deepEqual((await discoverChromeProfiles()).profiles, [{ id: 'Default', name: 'По умолчанию' }])
+      process.env.CHROME_USER_DATA_DIR = userData
+      assert.deepEqual((await discoverChromeProfiles()).profiles, discovered.profiles)
+      console.log('PASS Linux PATH executable, Chromium fallback and CHROME_USER_DATA_DIR')
+    }
     console.log('PASS Chrome profile discovery, validation, exact launch args, spawn/unref and async launch failure')
   } finally {
     for (const [key, value] of Object.entries(savedEnv)) { if (value === undefined) delete process.env[key]; else process.env[key] = value }

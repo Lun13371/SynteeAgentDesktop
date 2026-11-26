@@ -30,6 +30,7 @@ import {
   type AudioControllerInstance,
   type NativeAudioFormat
 } from '../audio/nativeAudio'
+import { createPulseCapture, listPulseOutputs, pulseCaptureFormat, type PulseOutput } from '../audio/pulseAudio'
 
 export interface VisualizerFramePayload {
   level: number
@@ -72,6 +73,7 @@ for (let i = 0; i < FFT_SIZE; i++) {
 }
 
 let controller: AudioControllerInstance | null = null
+let captureGeneration = 0
 let format: NativeAudioFormat | null = null
 let emitTimer: ReturnType<typeof setInterval> | null = null
 
@@ -186,6 +188,11 @@ function resetAnalysis(): void {
 }
 
 function handlePcmChunk(mainWindow: MainWindow, chunk: Buffer): void {
+  const win = mainWindow.getWindow()
+  if (!win || !win.isVisible() || win.isMinimized()) {
+    if (ringFilled > 0) resetAnalysis()
+    return
+  }
   lastDataAt = Date.now()
   const channels = Math.max(1, format?.channels ?? 2)
   const frameCount = Math.floor(chunk.length / (2 * channels))
@@ -217,16 +224,20 @@ function handlePcmChunk(mainWindow: MainWindow, chunk: Buffer): void {
 
 function emitFrame(mainWindow: MainWindow): void {
   if (ringFilled < FFT_SIZE / 2) return // ещё не набрали достаточно сэмплов
+  let energy = 0
+  for (let i = 0; i < FFT_SIZE; i++) energy += ring[i] * ring[i]
+  // Digital silence still needs decay frames until the previous signal fades.
+  if (energy === 0) {
+    emitDecayFrame(mainWindow)
+    return
+  }
+  const rms = Math.sqrt(energy / FFT_SIZE)
   // Упорядочиваем кольцевой буфер + окно Ханна (предвычисленное)
   for (let i = 0; i < FFT_SIZE; i++) {
     fftRe[i] = ring[(ringPos + i) % FFT_SIZE] * hannWindow[i]
   }
   fftIm.fill(0)
   fft(fftRe, fftIm)
-
-  let rms = 0
-  for (let i = 0; i < FFT_SIZE; i++) rms += ring[i] * ring[i]
-  rms = Math.sqrt(rms / FFT_SIZE)
 
   // ── проход 1: пики магнитуд по бинам полосы -> дБ ──
   let framePeakDb = -180
@@ -306,7 +317,7 @@ function emitFrame(mainWindow: MainWindow): void {
 
 /** Кадр затухания: поток молчит — плавно гасим значения, а не замираем. */
 function emitDecayFrame(mainWindow: MainWindow): void {
-  if (!controller) return
+  if (!controller || smoothLevel < SILENT_LEVEL) return
   for (let i = 0; i < BANDS; i++) smoothed[i] *= 0.82
   smoothBass *= 0.82
   smoothMid *= 0.82
@@ -338,10 +349,14 @@ function stopCapture(mainWindow?: MainWindow): void {
 }
 
 export function registerAudioVisualizerIPC(mainWindow: MainWindow): void {
-  ipcMain.handle('audioVisualizer:start', (_event, deviceId: unknown) => {
+  ipcMain.handle('audioVisualizer:start', async (_event, deviceId: unknown) => {
+    const generation = ++captureGeneration
     const wanted = typeof deviceId === 'string' && deviceId.trim() ? deviceId.trim() : null
-    const AudioController = loadNativeAudio()
-    const outputs = AudioController.getDevices().filter(d => d.type === 'output')
+    const AudioController = process.platform === 'linux' ? null : loadNativeAudio()
+    const outputs = AudioController
+      ? AudioController.getDevices().filter(d => d.type === 'output')
+      : await listPulseOutputs()
+    if (generation !== captureGeneration) throw new Error('Запуск захвата отменён')
     if (outputs.length === 0) throw new Error('Аудиоустройства вывода не найдены')
     const target =
       (wanted ? outputs.find(d => d.id === wanted) : undefined) ||
@@ -351,9 +366,9 @@ export function registerAudioVisualizerIPC(mainWindow: MainWindow): void {
     // Останавливаем предыдущий захват (native stop синхронный и мгновенный).
     stopCapture()
 
-    format = AudioController.getDeviceFormat(target.id)
+    format = AudioController ? AudioController.getDeviceFormat(target.id) : pulseCaptureFormat
     computeBandEdges(format.sampleRate)
-    const instance = new AudioController()
+    const instance = AudioController ? new AudioController() : createPulseCapture(target as PulseOutput)
     try {
       instance.start({ deviceType: 'output', deviceId: target.id }, (error, data) => {
         if (error) {
@@ -384,6 +399,7 @@ export function registerAudioVisualizerIPC(mainWindow: MainWindow): void {
   })
 
   ipcMain.handle('audioVisualizer:stop', () => {
+    captureGeneration++
     stopCapture(mainWindow)
     return true
   })
@@ -397,5 +413,6 @@ export function registerAudioVisualizerIPC(mainWindow: MainWindow): void {
 }
 
 export function stopAudioVisualizerIPC(): void {
+  captureGeneration++
   stopCapture()
 }

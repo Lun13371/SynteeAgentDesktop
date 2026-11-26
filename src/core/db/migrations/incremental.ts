@@ -33,21 +33,18 @@ export function runIncrementalMigrations(db: Database.Database): void {
     }
   }
 
-  // Автомиграция: добавляем relevance_boost колонку для существующих БД.
-  // PRAGMA table_info возвращает колонки; если relevance_boost нет — ALTER TABLE ADD COLUMN.
+  // Fast Context удалён из приложения: убираем его таблицы (TS-индекс,
+  // история, Rust-зеркала) и узлы графа с source_kind='fast_context'.
+  // Идемпотентно — на свежих БД таблиц уже нет.
   {
-    const cols = db.prepare(`PRAGMA table_info(fast_context_index)`).all() as Array<{ name: string }>
-    if (!cols.find(c => c.name === 'relevance_boost')) {
-      db.exec(`ALTER TABLE fast_context_index ADD COLUMN relevance_boost REAL NOT NULL DEFAULT 0`)
-    }
-    if (!cols.find(c => c.name === 'embedding')) {
-      db.exec(`ALTER TABLE fast_context_index ADD COLUMN embedding BLOB`)
-    }
-    // content_hash — быстрый content hash (FNV-1a первых 4KB + size) для точного
-    // детекта изменений вместо mtime+size (mtime может меняться без content change).
-    if (!cols.find(c => c.name === 'content_hash')) {
-      db.exec(`ALTER TABLE fast_context_index ADD COLUMN content_hash INTEGER NOT NULL DEFAULT 0`)
-    }
+    db.exec(`
+      DROP TABLE IF EXISTS fast_context_index;
+      DROP TABLE IF EXISTS fast_context_index_history;
+      DROP TABLE IF EXISTS fast_context_sidecar_index;
+      DROP TABLE IF EXISTS fast_context_sidecar_meta;
+      DROP TABLE IF EXISTS fast_context_sidecar_fts;
+      DELETE FROM memory_graph_nodes WHERE source_kind = 'fast_context';
+    `)
   }
 
   // Автомиграция: для каждого уникального workdir из chats создаём проект
@@ -59,11 +56,6 @@ export function runIncrementalMigrations(db: Database.Database): void {
   // новую унифицированную memory_items. Идемпотентна — повторный запуск
   // не дублирует (проверка по metadata->legacy_id).
   migrateLegacyMemoryToMemoryItems(db)
-
-  // base64 вложений в БД: одноразовая чистка исторических сообщений. Новые
-  // сообщения пишутся уже без dataUrl (writeMessageRow), а файлы на диске
-  // (path) остаются единственным источником — renderer рендерит file://.
-  stripMessageAttachmentDataUrls(db)
 
   // Автомиграция: добавляем title колонку к memory_items (если ещё нет).
   // Для существующих записей без title — переносим content в title
@@ -148,7 +140,18 @@ export function runIncrementalMigrations(db: Database.Database): void {
     if (!cols.find(c => c.name === 'reply_to')) {
       db.prepare(`ALTER TABLE messages ADD COLUMN reply_to TEXT`).run()
     }
+    // orchestration — JSON-снапшот фаз one-turn оркестрации (/orchestrate):
+    // по записи на фазу (planning/executing/reviewing/replanning) со статусом,
+    // моделью и таймингами. Пишется только у assistant-сообщений
+    // оркестрированного рана (см. main/ipc/orchestrationRun.slimOrchestrationPhases),
+    // чтобы карточка прогресса восстанавливалась после перезахода в чат.
+    if (!cols.find(c => c.name === 'orchestration')) {
+      db.prepare(`ALTER TABLE messages ADD COLUMN orchestration TEXT`).run()
+    }
   }
+
+  // Cleanup requires the attachments column, including on first launch.
+  stripMessageAttachmentDataUrls(db)
 
   // chat_draft_attachments — вложения черновика (переживают рестарт, не
   // пропадают при смене чата). Картинки хранятся как файлы в
@@ -174,6 +177,13 @@ export function runIncrementalMigrations(db: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_cda_chat ON chat_draft_attachments(chat_id);
   `)
+
+  // mcp_server_id — прикреплённый к сообщению MCP-сервер (kind='mcp'):
+  // id сервера из McpManager; main инжектит его инструменты в контекст запроса.
+  const cdaCols = db.prepare(`PRAGMA table_info(chat_draft_attachments)`).all() as Array<{ name: string }>
+  if (!cdaCols.find(c => c.name === 'mcp_server_id')) {
+    db.prepare(`ALTER TABLE chat_draft_attachments ADD COLUMN mcp_server_id TEXT`).run()
+  }
 
   // ── Notes: фича удалена (UI-панель, IPC, manage_notes-тул) ────────────────
   // Таблица дропается идемпотентно: на новой БД — no-op, на старой —
@@ -250,4 +260,77 @@ export function runIncrementalMigrations(db: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_dot_runs_dot ON dot_runs(dot_id, started_at DESC);
   `)
+
+  // ── Одноразовая чистка гигантских tool-результатов в истории ──────────────
+  // Инцидент: PowerShell-fallback search_code вернул 5.59MB (совпадение в
+  // минифицированном бандле — одна строка = мегабайты). search_code исключён
+  // из truncateToolResult, своего потолка у fallback не было → шаг сохранился
+  // в tool_steps сырым → messageToContextMessages разворачивает шаги целиком →
+  // оценка контекста ~1.8M токенов → порог компакции (85% окна) превышен на
+  // КАЖДОМ сообщении: divider ставится перед гигантским Message и не может
+  // его разрезать — цикл «сжатие на каждом запросе». Обрезаем tool_result-шаги
+  // и их копии в iterations[].steps (UI-таймлайн) до head+tail.
+  // Строго одноразово через PRAGMA user_version: фильтр по length(tool_steps)
+  // ловит и легитимно «толстые» строки (много средних результатов в сумме),
+  // повторный скан каждый старт = лишние сотни мс JSON.parse. FTS-триггер
+  // не задет (AFTER UPDATE OF content, мы эти колонки не трогаем).
+  {
+    const MIGRATION_GIANT_TOOL_RESULTS = 1
+    const currentUserVersion = db.pragma('user_version', { simple: true }) as number
+    if (currentUserVersion < MIGRATION_GIANT_TOOL_RESULTS) {
+      const GIANT_CHARS = 200_000
+      const giantRows = db.prepare(
+        `SELECT id, tool_steps, iterations FROM messages
+         WHERE length(tool_steps) > ? OR length(iterations) > ?`
+      ).all(GIANT_CHARS, GIANT_CHARS) as Array<{ id: string; tool_steps: string | null; iterations: string | null }>
+      if (giantRows.length > 0) {
+        const t0 = Date.now()
+        const trimGiant = (content: string): string =>
+          content.slice(0, 10_000) +
+          `\n\n…[обрезано миграцией: гигантский tool-результат (${content.length.toLocaleString('en-US')} символов) отравлял оценку контекста — оставлены начало и конец]…\n\n` +
+          content.slice(-2_000)
+        const capStep = (s: { type?: string; content?: unknown } | undefined): number => {
+          if (!s || s.type !== 'tool_result') return 0
+          const content = s.content
+          if (typeof content !== 'string' || content.length <= GIANT_CHARS) return 0
+          s.content = trimGiant(content)
+          return content.length
+        }
+        const updateRow = db.prepare(`UPDATE messages SET tool_steps = ?, iterations = ? WHERE id = ?`)
+        let cappedSteps = 0
+        let freedChars = 0
+        db.transaction(() => {
+          for (const row of giantRows) {
+            let changed = false
+            const steps = row.tool_steps ? JSON.parse(row.tool_steps) as Array<{ type?: string; content?: unknown }> : null
+            if (steps) {
+              for (const s of steps) {
+                const beforeLen = capStep(s)
+                if (beforeLen > 0) { freedChars += beforeLen; cappedSteps++; changed = true }
+              }
+            }
+            let iterationsOut = row.iterations
+            if (row.iterations) {
+              const iterations = JSON.parse(row.iterations) as Array<{ steps?: Array<{ type?: string; content?: unknown }> }> | null
+              if (Array.isArray(iterations)) {
+                let iterChanged = false
+                for (const it of iterations) {
+                  if (!Array.isArray(it?.steps)) continue
+                  for (const s of it.steps) {
+                    if (capStep(s) > 0) iterChanged = true
+                  }
+                }
+                if (iterChanged) { iterationsOut = JSON.stringify(iterations); changed = true }
+              }
+            }
+            if (changed) {
+              updateRow.run(steps ? JSON.stringify(steps) : row.tool_steps, iterationsOut, row.id)
+            }
+          }
+        })()
+        console.log(`[migrations] giant tool results: trimmed ${cappedSteps} steps across ${giantRows.length} messages, ~${(freedChars / 1024 / 1024).toFixed(1)}MB freed in ${Date.now() - t0}ms`)
+      }
+      db.pragma(`user_version = ${MIGRATION_GIANT_TOOL_RESULTS}`)
+    }
+  }
 }

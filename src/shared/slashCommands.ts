@@ -61,15 +61,6 @@ export interface SlashCommand {
   /** id скилла для one-shot активации (для команд типа /review → skill:code-review).
    *  Скилл инъектируется в system prompt только на этот прогон, без записи в skillsState. */
   skill?: string
-  /**
-   * Persona override for this single message (per-message mode, Aider-style).
-   * If set — this one `chat:send` runs in the named persona, WITHOUT
-   * persisting the change to the chat's sticky persona (the UI badge does
-   * not switch). Used by builtin `/debug`, `/review`, `/architect`, ... so
-   * the user can say "answer this one as a debugger" without leaving their
-   * current persona. The sticky switch is `/persona <name>` instead.
-   */
-  personaOverride?: import('./modes').PersonaId
   /** Маркер что это команда из .md-файла (а не из захардкоженного SLASH_COMMANDS). */
   custom?: boolean
   /** Команда плагина (registerCommand). ChatPage перехватывает её ДО агента
@@ -83,6 +74,12 @@ export interface SlashCommand {
   promptTemplate?: string
   /** Шаблон содержит $ARGS (плейсхолдер аргумента). */
   hasArgsPlaceholder?: boolean
+  /**
+   * Одноразовый режим оркестрации (/orchestrate). Команда не инъектится в
+   * промпт: ChatPage включает блок выбора исполнителя/ревьюера и сохраняет
+   * черновик. Backend получает выбор отдельным полем chat.send.orchestration.
+   */
+  orchestration?: boolean
 }
 
 export const SLASH_COMMANDS: SlashCommand[] = [
@@ -90,6 +87,21 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: 'goal-resume', label: '/goal-resume', description: 'Продолжить активную цель с этого места', icon: 'zap', source: 'builtin', systemPrompt: () => '' },
   { name: 'goal-pause', label: '/goal-pause', description: 'Поставить цель на паузу (продолжится со следующим сообщением)', icon: 'pause', source: 'builtin', systemPrompt: () => '' },
   { name: 'goal-stop', label: '/goal-stop', description: 'Снять цель (то же, что /goal clear)', icon: 'x', source: 'builtin', systemPrompt: () => '' },
+  {
+    // Одноразовая оркестрация: команда НЕ инъектится в промпт — ChatPage
+    // перехватывает её до агента, включает компактный блок выбора моделей
+    // (исполнитель + опциональный ревьюер) и сохраняет черновик/вложения.
+    // Модель чата при этом не меняется: она остаётся координатором хода.
+    name: 'orchestrate',
+    label: '/orchestrate',
+    description: 'Один ход с отдельным исполнителем и ревьюером (модель чата не меняется)',
+    icon: 'layers',
+    placeholder: 'задача для исполнителя...',
+    argumentHint: 'задача',
+    source: 'builtin',
+    orchestration: true,
+    systemPrompt: () => '',
+  },
   {
     name: 'image',
     label: '/image',
@@ -133,7 +145,7 @@ User focus (optional): ${args || '(none — cover everything)'}
 
 ## Steps (STRICT order)
 
-1. **Analyze.** Map the current workdir yourself with read tools: call \`get_fast_context\` (query: "project structure, entry points, main modules"), \`list_directory\` on the workdir root, and read the manifest (\`package.json\` / \`pyproject.toml\` / \`Cargo.toml\` / \`go.mod\`) plus \`README.md\` via \`read_file\`. You will get: tech stack, deps, scripts, entry points, git-tracked layout.
+1. **Analyze.** Map the current workdir yourself with read tools: \`list_directory\` on the workdir root, \`search_code\` for entry points and main modules, and read the manifest (\`package.json\` / \`pyproject.toml\` / \`Cargo.toml\` / \`go.mod\`) plus \`README.md\` via \`read_file\`. You will get: tech stack, deps, scripts, entry points, git-tracked layout.
 
 2. **Recommend.** Based on the analysis, pick relevant MCP servers and skills from your knowledge of the popular MCP ecosystem. Match by detected tech stack:
    - React/Next/Vue/Svelte/Vite frontend → context7 (docs), shadcn-ui (UI components)
@@ -220,7 +232,7 @@ User focus (optional): ${args || '(none — cover everything)'}
 
 ## Steps (STRICT order)
 
-1. **Analyze.** Map the current workdir yourself with read tools: \`get_fast_context\` (query: "project structure, entry points, main modules"), \`list_directory\` on the workdir root, and \`read_file\` on the manifest (\`package.json\` / \`pyproject.toml\` / \`Cargo.toml\` / \`go.mod\`) plus \`README.md\`. Study: tech stack, frameworks, build/test commands, git status.
+1. **Analyze.** Map the current workdir yourself with read tools: \`list_directory\` on the workdir root, \`search_code\` for entry points and main modules, and \`read_file\` on the manifest (\`package.json\` / \`pyproject.toml\` / \`Cargo.toml\` / \`go.mod\`) plus \`README.md\`. Study: tech stack, frameworks, build/test commands, git status.
 
 2. **Check existing instructions.** Use \`read_file\` to check if any of these already exist in the workdir root:
    - AGENTS.md, CLAUDE.md, GEMINI.md, .cursorrules, .windsurfrules, .clinerules
@@ -275,13 +287,13 @@ User focus (optional): ${args || '(none — cover everything)'}
     arguments: [
       {
         name: 'mode',
-        description: 'full — сжать старые сообщения, оставив недавние (по умолчанию). last — оставить только последнее сообщение + резюме',
+        description: 'full — сжать ВСЮ историю в резюме, живым не остаётся ничего (по умолчанию). last — сжать всё, кроме последнего сообщения агента',
         choices: ['full', 'last'],
         default: 'full',
       },
       {
         name: 'focus',
-        description: 'Свободный текст после режима: что обязательно сохранить в резюме, например «решения по схеме БД и миграциям»',
+        description: 'Свободный текст: резюме строится вокруг фокуса — по нему максимально подробно, остальное кратко. Например «решения по схеме БД и миграциям»',
         required: false,
       },
     ],
@@ -399,114 +411,6 @@ Do not launch sub-agents unnecessarily and do not duplicate work between them.`,
     // restore обрабатывается в ChatPage.tsx — открывает пикер снапшотов.
     systemPrompt: () => '',
   },
-  // ── Per-message persona commands (Aider-style /ask /code) ───────────────
-  // Each runs ONE message in the named persona, WITHOUT switching the chat's
-  // sticky persona. The user's next message goes back to the sticky persona.
-  // The sticky switch is /persona <name> below.
-  {
-    name: 'classic',
-    label: '/classic',
-    description: 'Одно сообщение в классическом режиме (без персоны)',
-    icon: 'circle',
-    placeholder: 'сообщение...',
-    argumentHint: 'текст сообщения',
-    source: 'builtin',
-    personaOverride: 'classic',
-    systemPrompt: (a: string) => a,
-  },
-  {
-    name: 'architect',
-    label: '/architect',
-    description: 'Одно сообщение в режиме Архитектора',
-    icon: 'building',
-    placeholder: 'сообщение...',
-    argumentHint: 'текст сообщения',
-    source: 'builtin',
-    personaOverride: 'architect',
-    systemPrompt: (a: string) => a,
-  },
-  {
-    name: 'debug',
-    label: '/debug',
-    description: 'Одно сообщение в режиме Дебаггера',
-    icon: 'bug',
-    placeholder: 'опиши баг или ошибку...',
-    argumentHint: 'текст сообщения',
-    source: 'builtin',
-    personaOverride: 'debugger',
-    skill: 'debug-helper',
-    systemPrompt: (a: string) => a,
-  },
-  {
-    name: 'review',
-    label: '/review',
-    description: 'Одно сообщение в режиме Ревьюера',
-    icon: 'check-square',
-    placeholder: 'что ревьюить (файл/модуль/diff)...',
-    argumentHint: 'текст сообщения',
-    source: 'builtin',
-    personaOverride: 'reviewer',
-    skill: 'code-review',
-    systemPrompt: (a: string) => a,
-  },
-  {
-    name: 'refactor',
-    label: '/refactor',
-    description: 'Одно сообщение в режиме Рефакторщика',
-    icon: 'shuffle',
-    placeholder: 'что рефакторить...',
-    argumentHint: 'текст сообщения',
-    source: 'builtin',
-    personaOverride: 'refactorer',
-    skill: 'refactor',
-    systemPrompt: (a: string) => a,
-  },
-  {
-    name: 'test',
-    label: '/test',
-    description: 'Одно сообщение в режиме Тестописателя',
-    icon: 'flask',
-    placeholder: 'для чего написать тесты...',
-    argumentHint: 'текст сообщения',
-    source: 'builtin',
-    personaOverride: 'test-writer',
-    skill: 'test-generation',
-    systemPrompt: (a: string) => a,
-  },
-  {
-    name: 'mentor',
-    label: '/mentor',
-    description: 'Одно сообщение в режиме Ментора',
-    icon: 'graduation',
-    placeholder: 'что объяснить...',
-    argumentHint: 'текст сообщения',
-    source: 'builtin',
-    personaOverride: 'mentor',
-    systemPrompt: (a: string) => a,
-  },
-  // ── Sticky persona switch — persists until changed ──────────────────────
-  // /persona (no arg) → opens picker (arguments[0].choices).
-  // /persona architect → switches the chat's sticky persona.
-  // Handled as a short-circuit in ChatPage.handleSend (like /clear) — does
-  // NOT send a message to the agent; calls chat:setPersona + setPersona.
-  {
-    name: 'persona',
-    label: '/persona',
-    description: 'Переключить персону чата (sticky)',
-    icon: 'users',
-    argumentHint: 'classic | architect | debug | review | refactor | test | mentor',
-    placeholder: 'выбери персону...',
-    source: 'builtin',
-    arguments: [
-      {
-        name: 'persona',
-        description: 'Имя персоны',
-        choices: ['classic', 'architect', 'debug', 'review', 'refactor', 'test', 'mentor'],
-        required: true,
-      },
-    ],
-    systemPrompt: () => '',
-  },
 ]
 
 /**
@@ -584,6 +488,76 @@ export function hydrateCommands(cmds: SlashCommand[]): SlashCommand[] {
       },
     }
   })
+}
+
+// ─── Контекст ввода команды (подсказки аргументов в инпуте) ─────────────────
+
+/**
+ * Эффективный список аргументов команды для подсказок.
+ *
+ * У команд со структурированными `arguments` — он сам. У команд без них, но с
+ * `placeholder`/`argumentHint`, синтезируется ОДИН свободный аргумент — так
+ * подсказки работают для всех команд (/goal, /sys, /web...) без правки
+ * определений. Имя чипа — короткое: argumentHint или первая фраза placeholder
+ * (сам placeholder длинный, это подсказка ввода, а не название аргумента).
+ */
+export function getCommandArguments(cmd: SlashCommand): CommandArgument[] {
+  if (cmd.arguments && cmd.arguments.length > 0) return cmd.arguments
+  const hint = cmd.argumentHint?.trim()
+  if (hint) return [{ name: hint, description: cmd.placeholder || hint }]
+  const ph = cmd.placeholder?.trim()
+  if (ph) {
+    const short = ph.split(/[,.;:—]/)[0].trim().slice(0, 28)
+    return [{ name: short || 'аргумент', description: ph }]
+  }
+  return []
+}
+
+/**
+ * Разбор ввода на активную команду + позицию аргумента у каретки.
+ *
+ * В отличие от parseSlashCommandWithCustom не требует точного совпадения всей
+ * строки — работает и пока юзер дописывает аргументы. Возвращает null, если
+ * текст не начинается с валидной `/команды`.
+ *
+ * level — индекс вводимого аргумента (0-базный): завершённые токены = введённые
+ * аргументы; если ввод кончается пробелом, следующий аргумент ещё не начат.
+ * НЕ клампится к длине arguments — вызывающий сам решает (для синтезированного
+ * одиночного аргумента всё лишнее схлопывается в последний уровень).
+ */
+export interface SlashContext {
+  command: SlashCommand
+  /** Head-токен целиком: '/name'. */
+  head: string
+  /** Текст после имени команды (может быть '' — аргументы ещё не начаты). */
+  after: string
+  /** after пуст — команда без пробела, подсказки аргументов не показываем. */
+  hasArgsRegion: boolean
+  /** Ввод кончается пробелом — текущий аргумент не начат, prefix=''. */
+  endsWithSpace: boolean
+  /** Завершённые токены аргументов (split по whitespace, без хвостового ''). */
+  tokens: string[]
+  /** Индекс вводимого аргумента. */
+  level: number
+  /** Частично введённый префикс текущего аргумента ('' — не начат). */
+  prefix: string
+}
+
+export function resolveSlashContext(text: string, customCommands: SlashCommand[] = []): SlashContext | null {
+  if (!text.startsWith('/') || text.includes('\n')) return null
+  const m = /^\/(\S+)/.exec(text)
+  if (!m) return null
+  const name = m[1].toLowerCase()
+  // Builtin имеет приоритет (как в parseSlashCommandWithCustom).
+  const command = SLASH_COMMANDS.find(c => c.name === name) ?? customCommands.find(c => c.name === name)
+  if (!command) return null
+  const after = text.slice(m[0].length)
+  const endsWithSpace = /\s$/.test(after)
+  const trimmed = after.trim()
+  const tokens = trimmed === '' ? [] : trimmed.split(/\s+/)
+  const level = endsWithSpace ? tokens.length : Math.max(0, tokens.length - 1)
+  const prefix = endsWithSpace || tokens.length === 0 ? '' : tokens[tokens.length - 1]
+  return { command, head: m[0], after, hasArgsRegion: after.length > 0, endsWithSpace, tokens, level, prefix }
 }
 
 // ─── /compact — разбор аргументов ───────────────────────────────────────────

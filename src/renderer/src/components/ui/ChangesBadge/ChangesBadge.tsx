@@ -34,6 +34,16 @@ function basename(p: string): string {
   return parts[parts.length - 1] || p
 }
 
+/** Пометка состояния файла: «создан и удалён» / «удалён» / «создан».
+ *  «Создан и удалён» (временный скрипт запроса) иначе выглядел бы файлом
+ *  без изменений: его кумулятивный снапшотный дифф пуст. */
+function fileStateLabel(f: { created?: boolean; removed?: boolean }): string | null {
+  if (f.created && f.removed) return 'создан и удалён'
+  if (f.removed) return 'удалён'
+  if (f.created) return 'создан'
+  return null
+}
+
 /** Внутренний счётчик: плавно увеличивается от from к to с ускорением
  *  (easeInCubic — медленный старт, быстрый финал). rAF для 60fps. */
 function CounterAnim({ from, to, prefix }: { from: number; to: number; prefix: string }) {
@@ -281,6 +291,7 @@ export default function ChangesBadge({ chatId, changes, live = false }: ChangesB
                     <span className="changes-popup-file-name" title={f.path}>
                       {basename(f.path)}
                     </span>
+                    {fileStateLabel(f) && <span className="changes-popup-file-state">{fileStateLabel(f)}</span>}
                     <span className="changes-popup-file-stats">
                       <span className="changes-popup-stat-added">+{f.added}</span>
                       <span className="changes-popup-stat-deleted">-{f.deleted}</span>

@@ -14,7 +14,7 @@ function load(path, mocks = {}) {
   new Function('require', 'module', 'exports', js)(id => Object.hasOwn(mocks, id) ? mocks[id] : require(id), module, module.exports)
   return module.exports
 }
-const loader = load('src/core/skills/skillLoader.ts', { electron: { app: { getPath: () => join(tmpdir(), 'syntee-skills-nonexistent-test-dir') } } })
+const loader = load('src/core/skills/skillLoader.ts')
 const tree = load('src/shared/skillsTree.ts')
 const { getSkillInstructions } = load('src/core/skills/skillInstructions.ts')
 const { buildSkillsBlock } = load('src/core/prompts/sections/skillsSection.ts')
@@ -42,11 +42,10 @@ function managerFor(dir, data = {}) {
   const mocks = {
     './skillLoader': { ...loader, loadAllSkills: () => loader.scanSkillDirectory(dir, 'user') },
     '../../shared/skillsTree': tree,
-    'electron-store': Store,
   }
   const { SkillManager } = load('src/core/skills/skillManager.ts', mocks)
   const store = new Store(data)
-  return { manager: new SkillManager(store), store }
+  return { manager: new SkillManager(store, dir), store }
 }
 const folderUpdate = (path, patch, source = 'user', projectId) => ({ source, folderPath: path, patch, projectId })
 

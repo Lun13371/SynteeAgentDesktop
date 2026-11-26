@@ -11,7 +11,7 @@ import { execAsync, execFileAsync, DEFAULT_IGNORE_DIRS, type ToolResult } from '
 //     rg --json: путь/номер/тип строки приходят структурированно — регэкспов
 //     на путях больше нет, баг невозможен.
 //  2. Принудительный case-sensitive (-s) убит → smart-case (-S): lowercase-
-//     паттерн находит CamelCase (getfastcontext → getFastContext). Главный
+//     паттерн находит CamelCase (getuserbyid → getUserById). Главный
 //     класс «не находит».
 //  3. path стал опциональным (дефолт — корень проекта); несуществующий путь
 //     даёт явную ошибку вместо молчаливого «No matches».
@@ -65,9 +65,13 @@ async function findRg(): Promise<string | null> {
   } catch { /* dep не установлен (dev без install) — идём к системному rg */ }
   // 2) Системный rg. На win32 — where.exe (в PowerShell `where` = Where-Object).
   try {
-    const cmd = process.platform === 'win32' ? 'where.exe rg' : 'which rg'
-    const { stdout } = await execAsync(cmd, { timeout: 3000 })
-    rgBin = stdout.trim().split('\n')[0].trim() || null
+    if (process.platform === 'win32') {
+      const { stdout } = await execFileAsync('where.exe', ['rg'], { timeout: 3000 })
+      rgBin = stdout.trim().split('\n')[0].trim() || null
+    } else {
+      await execFileAsync('rg', ['--version'], { timeout: 3000 })
+      rgBin = 'rg'
+    }
   } catch { rgBin = null }
   return rgBin
 }
@@ -87,11 +91,11 @@ async function runRgOnce(rg: string, args: string[]): Promise<{ stdout: string; 
     const { stdout, stderr } = await execFileAsync(rg, args, { timeout: 15000, maxBuffer: 10 * 1024 * 1024 })
     return { stdout, stderr, code: 0 }
   } catch (e: any) {
-    if (e.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') {
+    if (e.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' || e.code === 'ERR_CHILD_PROCESS_STDOUT_MAXBUFFER') {
       return { stdout: (e.stdout ?? '').toString(), stderr: 'maxbuffer exceeded', code: 2 }
     }
-    const code = typeof e.code === 'number' ? e.code : 1
-    return { stdout: (e.stdout ?? '').toString(), stderr: (e.stderr ?? '').toString(), code }
+    const code = typeof e.code === 'number' ? e.code : 2
+    return { stdout: (e.stdout ?? '').toString(), stderr: (e.stderr || e.message || e.code || 'ripgrep execution failed').toString(), code }
   }
 }
 
@@ -228,7 +232,7 @@ function buildEmptyHint(pattern: string, opts: SearchOpts | undefined, literalMo
     hints.push('Pattern has regex metachars — retry with literal=true if you meant them as text.')
   }
   if (!opts?.fileGlob) hints.push('Narrow file_glob (e.g. "*.ts") or path to a subfolder.')
-  hints.push('Do NOT loop over pattern variants — switch tool: find_files (file names) / get_fast_context (concepts / "where is X") / read_file outline (browse a file).')
+  hints.push('Do NOT loop over pattern variants — switch tool: find_files (file names) / read_file outline (browse a file).')
   return hints.join(' ')
 }
 
@@ -276,7 +280,7 @@ export async function searchCode(
     return searchWithRg(rg, pattern, absPath, workdir, opts, { totalMax, perFileDisplayCap, contextLines, maxChars })
   }
   // rg не найден — PowerShell (медленнее, но работает без rg).
-  return searchCodePowerShell(pattern, absPath, opts)
+  return searchCodeFallback(pattern, absPath, opts, 'ripgrep executable was not found')
 }
 
 async function searchWithRg(
@@ -297,7 +301,7 @@ async function searchWithRg(
   }
   if (countRes.code === 2) {
     // Реальная ошибка rg (не regex) — fallback в PowerShell.
-    const ps = await searchCodePowerShell(pattern, absPath, opts)
+    const ps = await searchCodeFallback(pattern, absPath, opts, countRes.stderr)
     if (ps.success) return { success: true, output: `[rg error: ${countRes.stderr.slice(0, 100)}]\n${ps.output}` }
     return ps
   }
@@ -336,7 +340,7 @@ async function searchWithRg(
     contentRes = await runRgOnce(rg, ['--json', '--hidden', caseFlag, '--fixed-strings', ...globArgs, '-C', String(lim.contextLines), '-m', String(lim.perFileDisplayCap), pattern, absPath])
   }
   if (contentRes.code === 2) {
-    const ps = await searchCodePowerShell(pattern, absPath, opts)
+    const ps = await searchCodeFallback(pattern, absPath, opts, contentRes.stderr)
     if (ps.success) return { success: true, output: `[rg error: ${contentRes.stderr.slice(0, 100)}]\n${ps.output}` }
     return ps
   }
@@ -363,6 +367,13 @@ function parseGlobExts(glob?: string): string[] | null {
   return null
 }
 
+function searchCodeFallback(pattern: string, absPath: string, opts: SearchOpts | undefined, diagnostic: string): Promise<ToolResult> {
+  if (process.platform !== 'win32') {
+    return Promise.resolve({ success: false, output: '', error: `search_code: ${diagnostic.slice(0, 1000)}` })
+  }
+  return searchCodePowerShell(pattern, absPath, opts)
+}
+
 async function searchCodePowerShell(
   pattern: string,
   absPath: string,
@@ -387,13 +398,19 @@ async function searchCodePowerShell(
 
   // -File (вместо -not $_.PSIsContainer) — чище и быстрее.
   // .Line БЕЗ .Trim() — отступы контекста важны (раньше терялись).
+  // Потолок длины строки у ИСТОЧНИКА (500 симв): в минифицированных бандлах
+  // (asar/дистрибутивы) одна строка — мегабайты, и Select-String печатает её
+  // целиком. Раньше fallback возвращал их без обрезки — 5.59MB результат
+  // сохранялся в БД и разворачивался в контекст (~1.7M токенов оценки),
+  // вызывая автокомпакцию на каждом сообщении. Обрезка здесь же защищает
+  // и maxBuffer execAsync (10MB).
   const psScript = `[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; ` +
     `$r = Get-ChildItem -Path '${sq(absPath)}' -Recurse -Force -File -ErrorAction SilentlyContinue | ` +
     `Where-Object { $_.FullName -notmatch '${ignoreRegex}' }` +
     (extFilter ? ` ${extFilter}` : '') + ` | ` +
     `Select-String ${strFlags} -Pattern '${sq(pattern)}' -Context ${context},${context} -ErrorAction SilentlyContinue | ` +
     `Select-Object -First ${maxResults}; ` +
-    `if ($r) { $r | ForEach-Object { $_.Path + ':' + $_.LineNumber + ': ' + $_.Line } } else { 'No matches found' }`
+    `if ($r) { $r | ForEach-Object { $l = [string]$_.Line; if ($l.Length -gt 500) { $l = $l.Substring(0,500) + ' …[line truncated]' }; $_.Path + ':' + $_.LineNumber + ': ' + $l } } else { 'No matches found' }`
   const encoded = Buffer.from(psScript, 'utf16le').toString('base64')
   const psCmd = `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${encoded}`
   try {
@@ -410,9 +427,19 @@ async function searchCodePowerShell(
       const m = l.match(/^(.+?):(\d+):/)
       if (m) fileSet.add(m[1])
     }
+    // Финальный потолок вывода — parity с rg-путём (maxChars, дефолт 20000).
+    // Строки уже порезаны у источника, это страховка на итоговый размер.
+    const maxChars = opts?.maxChars ?? 20000
+    const output = `[search_code: ${lines.length} matches in ${fileSet.size} files (PowerShell fallback)]\n${trimmed}`
+    if (output.length > maxChars) {
+      return {
+        success: true,
+        output: output.slice(0, maxChars) + `\n...[truncated, ${maxChars} of ${output.length} chars — narrow file_glob/path or raise max_chars]`,
+      }
+    }
     return {
       success: true,
-      output: `[search_code: ${lines.length} matches in ${fileSet.size} files (PowerShell fallback)]\n${trimmed}`,
+      output,
     }
   } catch (e: any) {
     return { success: false, output: '', error: 'search_code: ' + e.message }

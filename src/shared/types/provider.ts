@@ -9,6 +9,8 @@ export type ProviderType =
   | 'opencode' | 'opencode-free' | 'opencode-go'
   | 'openrouter'
   | 'syntee-gateway'
+  /** ChatGPT-подписка (Codex OAuth): токен вместо ключа, Responses API на chatgpt.com */
+  | 'openai-codex'
 
 export interface Provider {
   id: string               // уникальный slug: 'openai', 'my-custom-1'
@@ -30,6 +32,18 @@ export interface Provider {
 }
 
 export type ModelCapability = 'vision' | 'video' | 'audio_input' | 'audio_output' | 'tools' | 'reasoning' | 'code' | 'embedding' | 'tts' | 'stt' | 'image_gen'
+
+/** Состояние входа по ChatGPT-подписке (Codex OAuth). */
+export interface CodexAuthState {
+  connected: boolean
+  source: 'oauth' | 'import' | null
+  email: string | null
+  plan: string | null
+  accountId: string | null
+  /** ms epoch истечения access-токена (по exp из JWT). */
+  expiresAt: number | null
+  lastLoginAt: string | null
+}
 
 /**
  * Спека режима мышления из каталога models.dev (поле reasoning_options).
@@ -73,14 +87,13 @@ export interface ModelMeta {
 export type ModelRole =
   | 'main'        // основной чат
   | 'fast'        // быстрые ответы, автотайтлы
-  | 'fastContext' // fast context retrieval (tree-sitter + fast LLM)
   | 'vision'      // анализ изображений
   | 'video'       // анализ видео с текстовым ответом (не генерация)
   | 'audio'       // анализ аудио с текстовым ответом (не TTS)
   | 'stt'         // speech-to-text
   | 'tts'         // text-to-speech
   | 'embedding'   // векторный поиск / память
-  | 'memory'      // анализ памяти
+  | 'memory'      // анализ памяти: экстракция фактов/исходов/графа
   | 'summary'     // авто-заголовки чатов
   | 'subagent'    // суб-агенты (generic fallback)
   // Per-subagent-role overrides: `subagent:researcher`, `subagent:editor`, ...

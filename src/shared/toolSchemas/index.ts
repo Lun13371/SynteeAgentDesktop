@@ -1,0 +1,245 @@
+// ── Tool schemas barrel: combines all domain schemas + helpers ──────────
+
+import type { McpToolRuntime, PluginToolRuntime } from '../types'
+import { filterToolSchemas, type ToolSettings } from '../toolSettings'
+import { READ_TOOL_SCHEMAS } from './read'
+import { EDIT_TOOL_SCHEMAS } from './edit'
+import { COMMAND_TOOL_SCHEMAS } from './command'
+import { CODE_TOOL_SCHEMAS } from './code'
+import { SEARCH_TOOL_SCHEMAS } from './search'
+import { AGENT_TOOL_SCHEMAS } from './agent'
+import { PLAN_TOOL_SCHEMAS } from './plan'
+import { MEMORY_TOOL_SCHEMAS } from './memory'
+import { EXTENSIONS_TOOL_SCHEMAS } from './extensions'
+import { VISION_TOOL_SCHEMAS } from './vision'
+import { MEDIA_TOOL_SCHEMAS } from './media'
+import { DOTS_TOOL_SCHEMAS } from './dots'
+import { CHAT_TOOL_SCHEMAS } from './chats'
+import { BROWSER_TOOL_SCHEMAS, BROWSER_RESEARCH_TOOL_NAMES, REQUEST_ACCESS_SCHEMA } from './browser'
+
+export const TOOL_SCHEMAS = [
+  ...EDIT_TOOL_SCHEMAS,
+  ...COMMAND_TOOL_SCHEMAS,
+  ...CODE_TOOL_SCHEMAS,
+  ...READ_TOOL_SCHEMAS,
+  ...SEARCH_TOOL_SCHEMAS,
+  ...AGENT_TOOL_SCHEMAS,
+  ...PLAN_TOOL_SCHEMAS,
+  ...MEMORY_TOOL_SCHEMAS,
+  ...EXTENSIONS_TOOL_SCHEMAS,
+  ...VISION_TOOL_SCHEMAS,
+  ...MEDIA_TOOL_SCHEMAS,
+  ...DOTS_TOOL_SCHEMAS,
+  ...CHAT_TOOL_SCHEMAS,
+  ...BROWSER_TOOL_SCHEMAS,
+  // Реестр — полный список для TOOL_BY_NAME; в конкретный тулсет чата
+  // request_access попадает через names (когда browserMode ВЫКЛ).
+  REQUEST_ACCESS_SCHEMA,
+]
+
+// Dynamic tool set — added by mode
+const TOOL_BY_NAME = new Map<string, (typeof TOOL_SCHEMAS)[number]>(
+  TOOL_SCHEMAS.map(schema => [schema.function.name, schema]),
+)
+
+function pickTools(names: string[]) {
+  return names
+    .map(name => TOOL_BY_NAME.get(name))
+    .filter((schema): schema is NonNullable<typeof schema> => schema !== undefined)
+}
+
+export function getToolSchemas(options: Partial<ToolSettings> & {
+  planningMode?: boolean
+  askMode?: boolean
+  webMode?: boolean
+  imageMode?: boolean
+  multiAgentMode?: boolean
+  mode?: 'code' | 'work'  // deprecated — ignored; work mode removed
+  /** Тумблер «Управление браузером»: browser_* тулы (navigate/snapshot/
+   *  click/type/...). ВЫКЛ → browser-тулы скрыты, но request_access остаётся.
+   *  ВКЛ → browser-тулы доступны с учётом режима. */
+  browserMode?: boolean
+  /** MCP tools — dynamically added to the set (only enabled ones). */
+  mcpTools?: McpToolRuntime[]
+  /** Plugin tools — dynamically added (only enabled + running plugins). */
+  pluginTools?: PluginToolRuntime[]
+} = {}) {
+  const {
+    planningMode = false,
+    askMode = false,
+    webMode = false,
+    imageMode = false,
+    multiAgentMode = false,
+    browserMode = false,
+    mcpTools,
+    pluginTools,
+  } = options
+
+  // Work mode removed — always a full Code tool set.
+  // In planning mode — read-only + research: all research tools are available
+  // (search_code, read_file, ...), the
+  // ask_user clarifying-question tool, but edits are FORBIDDEN (edit/write/
+  // run_command/revert). The planner researches code → clarifies with the
+  // user → writes the plan directly in the answer, wrapped in
+  // <plan title="..." summary="...">…</plan>.
+  //
+  // askMode (read-only) — the same read-only tool set as planning, but
+  // without requiring a <plan>. Used for "do not touch code" questions
+  // (toggled in the plus-menu or one-shot via /ask <text>).
+  // planning takes priority (stricter), but the tool set is identical —
+  // the difference is only in the system injection.
+
+  const names: string[] = [
+    'read_file',
+    'read_files',
+    'find_files',
+    'search_code',
+    'project_map',
+    'list_directory',
+    // Code mode — обычный тул, доступный во ВСЕХ режимах (research и normal):
+    // сам по себе он ничего не меняет, его возможности = набор тулов текущего
+    // рана. В read-only режимах внутри можно вызвать только read-тулы (мост
+    // сверяет имена с allowedSchemas), поэтому эскалации нет, а агрегация
+    // результатов поиска нужна как раз в исследовательских задачах.
+    'execute_code',
+    'update_working_memory',
+    'update_todo',
+    'ask_user',
+    // Long-term memory: save_memory (write a fact) + recall_memory (find).
+    // Always available — the model decides when to save/recall.
+    'save_memory',
+    'recall_memory',
+    // Web search, page fetching, image search and sub-agents — always
+    // available to the agent, the model decides when to use them.
+    'search_web',
+    'fetch_page',
+    'search_images',
+    // Image analysis (read-only research): the image is passed directly to
+    // a vision-capable main model, or described by the auxiliary vision
+    // model — the same routing as chat attachments.
+    'analyze_image',
+    'analyze_video',
+    'analyze_audio',
+    'spawn_agent',
+    'get_agent_status',
+    'manage_chats',
+    'list_extensions',
+    'get_skill',
+    // Универсальный тул запроса доступа к выключенным возможностям.
+    // Пока выключена хотя бы одна capability, модель должна иметь возможность
+    // попросить её включить (browser_control / image_generation).
+  ]
+
+  if (!browserMode || !imageMode) {
+    names.push('request_access')
+  }
+  if (browserMode) {
+    const researchOnly = planningMode || askMode
+    names.push(...BROWSER_TOOL_SCHEMAS.map(schema => schema.function.name)
+      .filter(name => !researchOnly || BROWSER_RESEARCH_TOOL_NAMES.has(name)))
+  }
+
+  if (planningMode || askMode) {
+    // Planning / Ask: research tools, read-only checks, no edits.
+    names.push('get_diagnostics')
+  } else {
+    // Normal mode: file edits + commands + verification.
+    names.push('edit_file')
+    names.push('write_file')
+    names.push('run_command')
+    names.push('get_diagnostics')
+    // Dots: управление always-on агентами — только в normal-режиме.
+    // ask/planning и фоновые wake-раны Dot'ов (oneShotMode:'ask')
+    // тул не получают: Dot не должен создавать других Dot'ов.
+    names.push('manage_dots')
+  }
+
+  if (imageMode) {
+    names.push('generate_image')
+  }
+  // multiAgentMode/webMode are no longer needed for enabling — kept as
+  // function parameters for compatibility with the calling code.
+  void webMode
+  void multiAgentMode
+
+  // Research modes can navigate and inspect, but cannot enter data, execute
+  // JS, upload or modify private state.
+  const browserResearchOnly = planningMode || askMode
+  const browserNames = [
+    ...(browserMode
+      ? BROWSER_TOOL_SCHEMAS.map(schema => schema.function.name)
+        .filter(name => !browserResearchOnly || BROWSER_RESEARCH_TOOL_NAMES.has(name))
+      : []),
+    ...(!browserMode || !imageMode ? ['request_access'] : []),
+  ]
+  const finalNames = [...new Set([
+    ...names.filter(name => !name.startsWith('browser_') && name !== 'request_access'),
+    ...browserNames,
+  ])]
+  // Subtract only AFTER mode/access gating. Never restore restricted core tools.
+  const schemas = filterToolSchemas(pickTools(finalNames), {
+    customToolsEnabled: options.customToolsEnabled === true,
+    disabledTools: options.disabledTools ?? [],
+  })
+
+  // MCP tools — convert to OpenAI function schema and append.
+  // Name: mcp__{serverName}__{toolName}, description from the MCP server.
+  if (mcpTools && mcpTools.length > 0) {
+    for (const tool of mcpTools) {
+      schemas.push({
+        type: 'function',
+        function: {
+          name: tool.name,
+          description: tool.description || `MCP tool ${tool.shortName} from server ${tool.serverName}`,
+          parameters: tool.inputSchema && Object.keys(tool.inputSchema).length > 0
+            ? tool.inputSchema
+            : { type: 'object', properties: {} },
+        },
+      } as any)
+    }
+  }
+
+  // Plugin tools — same conversion. Name: plugin__{pluginId}__{toolName}.
+  if (pluginTools && pluginTools.length > 0) {
+    for (const tool of pluginTools) {
+      schemas.push({
+        type: 'function',
+        function: {
+          name: tool.name,
+          description: tool.description || `Plugin tool ${tool.shortName} from plugin ${tool.pluginId}`,
+          parameters: tool.inputSchema && Object.keys(tool.inputSchema).length > 0
+            ? tool.inputSchema
+            : { type: 'object', properties: {} },
+        },
+      } as any)
+    }
+  }
+
+  return schemas
+}
+
+// ── Side-chat-only tool ────────────────────────────────────────────────
+// This tool is available ONLY in the parallel side chat. It is not
+// included in TOOL_SCHEMAS and is not given to regular chats via getToolSchemas.
+// Lets the side agent request the main chat messages on demand
+// (instead of passing the whole history in context — saves tokens).
+export const GET_MAIN_CHAT_MESSAGES_SCHEMA = {
+  type: 'function',
+  function: {
+    name: 'get_main_chat_messages',
+    description: 'Get messages from the main chat (parallel to this side chat). Returns message text with role indicated. Use to find information in the main chat history.',
+    parameters: {
+      type: 'object',
+      properties: {
+        limit: {
+          type: 'number',
+          description: 'Number of recent messages (default 15, max 50).',
+        },
+        search: {
+          type: 'string',
+          description: 'Substring to filter messages (case-insensitive). If given, returns only messages containing this substring.',
+        },
+      },
+    },
+  },
+} as const

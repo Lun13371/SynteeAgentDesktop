@@ -14,7 +14,7 @@
  * Cost-control:
  *   - Skip если agent_logs пуст или <5 записей (нечего извлекать)
  *   - Skip если последний extract был недавно (metadata->last_outcome_extract)
- *   - Бесплатная fast-модель (роль 'fastContext')
+ *   - Бесплатная fast-модель (роль 'memory')
  *   - Throttle: не чаще раза в час на чат
  */
 
@@ -22,7 +22,7 @@ import type Store from 'electron-store'
 import { AIClient } from '../ai/AIClient'
 import { saveMemoryItem } from './MemoryStore'
 import { getRecentAgentLogs, type AgentLogEntry } from '../db/memory'
-import { extractJsonFromLlmResponse } from '../context/fastContext/annotator'
+import { extractJsonFromLlmResponse } from '../ai/llmJson'
 import { getGlobalMemoryEnabled, getMemorySettings } from './globalMemorySettings'
 
 // ─── Типы ────────────────────────────────────────────────────────────────────
@@ -88,7 +88,7 @@ export async function extractOutcomesFromLogs(
   const prompt = `Analyze the AI agent action logs and extract long-term lessons (agent_outcome).\n\n${logsText}\n\nReturn JSON with lessons (or {"outcomes":[]} if there are no lessons).`
 
   // LLM-вызов
-  const aiClient = new AIClient(store)
+  const aiClient = new AIClient(store, { chatId, source: 'memory_outcomes' })
   let raw = ''
   try {
     await aiClient.streamChat(
@@ -98,7 +98,7 @@ export async function extractOutcomesFromLogs(
         onDone: () => {},
         onError: () => {},
       },
-      'fastContext',
+      'memory',
       OUTCOME_SYSTEM_PROMPT,
       undefined,
       0.1,

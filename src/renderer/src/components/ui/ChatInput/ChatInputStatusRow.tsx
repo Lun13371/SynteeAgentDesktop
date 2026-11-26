@@ -3,11 +3,9 @@ import { createPortal } from 'react-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import AppIcon from '../AppIcon/AppIcon'
 import QueuePanel from '../QueuePanel/QueuePanel'
-import ExtensionsBadge from '../ExtensionsBadge/ExtensionsBadge'
 import ChangesBadge from '../ChangesBadge/ChangesBadge'
 import ModelSelector from '../ModelSelector/ModelSelector'
 import ReasoningSelector from '../ReasoningSelector/ReasoningSelector'
-import { getPersona, DEFAULT_PERSONA, type PersonaId } from '../../../../../shared/modes'
 import type { LastTurnChanges } from '../../../../../shared/types'
 import type { UseVoiceInputResult } from '../../../hooks/useVoiceInput'
 import type { GitSyncProjectState } from '../../../../../shared/types'
@@ -32,8 +30,6 @@ interface ChatInputStatusRowProps {
   onAskModeChange?: (v: boolean) => void
   browserMode?: boolean
   onBrowserModeChange?: (v: boolean) => void
-  persona?: PersonaId
-  onPersonaChange?: (v: PersonaId) => void
   lang: 'ru' | 'en'
   mainModelId?: string
   /** Провайдер per-chat модели (для корректного бейджа ModelSelector). */
@@ -78,8 +74,6 @@ export function ChatInputStatusRow({
   onAskModeChange,
   browserMode,
   onBrowserModeChange,
-  persona = DEFAULT_PERSONA,
-  onPersonaChange,
   lang,
   mainModelId,
   mainModelProviderId,
@@ -96,7 +90,7 @@ export function ChatInputStatusRow({
 }: ChatInputStatusRowProps) {
   // ── Скролл бейджей: переполнение → горизонтальный скролл без скроллбара ──
   // Бейджей может быть много (workdir + секреты + voice + queue + extensions +
-  // changes + 4 режимных + persona). Раньше flex-wrap гнал строку в несколько
+  // changes + 4 режимных). Раньше flex-wrap гнал строку в несколько
   // рядов. Теперь одна строка: скрытый скролл + маска-затухание на краях
   // (классы вешаются только при реальном переполнении — см. ChatInput.css).
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -316,16 +310,15 @@ export function ChatInputStatusRow({
           hover/клике. Показывается только когда есть active/queued запросы. */}
       {chatId && <QueuePanel chatId={chatId} />}
 
-      {/* Бейдж активных расширений (MCP + Skills) — drill-down popup.
-          Скрыт когда ничего не включено или инкогнито. */}
-      {chatId && <ExtensionsBadge chatId={chatId} isIncognito={isIncognito} />}
-
       {/* Бейдж изменений последнего запроса — +N -M строк, popup с undo. */}
       <AnimatePresence>
         {chatId && lastTurnChanges && (
           <ChangesBadge chatId={chatId} changes={lastTurnChanges} live={badgeLive} />
         )}
       </AnimatePresence>
+
+      {/* Пилюля «Инструменты Git» переехала в правый верхний угол чата
+          (ChatPage → chat-topright-actions) на место чипа «Сводка». */}
 
       {/* Бейдж режима планирования — над инпут полем */}
       <AnimatePresence>
@@ -404,28 +397,6 @@ export function ChatInputStatusRow({
             <motion.span className="chat-input-planning-badge-close" whileHover={whileHoverTiny} whileTap={whileTapTiny} transition={springHover}>✕</motion.span>
           </motion.div>
         )}
-        {persona !== 'classic' && (() => {
-          const p = getPersona(persona)
-          return (
-            <motion.div
-              key={`persona-${persona}`}
-              className="chat-input-persona-badge"
-              style={{ '--persona-color': p.color } as React.CSSProperties}
-              initial={{ opacity: 0, y: 6 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 6 }}
-              transition={{ type: 'spring', stiffness: 500, damping: 30 }}
-              onClick={() => onPersonaChange?.(DEFAULT_PERSONA)}
-              title={lang === 'en' ? `Reset to Classic` : `Сбросить до Classic`}
-            >
-              {p.iconSvg && (
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" dangerouslySetInnerHTML={{ __html: p.iconSvg }} />
-              )}
-              <span>{lang === 'en' ? p.nameEn : p.nameRu}</span>
-              <motion.span className="chat-input-planning-badge-close" whileHover={whileHoverTiny} whileTap={whileTapTiny} transition={springHover}>✕</motion.span>
-            </motion.div>
-          )
-        })()}
       </AnimatePresence>
         </div>
       </div>

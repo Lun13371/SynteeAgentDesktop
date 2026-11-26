@@ -4,21 +4,19 @@
 
 export { buildCodeModeBlock } from './codeModeSection'
 export { buildPlanningInjection, buildAskInjection } from './planningSection'
-export { buildPersonaInjection } from './personaSection'
 export { buildOneShotSkillBlock, buildSkillsBlock } from './skillsSection'
-export { buildMcpBlock, buildInstallPathsBlock } from './mcpSection'
+export { buildInstallPathsBlock } from './mcpSection'
 export { buildPluginsBlock } from './pluginsSection'
 export { buildMemoryStatsBlock, buildGraphStatsBlock } from './memorySection'
+export { buildProjectMapBlock } from './projectMapSection'
 export { buildSecretsBlock } from './secretsSection'
 export type { ProtectedVarPromptInfo } from './secretsSection'
 
 export type {
-  McpPromptInfo,
   PluginPromptInfo,
   MemoryStats,
   GraphStats,
-  PersonaInfo,
-  PersonaSkill,
   OneShotSkill,
   CodeModeBlockParams,
+  ProjectMapPromptInfo,
 } from './_shared'

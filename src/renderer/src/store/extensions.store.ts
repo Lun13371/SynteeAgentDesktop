@@ -19,17 +19,6 @@ import { useChatStore } from './chat.store'
 import { usePluginPanelStore } from './pluginPanel.store'
 import { buildPluginTabId } from './ui.store'
 
-/**
- * Текущий chatId для push-обработчиков (mcp:servers-changed / skills:updated).
- * Обновляется из ChatStore подпиской — extensions.store не знает chatId сам.
- */
-let _currentChatId: string | null = null
-useChatStore.subscribe((s) => {
-  if (s.currentChatId !== _currentChatId) {
-    _currentChatId = s.currentChatId
-  }
-})
-
 interface SkillWithState extends Skill {
   state: SkillState
 }
@@ -57,10 +46,6 @@ interface ExtensionsStore {
   // ── Plugins ──
   plugins: PluginRuntime[]
   pluginsLoading: boolean
-
-  // ── Активные для текущего чата (для бейджа) ──
-  activeSkillIds: string[]
-  activeMcpServerIds: string[]
 
   // ── Каталог MCP (маркетплейс) ──
   mcpCatalogView: CatalogView
@@ -91,7 +76,6 @@ interface ExtensionsStore {
   setSkillState: (skillId: string, state: SkillState, source: 'builtin' | 'user' | 'project') => Promise<void>
   setSkillFolderState: (update: SkillFolderUpdate) => Promise<void>
   reloadSkills: (projectId?: string) => Promise<void>
-  loadActiveForChat: (chatId: string, isIncognito?: boolean) => Promise<void>
 
   // ── Catalog actions ──
   setMcpCatalogView: (view: CatalogView) => void
@@ -114,8 +98,6 @@ export const useExtensionsStore = create<ExtensionsStore>((set, get) => ({
   mcpLoading: false,
   plugins: [],
   pluginsLoading: false,
-  activeSkillIds: [],
-  activeMcpServerIds: [],
 
   mcpCatalogView: 'installed',
   mcpCatalogSearch: '',
@@ -177,8 +159,6 @@ export const useExtensionsStore = create<ExtensionsStore>((set, get) => ({
     set(s => ({
       skills: s.skills.map(sk => sk.id === skillId ? { ...sk, state } : sk),
     }))
-    const chat = useChatStore.getState()
-    if (chat.currentChatId) await get().loadActiveForChat(chat.currentChatId, chat.isIncognito)
   },
 
   setSkillFolderState: async (update) => {
@@ -186,39 +166,11 @@ export const useExtensionsStore = create<ExtensionsStore>((set, get) => ({
     await window.syntee.skills.setFolderState({ ...update, chatId })
     // Reload with the current chat context (a global folder response has no project skills).
     await get().loadSkills(get().skillsProjectId)
-    const chat = useChatStore.getState()
-    if (chat.currentChatId) await get().loadActiveForChat(chat.currentChatId, chat.isIncognito)
   },
 
   reloadSkills: async (projectId) => {
     await window.syntee.skills.reload()
     await get().loadSkills(projectId)
-    const chat = useChatStore.getState()
-    if (chat.currentChatId) await get().loadActiveForChat(chat.currentChatId, chat.isIncognito)
-  },
-
-  loadActiveForChat: async (chatId, isIncognito) => {
-    if (isIncognito) {
-      set({ activeSkillIds: [], activeMcpServerIds: [] })
-      return
-    }
-    // Активные скиллы — IPC фильтрует по scope на бэкенде.
-    try {
-      const active = await window.syntee.skills.getActive({ chatId, isIncognito }) as Skill[]
-      set({ activeSkillIds: (active ?? []).map(s => s.id) })
-    } catch {
-      set({ activeSkillIds: [] })
-    }
-    // Активные MCP — IPC фильтрует по enabled + scope + статусу на бэкенде.
-    // Раньше фильтровали локально (только enabled+connected, без scope) —
-    // из-за этого MCP с scope "только проект A" показывались в бейдже для чатов
-    // проекта B. Теперь бэкенд получает projectId по chatId и фильтрует правильно.
-    try {
-      const activeIds = await window.syntee.mcp.getActiveForChat({ chatId, isIncognito }) as string[]
-      set({ activeMcpServerIds: activeIds ?? [] })
-    } catch {
-      set({ activeMcpServerIds: [] })
-    }
   },
 
   // ── MCP каталог ──
@@ -321,11 +273,6 @@ export const useExtensionsStore = create<ExtensionsStore>((set, get) => ({
   },
 }))
 
-/** Селектор: суммарное кол-во активных расширений для бейджа. */
-export function selectActiveExtensionsCount(state: ExtensionsStore): number {
-  return state.activeSkillIds.length + state.activeMcpServerIds.length
-}
-
 /** Найти ui-вклад (по panelId) у запущенного включённого плагина. */
 function findRunningUiContribution(pluginId: string, panelId: string): PluginUiContribution | null {
   const plugins = useExtensionsStore.getState().plugins
@@ -369,9 +316,6 @@ export function initExtensionsPushEvents(): () => void {
         }
       }),
     }))
-    if (_currentChatId) {
-      void useExtensionsStore.getState().loadActiveForChat(_currentChatId)
-    }
   })
 
   const offTools = window.syntee.on('mcp:tools:updated', (data: unknown) => {
@@ -402,15 +346,11 @@ export function initExtensionsPushEvents(): () => void {
 
   // mcp:servers-changed — extensions-watcher перечитал .mcp.json и обнаружил
   // новые/удалённые серверы (после /setup или ручного редактирования файла).
-  // Перезагружаем список серверов (новые появятся в popover со статусом
-  // connecting) И активные для текущего чата (бейдж обновится сразу).
+  // Перезагружаем список серверов (новые появятся в popover со статусом connecting).
   const offServersChanged = window.syntee.on('mcp:servers-changed', (data: unknown) => {
     const d = data as { projectId?: string }
     const pid = d.projectId ?? useChatStore.getState().activeProjectId ?? undefined
     useExtensionsStore.getState().loadMcpServers(pid)
-    if (_currentChatId) {
-      useExtensionsStore.getState().loadActiveForChat(_currentChatId)
-    }
   })
   // plugins:changed — статус/тулы/список плагинов изменились в main
   // (запуск, остановка, крах, регистрация тулов). Перезагружаем список.

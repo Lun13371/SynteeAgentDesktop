@@ -49,14 +49,18 @@ const PRICES: Record<string, ModelPrice> = {
   'kimi-k2p6':          { inputPerM: 95,   outputPerM: 285  },
 }
 
+const PRICE_KEYS = Object.keys(PRICES).sort((a, b) => b.length - a.length)
+
 export function getModelPrice(modelId: string): ModelPrice | null {
   if (!modelId) return null
 
   // Точное совпадение
   if (PRICES[modelId]) return PRICES[modelId]
 
-  // Частичное
-  const key = Object.keys(PRICES).find(k => modelId.toLowerCase().includes(k.toLowerCase()))
+  // Vendor namespaces and dated releases may share a tariff. A differently
+  // named variant must not silently inherit a more expensive base model.
+  const name = modelId.toLowerCase().split('/').at(-1) ?? ''
+  const key = PRICE_KEYS.find(k => name === k || (name.startsWith(k + '-') && /^\d{4}-\d{2}-\d{2}$|^\d{8}$/.test(name.slice(k.length + 1))))
   return key ? PRICES[key] : null
 }
 

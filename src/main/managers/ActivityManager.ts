@@ -207,7 +207,7 @@ export class ActivityManager {
   }
 
   /**
-   * Прогресс долгих тулов (get_fast_context, run_command, process_attachments).
+   * Прогресс долгих тулов (run_command, process_attachments).
    */
   onToolProgress(data: {
     msgId: string

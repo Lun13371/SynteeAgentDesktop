@@ -13,6 +13,7 @@
 import { getMessages, getMessagesAfterLatestCompact, saveMessage, setMessageSavedCallback } from '../../core/db/messages'
 import { getStreamingBuffersForChat, deleteStreamingBuffer } from '../../core/db/streamingBuffers'
 import { getDB } from '../../core/db/handle'
+import { blockRunningOrchestrationPhase } from '../../shared/orchestrationProgress'
 import type { Message } from '../../shared/types'
 
 interface CacheEntry {
@@ -110,7 +111,19 @@ export function recoverStreamingBuffersForChat(chatId: string): void {
       // ничего восстанавливать не нужно.
       const exists = getDB().prepare('SELECT 1 FROM messages WHERE id = ?').get(b.messageId)
       if (!exists) {
-        saveMessage(JSON.parse(b.payload) as Message)
+        const msg = JSON.parse(b.payload) as Message
+        // §orchestration — карточка прогресса живёт в буфере вместе с текстом.
+        // Чекпоинт пишется на ходу, поэтому фаза могла остаться в 'running':
+        // ран, чей буфер мы восстанавливаем, уже не жив (иначе финальный
+        // sendDone перезапишет строку), и без закрытия фазы карточка в
+        // истории навсегда показывала бы «выполняется» с живым таймером.
+        if (msg.orchestration && msg.orchestration.length > 0) {
+          msg.orchestration = blockRunningOrchestrationPhase(
+            msg.orchestration,
+            'interrupted — app restarted',
+          )
+        }
+        saveMessage(msg)
       }
     } catch (e) {
       console.warn('[historyCache] streaming buffer recover failed chatId=%s msgId=%s: %s',

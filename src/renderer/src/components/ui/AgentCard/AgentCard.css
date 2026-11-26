@@ -1,337 +1,279 @@
-/* AgentCard — компактная карточка саб-агента.
-   НЕ копия FastContextBlock — это тонкая inline-плитка: маленькая полоска
-   статуса + одна строка с задачей/статусом + опционально разворачиваемое
-   тело с chips/shimmer/summary. Использует тему (var(--*)) и цветные
-   акценты по статусу. */
+/* AgentCard — sub-agent activity card, styled after the reference: a single
+   inline header (iridescent orb · role name · task · live status) that expands
+   into a terse rail timeline of the agent's thoughts and tool calls. Minimal
+   chrome, monochrome labels, file targets as chips. The orb carries all the
+   color; the rest stays quiet so the log reads cleanly. */
 
 .agent-c {
   position: relative;
-  display: flex;
   margin: 6px 0;
   border-radius: 12px;
-  border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
-  background: linear-gradient(135deg, color-mix(in srgb, var(--bg-secondary) 94%, var(--accent)), var(--bg-secondary));
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  background: color-mix(in srgb, var(--bg-secondary) 55%, transparent);
   overflow: hidden;
-  cursor: pointer;
-  transition: border-color 0.18s, background 0.18s, box-shadow 0.18s, transform 0.1s;
-  font-size: 12px;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
+  transition: border-color 0.18s, background 0.18s;
 }
 .agent-c:hover {
-  border-color: color-mix(in srgb, var(--accent) 48%, var(--border));
-  background: linear-gradient(135deg, color-mix(in srgb, var(--bg-tertiary) 92%, var(--accent)), var(--bg-tertiary));
-  box-shadow: 0 5px 18px rgba(0, 0, 0, 0.14), 0 0 0 1px color-mix(in srgb, var(--accent) 10%, transparent);
+  border-color: color-mix(in srgb, var(--border) 95%, transparent);
+  background: color-mix(in srgb, var(--bg-secondary) 78%, transparent);
 }
-.agent-c:focus-within {
-  border-color: color-mix(in srgb, var(--accent) 58%, var(--border));
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
-}
-.agent-c:active { transform: scale(0.998); }
 .agent-c--live {
-  border-color: color-mix(in srgb, var(--accent) 34%, var(--border));
+  border-color: color-mix(in srgb, var(--accent) 26%, var(--border));
+}
+.agent-c--error {
+  border-color: color-mix(in srgb, #f87171 32%, var(--border));
 }
 
-/* Левая цветная полоска — узкая, индикатор статуса */
-.agent-c__stripe {
-  width: 3px;
-  flex-shrink: 0;
-}
-.agent-c__stripe--pending   { background: var(--text-muted); opacity: 0.5; }
-.agent-c__stripe--running   { background: var(--accent); }
-.agent-c__stripe--done      { background: #4ade80; }
-.agent-c__stripe--error     { background: #f87171; }
-.agent-c__stripe--cancelled { background: var(--text-muted); opacity: 0.4; }
-
-.agent-c__main {
-  position: relative;
-  flex: 1;
-  min-width: 0;
-  padding: 8px 10px 7px;
+/* ── Header ── */
+.agent-c__head {
   display: flex;
-  flex-direction: column;
-  gap: 5px;
+  align-items: center;
+  gap: 2px;
+  padding: 9px 10px 9px 12px;
 }
-
-/* ── Шапка: большая кликабельная зона открытия агента ── */
-.agent-c__row {
+.agent-c__toggle {
   display: flex;
   align-items: center;
   gap: 7px;
-  width: 100%;
+  flex: 1;
   min-width: 0;
-  padding: 0 32px 0 0;
+  padding: 0;
   border: 0;
   background: none;
   color: inherit;
   text-align: left;
   cursor: pointer;
-  user-select: none;
+  font: inherit;
 }
-.agent-c__row:hover .agent-c__task { color: var(--text-primary); }
-.agent-c__row:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--accent) 62%, transparent);
+.agent-c__toggle:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
   outline-offset: 3px;
-  border-radius: 7px;
+  border-radius: 8px;
 }
-
-.agent-c__status-icon {
+.agent-c__name {
   flex-shrink: 0;
-  display: flex;
-  align-items: center;
-}
-
-.agent-c__task-wrap {
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  flex: 1;
-  min-width: 0;
-  gap: 1px;
-}
-.agent-c__eyebrow {
-  color: var(--text-muted);
-  font-size: 9px;
+  font-size: 13px;
   font-weight: 600;
-  letter-spacing: 0.06em;
-  line-height: 1;
-  text-transform: uppercase;
-  opacity: 0.72;
+  color: var(--text-primary);
+  letter-spacing: 0.01em;
+}
+.agent-c__dot {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  opacity: 0.5;
 }
 .agent-c__task {
+  flex: 0 1 auto;
   min-width: 0;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-primary);
-  line-height: 1.25;
-  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  transition: color 0.15s;
-}
-
-/* Текущий тул — inline pill справа от задачи (live) */
-.agent-c__current-tool {
-  flex-shrink: 1;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  max-width: 150px;
-  padding: 4px 7px;
-  border: 1px solid var(--overlay-3);
-  border-radius: 7px;
-  background: color-mix(in srgb, var(--overlay-3) 72%, transparent);
+  white-space: nowrap;
+  font-size: 13px;
   color: var(--text-secondary);
-  font-size: 10px;
-  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+}
+.agent-c__status {
+  flex-shrink: 0;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
 }
-.agent-c__current-tool span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.agent-c__current-tool span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* Status badge */
-.agent-c__badge {
+.agent-c__status--error { color: #f87171; }
+.agent-c__chevron {
   flex-shrink: 0;
-  font-size: 9.5px;
-  font-weight: 500;
-  padding: 1px 6px;
-  border-radius: 6px;
-  letter-spacing: 0.2px;
+  margin-left: auto;
+  color: var(--text-muted);
+  opacity: 0.55;
+  transition: transform 0.2s ease, opacity 0.15s;
 }
-.agent-c__badge--pending   { color: var(--text-muted); background: var(--overlay-3); }
-.agent-c__badge--running   { color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
-.agent-c__badge--done      { color: #4ade80; background: color-mix(in srgb, #4ade80 14%, transparent); }
-.agent-c__badge--error     { color: #f87171; background: color-mix(in srgb, #f87171 14%, transparent); }
-.agent-c__badge--cancelled { color: var(--text-muted); background: var(--overlay-3); }
+.agent-c__chevron--closed { transform: rotate(-90deg); }
+.agent-c__toggle:hover .agent-c__chevron { opacity: 0.9; }
 
-/* Role badge — показывает специализацию суб-агента */
-.agent-c__role-badge {
+.agent-c__open {
   flex-shrink: 0;
-  font-size: 9.5px;
-  font-weight: 600;
-  padding: 1px 6px;
-  border-radius: 6px;
-  letter-spacing: 0.2px;
-  background: color-mix(in srgb, currentColor 14%, transparent);
-}
-
-.agent-c__expand {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  z-index: 2;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  width: 26px;
+  height: 26px;
   padding: 0;
-  border: 1px solid transparent;
-  border-radius: 8px;
-  background: transparent;
+  border: 0;
+  border-radius: 7px;
+  background: none;
   color: var(--text-muted);
   cursor: pointer;
-  opacity: 0.7;
-  transition: color 0.15s, background 0.15s, border-color 0.15s, transform 0.15s;
+  opacity: 0;
+  transition: opacity 0.15s, background 0.15s, color 0.15s;
 }
-.agent-c__expand:hover {
-  color: var(--text-primary);
-  border-color: var(--border);
-  background: var(--overlay-3);
-}
-.agent-c__expand:focus-visible {
+.agent-c:hover .agent-c__open { opacity: 0.7; }
+.agent-c__open:hover { opacity: 1; background: var(--overlay-3); color: var(--text-primary); }
+.agent-c__open:focus-visible {
+  opacity: 1;
   outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
   outline-offset: 1px;
 }
-.agent-c__expand:active { transform: scale(0.92); }
-.agent-c__chevron {
-  flex-shrink: 0;
-  transition: transform 0.2s;
-  color: var(--text-muted);
-  opacity: 0.6;
-}
-.agent-c__chevron--closed {
-  transform: rotate(-90deg);
-}
 
-/* ── Разворачиваемое тело ── */
-.agent-c__body {
-  overflow: hidden;
-  margin-top: 2px;
-  padding: 8px 32px 0 0;
-  border-top: 1px solid color-mix(in srgb, var(--border) 65%, transparent);
-}
-
-/* Tool chips — компактная строка */
-.agent-c__chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  padding: 2px 0 4px;
-}
-.agent-c__chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  padding: 2px 6px;
-  border-radius: 4px;
-  background: var(--overlay-2);
-  color: var(--text-secondary);
-  font-size: 10px;
-  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
-  white-space: nowrap;
-}
-.agent-c__chip .app-icon {
-  color: var(--accent);
-  opacity: 0.8;
-}
-
-/* Shimmer — тонкий, как индикатор активности */
-.agent-c__shimmer {
+/* ── Expandable feed ── */
+.agent-c__feed { overflow: hidden; }
+.agent-c__feed-inner {
+  padding: 2px 12px 11px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 2px 0;
-}
-.agent-c__shimmer-line {
-  height: 5px;
-  border-radius: 3px;
-  background: var(--overlay-3);
-  animation: agent-c-shimmer 1.6s ease-in-out infinite;
-}
-.agent-c__shimmer-line--short { width: 50%; }
-@keyframes agent-c-shimmer {
-  0%, 100% { opacity: 0.35; }
-  50% { opacity: 0.65; }
 }
 
-/* Error */
-.agent-c__error {
-  font-size: 11px;
-  color: #f87171;
-  line-height: 1.4;
-  padding: 2px 0;
-  white-space: pre-wrap;
-  word-break: break-word;
+.agent-c__frow {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 4px 0;
 }
-
-/* Summary */
-.agent-c__summary-wrap {
-  padding-top: 2px;
+/* Faint rail line connecting the row icons (skipped after the last row). */
+.agent-c__frow:not(:last-child)::before {
+  content: '';
+  position: absolute;
+  left: 9px;
+  top: 17px;
+  bottom: -4px;
+  width: 1px;
+  transform: translateX(-50%);
+  background: color-mix(in srgb, var(--border) 85%, transparent);
 }
-.agent-c__summary-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  background: none;
-  border: none;
-  cursor: pointer;
-  color: var(--text-secondary);
-  font-size: 11px;
-  padding: 3px 0;
-  transition: color 0.15s;
-}
-.agent-c__summary-toggle:hover { color: var(--text-primary); }
-.agent-c__summary {
-  font-size: 11px;
-  color: var(--text-secondary);
-  line-height: 1.45;
-  overflow: hidden;
-  white-space: pre-wrap;
-  word-break: break-word;
-  margin: 2px 0 0;
-}
-
-/* Empty (cancelled) */
-.agent-c__empty {
-  font-size: 11px;
+.agent-c__frail {
+  position: relative;
+  z-index: 1;
+  flex-shrink: 0;
+  width: 18px;
+  display: flex;
+  justify-content: center;
+  padding-top: 1px;
   color: var(--text-muted);
-  font-style: italic;
-  opacity: 0.7;
-  padding: 2px 0;
 }
+.agent-c__frail .app-icon { opacity: 0.85; }
+.agent-c__frow--running .agent-c__frail { color: var(--accent); }
+.agent-c__frow--failed .agent-c__frail { color: #f87171; }
 
-/* ── Мета-футер — компактный, всегда виден ── */
-.agent-c__meta {
+.agent-c__fbody {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  line-height: 1.45;
+}
+.agent-c__flabel {
+  flex-shrink: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.agent-c__fsep {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  opacity: 0.5;
+}
+.agent-c__fpreview {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+.agent-c__fpreview--mono {
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 11.5px;
+}
+.agent-c__fchips {
   display: flex;
   align-items: center;
   gap: 5px;
   min-width: 0;
-  padding-top: 1px;
-  font-size: 10px;
-  color: var(--text-muted);
-  opacity: 0.78;
+  overflow: hidden;
 }
-.agent-c__meta-model {
-  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
-  max-width: 180px;
+.agent-c__chip {
+  flex-shrink: 0;
+  max-width: 220px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.agent-c__meta-dot { opacity: 0.4; }
-.agent-c__meta-steps,
-.agent-c__meta-time { white-space: nowrap; }
-.agent-c__meta-hint {
-  margin-left: auto;
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  padding: 3px 6px;
+  padding: 1px 8px;
+  border: 1px solid color-mix(in srgb, var(--border) 90%, transparent);
   border-radius: 6px;
-  font-size: 9.5px;
-  color: var(--accent);
-  opacity: 0.72;
-  transition: opacity 0.15s, background 0.15s;
+  background: var(--overlay-2);
+  color: var(--text-secondary);
+  font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 11px;
 }
-.agent-c:hover .agent-c__meta-hint {
-  opacity: 1;
-  background: color-mix(in srgb, var(--accent) 10%, transparent);
+.agent-c__fbadge {
+  flex-shrink: 0;
+  padding: 0 6px;
+  border-radius: 5px;
+  font-size: 10px;
+  font-weight: 600;
+  color: #f87171;
+  background: color-mix(in srgb, #f87171 15%, transparent);
+}
+
+/* Running spinner — replaces the rail icon for the in-flight step. */
+.agent-c__fspin {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid var(--overlay-3);
+  border-top-color: var(--accent);
+  animation: agent-c-spin 0.7s linear infinite;
+}
+@keyframes agent-c-spin { to { transform: rotate(360deg); } }
+
+.agent-c__waiting {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0 2px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+/* ── Terminal blocks ── */
+.agent-c__error {
+  margin-top: 6px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, #f87171 30%, transparent);
+  background: color-mix(in srgb, #f87171 9%, transparent);
+  color: #fca5a5;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.agent-c__result {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.agent-c__result-label {
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  opacity: 0.8;
+}
+.agent-c__result-text {
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-c__fspin { animation-duration: 0.01ms; }
+  .agent-c__chevron { transition: none; }
 }

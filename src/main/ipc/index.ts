@@ -12,6 +12,28 @@ import type { VoiceWindow } from '../windows/VoiceWindow'
 import type { SpotlightWindow } from '../windows/SpotlightWindow'
 import type { TrayMenuWindow } from '../windows/TrayMenuWindow'
 import type { HotkeyManager } from '../hotkeys/HotkeyManager'
+import { registerAssistantsIPC } from './assistants.ipc'
+import { onMemorySettingsChanged } from '../assistants/bridge'
+import { registerProjectMapIPC } from './projectMap.ipc'
+import { projectMapManager } from '../../core/projectMap/mapBuilder'
+import { DEFAULT_PROJECT_MAP_SPEED, type ProjectMapSpeedSettings } from '../../shared/projectMap'
+import { shutdownSidecar } from '../../core/sidecar/sidecarClient'
+import { getLinuxAutostartState, setLinuxAutostart } from '../platform/linuxAutostart'
+
+/** Устройство семантики: 'auto' — DirectML при доступности, иначе CPU. */
+export type SemanticDeviceSetting = 'auto' | 'cpu' | 'gpu'
+
+function normalizeSemanticDevice(value: unknown): SemanticDeviceSetting {
+  return value === 'cpu' || value === 'gpu' ? value : 'auto'
+}
+
+/** Ставит env для следующего спавна sidecar и перезапускает текущий процесс. */
+function applySemanticDevice(value: unknown): void {
+  const next = normalizeSemanticDevice(value)
+  if (process.env.SYNTEE_SEMANTIC_DEVICE === next) return
+  process.env.SYNTEE_SEMANTIC_DEVICE = next
+  void shutdownSidecar().catch(() => { /* перезапуск ленивый, по следующему запросу */ })
+}
 
 interface IPCContext {
   store: Store
@@ -30,6 +52,18 @@ export function registerAllIPC(ctx: IPCContext): void {
   registerOverlayIPC(ctx)
   registerSpotlightIPC(ctx)
   registerTrayMenuIPC(ctx)
+  registerAssistantsIPC()
+  registerProjectMapIPC()
+  projectMapManager.setConfigReader(() => ({
+    enabled: ctx.store.get('projectMapEnabled', true) !== false,
+    speed: (ctx.store.get('projectMapSpeed', DEFAULT_PROJECT_MAP_SPEED) as ProjectMapSpeedSettings) ?? DEFAULT_PROJECT_MAP_SPEED,
+  }))
+  projectMapManager.reloadConfig()
+  // Устройство семантики читается в момент спавна sidecar из process.env —
+  // выставляем до первого спавна; при смене настройки applySemanticDevice.
+  process.env.SYNTEE_SEMANTIC_DEVICE = normalizeSemanticDevice(
+    ctx.store.get('projectMapSemanticDevice', 'auto'),
+  )
 }
 
 function registerWindowIPC({ mainWindow }: IPCContext): void {
@@ -40,47 +74,31 @@ function registerWindowIPC({ mainWindow }: IPCContext): void {
   ipcMain.handle('window:isMaximized', () => mainWindow.isMaximized())
 }
 
-// ── Автозагрузка (Login Items / HKCU\...\Run) ──────────────────
-// Реальное состояние берём из Electron (app.getLoginItemSettings),
-// а не из config.json — чекбокс в настройках всегда показывает правду
-// (в т.ч. если юзер отключил автозапуск через Диспетчер задач).
-function getAutostartState(): boolean {
+async function getAutostartState(): Promise<boolean> {
   try {
+    if (process.platform === 'linux') return await getLinuxAutostartState()
     return app.getLoginItemSettings().openAtLogin
   } catch (e) {
-    console.error('[autostart] getLoginItemSettings failed:', e)
+    console.error('[autostart] failed to read OS settings:', e)
     return false
   }
 }
 
-function applyAutostart(enabled: boolean): boolean {
-  try {
-    if (app.isPackaged) {
-      app.setLoginItemSettings({ openAtLogin: enabled })
-    } else {
-      // dev-режим: process.execPath = electron.exe, без явного path/args
-      // в Run прописался бы голый electron без пути к приложению.
-      app.setLoginItemSettings({
-        openAtLogin: enabled,
-        path: process.execPath,
-        args: [resolve(process.argv[1] || '.')],
-      })
-    }
-    return true
-  } catch (e) {
-    console.error('[autostart] setLoginItemSettings failed:', e)
-    return false
+async function applyAutostart(enabled: boolean): Promise<void> {
+  const args = app.isPackaged ? [] : [resolve(process.argv[1] || '.')]
+  if (process.platform === 'linux') {
+    await setLinuxAutostart(enabled, process.execPath, args)
+  } else if (app.isPackaged) {
+    app.setLoginItemSettings({ openAtLogin: enabled })
+  } else {
+    app.setLoginItemSettings({ openAtLogin: enabled, path: process.execPath, args })
   }
 }
 
 function registerSettingsIPC({ store, hotkeyManager }: IPCContext): void {
   ipcMain.handle('settings:get', (_, key: string) => store.get(key, DEFAULT_TOOL_SETTINGS[key as keyof typeof DEFAULT_TOOL_SETTINGS]))
-  ipcMain.handle('settings:set', (_, key: string, value: unknown) => {
-    // Автозагрузка: применяем в ОС ДО сохранения настройки — если реестр
-    // недоступен, чекбокс не должен показывать ложное «включено».
-    if (key === 'autostart') {
-      if (!applyAutostart(Boolean(value))) return
-    }
+  ipcMain.handle('settings:set', async (_, key: string, value: unknown) => {
+    if (key === 'autostart') await applyAutostart(value === true)
     if (key === 'customToolsEnabled') value = value === true
     if (key === 'disabledTools') value = normalizeDisabledTools(value)
     store.set(key, value)
@@ -93,14 +111,28 @@ function registerSettingsIPC({ store, hotkeyManager }: IPCContext): void {
         getGitSyncManager()?.setEnabled(value === true)
       })
     }
+    if (key === 'projectMapEnabled' || key === 'projectMapSpeed') {
+      projectMapManager.reloadConfig()
+    }
+    // Смена устройства семантики: env читается при спавне sidecar, поэтому
+    // перезапускаем его — следующее обращение поднимет процесс с новым
+    // провайдером (и с выгруженной моделью: кэш эмбеддера в нём же).
+    if (key === 'projectMapSemanticDevice') {
+      applySemanticDevice(value)
+    }
     // Перерегистрация глобальных хоткеев при изменении биндингов.
     // Без этого старые шорткаты остаются зарегистрированными до перезапуска.
     if (key === 'hotkeys') {
       hotkeyManager?.reload()
     }
+    // Archivist дописывает память уже после рана: выключение памяти должно
+    // отменять фоновые дистилляции, иначе факты запишутся «после выключения».
+    if (key === 'memoryEnabled' || key === 'autoMemoryEnabled') {
+      onMemorySettingsChanged()
+    }
   })
   ipcMain.handle('settings:getAll', () => ({ ...DEFAULT_TOOL_SETTINGS, ...store.store }))
-  // Живой опрос реального состояния автозагрузки из реестра Windows
+  // Читаем состояние автозапуска из ОС при открытии настроек.
   ipcMain.handle('settings:autostartStatus', () => getAutostartState())
   ipcMain.handle('settings:reset', () => { store.clear(); return true })
 
@@ -651,7 +683,7 @@ function registerTrayMenuIPC({ trayMenuWindow, mainWindow, voiceWindow, spotligh
         mainWindow.getWindow()?.webContents.send('nav:open-dots')
         break
       case 'quit':
-        app.exit(0)
+        app.quit()
         break
     }
   })

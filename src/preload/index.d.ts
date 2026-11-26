@@ -1,4 +1,5 @@
 import type { SkillFolderUpdate } from '../shared/types';
+import type { SubagentOverviewItem } from '../shared/types/subagentOverview';
 declare const synteeAPI: {
     window: {
         hide: () => Promise<any>;
@@ -293,7 +294,7 @@ declare const synteeAPI: {
         }) => void;
         setInteractive: (v: boolean) => void;
         captureScreen: () => Promise<string | null>;
-        onPush: (cb: (payload: import("../../shared/types").NotificationPayload) => void) => () => Electron.IpcRenderer;
+        onPush: (cb: (payload: import("../shared/types").NotificationPayload) => void) => () => Electron.IpcRenderer;
         onDismissAll: (cb: () => void) => () => Electron.IpcRenderer;
     };
     activity: {
@@ -360,8 +361,8 @@ declare const synteeAPI: {
         pluginAction: (pluginId: string, label: string, command?: string) => Promise<any>;
     };
     dots: {
-        list: () => Promise<import("../../shared/types").Dot[]>;
-        get: (dotId: string) => Promise<import("../../shared/types").Dot | null>;
+        list: () => Promise<import("../shared/types").Dot[]>;
+        get: (dotId: string) => Promise<import("../shared/types").Dot | null>;
         create: (input: {
             name: string;
             icon: string;
@@ -378,12 +379,12 @@ declare const synteeAPI: {
             modelProvider?: string | null;
         }) => Promise<{
             ok: boolean;
-            dot?: import("../../shared/types").Dot;
+            dot?: import("../shared/types").Dot;
             error?: string;
         }>;
-        update: (dotId: string, patch: Partial<import("../../shared/types").DotConfig>) => Promise<{
+        update: (dotId: string, patch: Partial<import("../shared/types").DotConfig>) => Promise<{
             ok: boolean;
-            dot?: import("../../shared/types").Dot;
+            dot?: import("../shared/types").Dot;
             error?: string;
         }>;
         delete: (dotId: string) => Promise<{
@@ -393,14 +394,14 @@ declare const synteeAPI: {
             ok: boolean;
             reason?: string;
         }>;
-        getRuns: (dotId: string, limit?: number) => Promise<import("../../shared/types").DotRun[]>;
+        getRuns: (dotId: string, limit?: number) => Promise<import("../shared/types").DotRun[]>;
         unreadCounts: (pairs: Array<{
             dotId: string;
             since: number;
         }>) => Promise<Record<string, number>>;
         getWebhookUrl: (dotId: string) => Promise<string | null>;
-        getSettings: () => Promise<import("../../shared/types").DotSettings>;
-        setSettings: (patch: Partial<import("../../shared/types").DotSettings>) => Promise<import("../../shared/types").DotSettings>;
+        getSettings: () => Promise<import("../shared/types").DotSettings>;
+        setSettings: (patch: Partial<import("../shared/types").DotSettings>) => Promise<import("../shared/types").DotSettings>;
     };
     browser: {
         importSources: () => Promise<import("../shared/browserImport").BrowserImportSource[]>;
@@ -540,7 +541,7 @@ declare const synteeAPI: {
         }>;
         getMessages: (chatId: string) => Promise<any>;
         getMessagesPage: (chatId: string, limit?: number, beforeCreatedAt?: number, beforeId?: string) => Promise<{
-            messages: import("../../shared/types").Message[];
+            messages: import("../shared/types").Message[];
             hasMore: boolean;
         }>;
         send: (params: {
@@ -559,22 +560,26 @@ declare const synteeAPI: {
             /** Тумблер «Управление браузером»: browser_* тулы + request_access. */
             browserMode?: boolean;
             mode?: "code" | "work";
-            /** Single-select persona run mode (classic/architect/debugger/...).
-             *  Orthogonal to planning/ask/image toggles. */
-            persona?: import("../../shared/modes").PersonaId;
             oneShotSkill?: {
                 name: string;
                 instructions: string;
             };
             oneShotAllowedTools?: string[];
             oneShotMode?: "ask" | "plan" | "code";
-            /** Per-message persona override (/debug, /review, ...). */
-            oneShotPersona?: import("../../shared/modes").PersonaId;
             /** Уровень мышления из UI на момент отправки (source of truth для main). */
             reasoningValue?: string;
-            attachments?: import("../../shared/types").Attachment[];
+            attachments?: import("../shared/types").Attachment[];
             /** Реплай-цитаты: сообщения, на которые отвечает эта отправка. */
-            replyTo?: import("../../shared/types").ReplyTarget[];
+            replyTo?: import("../shared/types").ReplyTarget[];
+            /** §orchestration — one-turn оркестрация (/orchestrate): роли моделей
+             *  на ОДИН запрос. Планировщика снимает main (текущая модель чата);
+             *  reviewer не задан → main явно подставляет планировщика.
+             *  Несовместимые режимы (Ask/Plan/image) main отклоняет броском —
+             *  renderer показывает причину в блоке оркестрации. */
+            orchestration?: import("../shared/orchestration").OrchestrationSelection;
+          /** §resume — «Продолжить» с карточки прерванного рана: план и
+           *  список сделанного. Ран стартует сразу с исполнения. */
+          orchestrationResume?: import("../shared/orchestration").OrchestrationResume;
         }) => Promise<any>;
         delete: (chatId: string) => Promise<any>;
         rename: (chatId: string, title: string) => Promise<any>;
@@ -594,14 +599,24 @@ declare const synteeAPI: {
         getQueue: (chatId: string) => Promise<any>;
         queueRemove: (chatId: string, queueId: string) => Promise<any>;
         queueReorder: (chatId: string, queueIds: string[]) => Promise<any>;
-        steer: (chatId: string, text: string, steerId: string) => Promise<any>;
+        steer: (chatId: string, text: string, steerId: string, attachments?: unknown[]) => Promise<any>;
         steerCancel: (chatId: string, steerId: string) => Promise<any>;
         getSessionTimeline: (chatId: string) => Promise<any>;
         getLastTurnFilesChanged: (chatId: string) => Promise<any>;
         rewindTo: (chatId: string, userMessageId: string) => Promise<any>;
         redo: (chatId: string, rewindMessageId: string) => Promise<any>;
         canRedo: (chatId: string, rewindMessageId: string) => Promise<any>;
-        getLastTurnChanges: (chatId: string) => Promise<import("../../shared/types").LastTurnChanges | null>;
+        getLastTurnChanges: (chatId: string) => Promise<import("../shared/types").LastTurnChanges | null>;
+        getTurnChanges: (chatId: string, userMessageId?: string) => Promise<import("../shared/types").LastTurnChanges | null>;
+        getSessionTurnChanges: (chatId: string) => Promise<Record<string, import("../shared/types").LastTurnChanges>>;
+        getCheckpointFileDiffs: (chatId: string, userMessageId: string) => Promise<Array<{
+            filePath: string;
+            original: string;
+            modified: string;
+            added: number;
+            deleted: number;
+            created: boolean;
+        }>>;
         undoLastTurnFiles: (chatId: string) => Promise<{
             restored?: number;
             failed?: string[];
@@ -657,13 +672,18 @@ declare const synteeAPI: {
         }) => Promise<any>;
         setPlanningMode: (chatId: string, val: boolean) => Promise<any>;
         setImageMode: (chatId: string, val: boolean) => Promise<any>;
-        onImageModeChanged: (cb: (info: { chatId: string; enabled: boolean }) => void) => () => Electron.IpcRenderer;
+        onImageModeChanged: (cb: (info: {
+            chatId: string;
+            enabled: boolean;
+        }) => void) => () => Electron.IpcRenderer;
+        onOrchestrationProgress: (cb: (event: {
+            chatId: string;
+            msgId: string;
+            progress: import("../shared/orchestration").OrchestrationProgress;
+        }) => void) => () => Electron.IpcRenderer;
         setAskMode: (chatId: string, val: boolean) => Promise<any>;
         getBrowserMode: (chatId: string) => Promise<boolean>;
         setBrowserMode: (chatId: string, val: boolean) => Promise<any>;
-        /** Single-select persona run mode (classic/architect/debugger/...). */
-        getPersona: (chatId: string) => Promise<import("../../shared/modes").PersonaId>;
-        setPersona: (chatId: string, persona: import("../../shared/modes").PersonaId) => Promise<any>;
         /** Per-chat модель: null = глобальное назначение role:'main'. */
         getModel: (chatId: string) => Promise<{
             modelId: string;
@@ -690,19 +710,8 @@ declare const synteeAPI: {
         setContextFiles: (id: string, files: string[], autoDiscover: boolean, disabledDiscoveryFiles?: string[]) => Promise<any>;
         setAppearance: (id: string, color: string, icon: string) => Promise<any>;
     };
-    fastContext: {
-        getStatus: (projectId: string) => Promise<any>;
-        reindex: (projectId: string) => Promise<any>;
-        clearIndex: (projectId: string) => Promise<any>;
-        setActive: (projectId: string | null) => Promise<any>;
-        onProgress: (cb: (data: {
-            projectId: string;
-            stage: string;
-            detail?: string;
-            filesProcessed?: number;
-            filesTotal?: number;
-        }) => void) => () => Electron.IpcRenderer;
-        onUpdated: (cb: (projectId: string) => void) => () => Electron.IpcRenderer;
+    extensions: {
+        setActiveProject: (projectId: string | null) => Promise<any>;
     };
     memory: {
         getAll: (filter?: unknown) => Promise<any>;
@@ -735,6 +744,7 @@ declare const synteeAPI: {
         run: (query: string) => Promise<any>;
         cancel: (id?: string) => Promise<any>;
         list: () => Promise<any>;
+        overview: (chatId: string) => Promise<SubagentOverviewItem[]>;
         get: (id: string) => Promise<any>;
         children: (parentId: string) => Promise<any>;
         clearChat: (chatId: string) => Promise<any>;
@@ -775,6 +785,17 @@ declare const synteeAPI: {
             error: string;
         }>;
         delete: (id: string) => Promise<boolean>;
+    };
+    codex: {
+        status: () => Promise<any>;
+        login: () => Promise<any>;
+        loginManual: (input: string) => Promise<any>;
+        cancelLogin: () => Promise<any>;
+        import: () => Promise<any>;
+        logout: () => Promise<any>;
+        refresh: () => Promise<any>;
+        models: () => Promise<any>;
+        onAuthChanged: (cb: (state: unknown) => void) => () => Electron.IpcRenderer;
     };
     providers: {
         getAll: () => Promise<any>;
@@ -950,10 +971,12 @@ declare const synteeAPI: {
             workdir: string;
             hash: string;
         }) => Promise<any>;
-        branchList: (workdir: string) => Promise<any>;
+        branchList: (workdir: string, all?: boolean) => Promise<any>;
+        refreshBranches: (workdir: string) => Promise<any>;
         checkout: (params: {
             workdir: string;
             branch: string;
+            remote?: boolean;
         }) => Promise<any>;
         branchCreate: (params: {
             workdir: string;
@@ -973,6 +996,21 @@ declare const synteeAPI: {
             file: string;
             limit?: number;
         }) => Promise<any>;
+        repoSummary: (workdir: string) => Promise<any>;
+        graph: (params: {
+            workdir: string;
+            limit?: number;
+        }) => Promise<any>;
+        generateCommitMessage: (params: {
+            workdir: string;
+            lang?: "ru" | "en";
+        }) => Promise<any>;
+        commitAndPush: (params: {
+            workdir: string;
+            message: string;
+            includeUnstaged?: boolean;
+            push?: boolean;
+        }) => Promise<any>;
     };
     skills: {
         getAll: (params?: {
@@ -986,10 +1024,6 @@ declare const synteeAPI: {
         }) => Promise<any>;
         setFolderState: (params: SkillFolderUpdate) => Promise<any>;
         reload: () => Promise<any>;
-        getActive: (params: {
-            chatId: string;
-            isIncognito?: boolean;
-        }) => Promise<any>;
         installFromUrl: (params: {
             url: string;
             scope: "global" | {
@@ -1009,10 +1043,6 @@ declare const synteeAPI: {
             projectId?: string;
             chatId?: string;
         }) => Promise<any>;
-        getActiveForChat: (params: {
-            chatId: string;
-            isIncognito?: boolean;
-        }) => Promise<any>;
         save: (config: unknown) => Promise<any>;
         delete: (id: string) => Promise<any>;
         connect: (serverId: string) => Promise<any>;
@@ -1023,6 +1053,7 @@ declare const synteeAPI: {
             projectId?: string;
             enabled?: boolean;
             scope?: unknown;
+            toolTimeoutSeconds?: number;
         }) => Promise<any>;
         setServersEnabled: (params: {
             serverIds: string[];
@@ -1262,7 +1293,7 @@ declare const synteeAPI: {
     };
     draft: {
         getAttachments: (chatId: string) => Promise<any>;
-        setAttachments: (chatId: string, attachments: import("../../shared/types").Attachment[]) => Promise<any>;
+        setAttachments: (chatId: string, attachments: import("../shared/types").Attachment[]) => Promise<any>;
         clearAttachments: (chatId: string) => Promise<any>;
     };
     voice: {
@@ -1299,19 +1330,72 @@ declare const synteeAPI: {
         sendQuery: (text: string) => Promise<void>;
     };
     updates: {
-        check: () => Promise<import("../../shared/types").UpdateState>;
-        getStatus: () => Promise<import("../../shared/types").UpdateState>;
+        check: () => Promise<import("../shared/types").UpdateState>;
+        getStatus: () => Promise<import("../shared/types").UpdateState>;
         getHistory: (params?: {
             channel?: string;
             limit?: number;
-        }) => Promise<import("../../shared/types").ChangelogEntry[]>;
-        dismiss: (version: string) => Promise<import("../../shared/types").UpdateState>;
-        quitAndInstall: () => Promise<import("../../shared/types").QuitAndInstallResult>;
-        onStateChanged: (cb: (state: import("../../shared/types").UpdateState) => void) => () => Electron.IpcRenderer;
+        }) => Promise<import("../shared/types").ChangelogEntry[]>;
+        dismiss: (version: string) => Promise<import("../shared/types").UpdateState>;
+        quitAndInstall: () => Promise<import("../shared/types").QuitAndInstallResult>;
+        onStateChanged: (cb: (state: import("../shared/types").UpdateState) => void) => () => Electron.IpcRenderer;
     };
     clipboard: {
         writeText: (text: string) => Promise<boolean>;
         readText: () => Promise<string>;
+    };
+    assistants: {
+        getSettings: () => Promise<import("../shared/assistants").AssistantsSettings>;
+        updateSettings: (patch: Partial<import("../shared/assistants").AssistantsSettings>) => Promise<import("../shared/assistants").AssistantsSettings>;
+        getLog: (since?: number) => Promise<import("../shared/assistants").AssistantLogEntry[]>;
+        getStats: () => Promise<import("../shared/assistants").AgentStatsMap>;
+        getStatus: () => Promise<{
+            serverState: string;
+            modelSize: string;
+            modelDownloaded: boolean;
+            binaryReady: boolean;
+            active: number;
+            queueLength: number;
+            idleUnloaded: boolean;
+        }>;
+        setup: () => Promise<{
+            ok: boolean;
+            error?: string;
+        }>;
+        onSetupProgress: (cb: (p: {
+            phase: string;
+            percent: number;
+            error?: string;
+        }) => void) => () => Electron.IpcRenderer;
+    };
+    projectMap: {
+        getGraph: (projectId: string, opts?: import("../shared/projectMap").GetGraphOptions) => Promise<import("../shared/projectMap").CodeMapGraph>;
+        getFileGraph: (projectId: string, filePath: string) => Promise<import("../shared/projectMap").CodeMapGraph>;
+        getStatus: (projectId: string) => Promise<import("../shared/projectMap").CodeMapStatus>;
+        getSemanticStatus: (projectId: string) => Promise<import("../shared/projectMap").CodeMapSemanticStatus>;
+        getStats: (projectId: string) => Promise<import("../shared/projectMap").CodeMapStatus & {
+            files: number;
+        }>;
+        listStats: () => Promise<import("../shared/projectMap").ProjectMapProjectStats[]>;
+        getAutoInfo: () => Promise<import("../shared/projectMap").ProjectMapAutoInfo>;
+        getSemanticDevice: () => Promise<{
+            requested: string;
+            active: string | null;
+        }>;
+        findNodes: (projectId: string, query: string, limit?: number) => Promise<import("../shared/projectMap").CodeMapNode[]>;
+        getNeighbors: (projectId: string, nodeId: string) => Promise<{
+            node: import("../shared/projectMap").CodeMapNode | null;
+            callers: import("../shared/projectMap").CodeMapEdge[];
+            callees: import("../shared/projectMap").CodeMapEdge[];
+        }>;
+        getFileDeps: (projectId: string, filePath: string) => Promise<{
+            imports: import("../shared/projectMap").CodeMapEdge[];
+            importedBy: import("../shared/projectMap").CodeMapEdge[];
+        }>;
+        rebuild: (projectId: string) => Promise<boolean>;
+        ensure: (projectId: string) => Promise<boolean>;
+        setActiveProject: (projectId: string | null) => Promise<boolean>;
+        onProgress: (cb: (p: import("../shared/projectMap").CodeMapProgress) => void) => () => void;
     };
 };
 export type SynteeAPI = typeof synteeAPI;

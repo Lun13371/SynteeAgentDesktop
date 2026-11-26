@@ -257,6 +257,10 @@ export const IPC_EVENTS = {
   MEMORY_MEMORIZED: 'memory:memorized',
   AGENT_ACTION: 'agent:action',
   AGENT_PERMISSION_REQUEST: 'agent:permission:request',
+  /** §orchestration — прогресс фаз one-turn оркестрации (/orchestrate).
+   *  main → renderer: { chatId, msgId, progress: OrchestrationProgress }.
+   *  Тот же канал слушает useOrchestrationProgress (renderer). */
+  AGENT_ORCHESTRATION_PROGRESS: 'agent:orchestration_progress',
   SYSTEM_STATS: 'system:stats',
   RATE_LIMIT: 'ai:rate_limit',
   VOICE_STATE: 'voice:state',
@@ -269,11 +273,8 @@ export const IPC_EVENTS = {
   MCP_TOOLS_UPDATED: 'mcp:tools:updated',
   MCP_LOGS: 'mcp:logs',
   // Список серверов изменился (новые/удалённые в .mcp.json) — renderer
-  // должен перезагрузить mcpServers и activeMcpServerIds для бейджа.
+  // должен перезагрузить mcpServers.
   MCP_SERVERS_CHANGED: 'mcp:servers-changed',
-  // Fast Context: live progress при реиндексе + уведомление об обновлении индекса
-  FASTCONTEXT_PROGRESS: 'fastcontext:progress',
-  FASTCONTEXT_UPDATED: 'fastcontext:updated',
   // Skills: пуш при изменении .syntee/skills/ (watcher обнаружил новые/удалённые .md)
   SKILLS_UPDATED: 'skills:updated',
   // Plugins: список/статус/тулы плагинов изменились — renderer перезагружает

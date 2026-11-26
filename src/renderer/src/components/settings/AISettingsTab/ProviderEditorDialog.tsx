@@ -1,12 +1,15 @@
 import { useState } from 'react'
 import type { Provider } from '../../../../../shared/types'
 import DialogShell from './DialogShell'
+import CodexAuthPanel from './CodexAuthPanel'
 
 type Props = { provider: Provider; onClose: () => void; onSaved: () => Promise<void> }
 const requiredKey = (id: string) => id === 'opencode' || id === 'opencode-go'
 
 export default function ProviderEditorDialog({ provider, onClose, onSaved }: Props) {
   const anonymous = provider.id === 'opencode-free'
+  // ChatGPT-подписка: API-ключ не нужен, вход — OAuth/импорт из Codex CLI.
+  const isCodex = provider.type === 'openai-codex'
   const [name, setName] = useState(provider.name)
   const [baseUrl, setBaseUrl] = useState(provider.baseUrl)
   const [keys, setKeys] = useState<string[]>(
@@ -33,6 +36,8 @@ export default function ProviderEditorDialog({ provider, onClose, onSaved }: Pro
     }
     if (!anonymousMode && requiredKey(provider.id) && !validKeys.length)
       return 'Для OpenCode требуется API-ключ.'
+    if (isCodex && !baseUrl.trim().startsWith('https://'))
+      return 'ChatGPT-провайдер должен использовать https.'
     return ''
   }
   const draft = (): Provider => ({
@@ -46,6 +51,19 @@ export default function ProviderEditorDialog({ provider, onClose, onSaved }: Pro
     modelsEndpoint: modelsEndpoint.trim() || undefined,
     enabled: true
   })
+  /**
+   * После успешного входа по подписке: сохраняем провайдера и сразу тянем
+   * живой каталог моделей с бэкенда Codex — иначе в пикере моделей пусто.
+   */
+  const connectedRefresh = async () => {
+    try {
+      if (!validate()) await window.syntee.providers.save(draft())
+    } catch { /* сохранение можно повторить кнопкой «Сохранить» */ }
+    try {
+      await window.syntee.providers.fetchModels(provider.id)
+    } catch { /* модели можно обновить вручную */ }
+    await onSaved()
+  }
   const save = async () => {
     const issue = validate()
     setError(issue)
@@ -70,6 +88,15 @@ export default function ProviderEditorDialog({ provider, onClose, onSaved }: Pro
     setOperation('test')
     setTestResult('')
     try {
+      if (isCodex) {
+        // У ChatGPT-подписки нет /models по baseUrl — проверяем живой каталог
+        // бэкенда Codex: он же подтверждает, что токен рабочий.
+        const result = (await window.syntee.codex.models()) as { ok: boolean; error?: string; models?: unknown[] }
+        setTestResult(result.ok
+          ? `Подписка работает. Доступно моделей: ${result.models?.length ?? 0}.`
+          : `Не удалось: ${result.error || 'нет ответа от бэкенда ChatGPT'}`)
+        return
+      }
       const result = (await window.syntee.providers.testKey(provider.id, draft())) as {
         ok: boolean
         error?: string
@@ -112,6 +139,9 @@ export default function ProviderEditorDialog({ provider, onClose, onSaved }: Pro
         {provider.id === 'ollama' && (
           <p className="provider-dialog-hint">URL локального сервера Ollama.</p>
         )}
+        {isCodex && (
+          <CodexAuthPanel onConnected={connectedRefresh} />
+        )}
         {provider.isCustom && (
           <label className="provider-form-label">
             Models endpoint
@@ -123,7 +153,7 @@ export default function ProviderEditorDialog({ provider, onClose, onSaved }: Pro
             />
           </label>
         )}
-        {!anonymous && (
+        {!anonymous && !isCodex && (
           <>
             <span className="provider-form-label">
               API keys{' '}

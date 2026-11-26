@@ -1,3 +1,5 @@
+/* global require, AbortController, setTimeout */
+/* eslint-disable @typescript-eslint/no-require-imports -- Run Code Mode on the project's Node runtime. */
 const { test } = require('node:test')
 const assert = require('node:assert/strict')
 const { readFileSync } = require('node:fs')
@@ -68,6 +70,49 @@ test('a hung host call hits the absolute wall-clock limit and aborts its signal'
   assert.match(r.error, /wall-clock limit/i)
   assert.equal(sawAbort, true)
 })
+test('a TypeScript batch can wait beyond its ordinary wall limit for MCP', async () => {
+  const result = await executeCode({
+    code: "const first = await tools.call('mcp__fixture__analyze', {}); return (await tools.call('mcp__fixture__summarize', { text: first.output })).output;",
+    callTool: async (name, args) => {
+      if (name.endsWith('__analyze')) {
+        await new Promise(resolve => setTimeout(resolve, 180))
+        return { success: true, output: 'raw' }
+      }
+      return { success: true, output: 'summary of ' + args.text }
+    },
+    wallTimeoutMs: 100,
+    mcpWaitBudgetMs: 1000,
+  })
+  assert.equal(result.success, true)
+  assert.equal(result.output, 'summary of raw')
+})
+test('MCP waiting is bounded and interrupted on expiry', async () => {
+  let nestedSignal
+  const result = await executeCode({
+    code: "return await tools.call('mcp__fixture__never', {});",
+    callTool: (_name, _args, signal) => {
+      nestedSignal = signal
+      return new Promise(resolve => signal.addEventListener('abort', () => resolve({ success: false, output: '' }), { once: true }))
+    },
+    wallTimeoutMs: 100,
+    mcpWaitBudgetMs: 50,
+  })
+  assert.match(result.error, /wall-clock limit/i)
+  assert.equal(nestedSignal?.aborted, true)
+})
+test('returning early cancels any started tool the script did not await', async () => {
+  let nestedSignal
+  const result = await executeCode({
+    code: "tools.call('mcp__fixture__never', {}); await tools.first({}); return 'done';",
+    callTool: (name, _args, signal) => {
+      if (name === 'first') return { success: true, output: '' }
+      nestedSignal = signal
+      return new Promise(resolve => signal.addEventListener('abort', () => resolve({ success: false, output: '' }), { once: true }))
+    },
+  })
+  assert.equal(result.output, 'done')
+  assert.equal(nestedSignal?.aborted, true)
+})
 test('failed nested tool output preserves the error text in its trace', async () => {
   const r = await executeCode({
     code: "await tools.fail({}); return 'done';",
@@ -86,18 +131,59 @@ test('denied nested call is returned to the guest instead of aborting the progra
   })
   assert.equal(r.success, true); assert.match(r.output, /false,true,true/)
 })
-test('Agent blocks get_fast_context inside execute_code at the bridge', () => {
+test('Agent blocks execute_code recursion and unknown tools at the bridge', () => {
   const source = readFileSync('src/core/agent/Agent.ts', 'utf8')
-  assert.match(source, /toolName === 'get_fast_context'/)
-  assert.match(source, /get_fast_context is not available inside execute_code/)
+  // Ре-энтри execute_code и тулы вне схем раунда блокируются на мосту.
+  assert.match(source, /toolName === 'execute_code' \|\| !roundSchemas\.some\(s => s\.function\.name === toolName\)/)
+  // §orchestration — фазовый allowlist проверяется и для вложенных вызовов:
+  // read-only фаза не даёт «убежать» через Code Mode.
+  assert.match(source, /orchestration && !isToolAllowedInPhase\(orchestration\.phase, toolName\)/)
 })
 test('ToolChain shows execute_code calls in the collapsed card and arguments/results after opening', () => {
   const source = readFileSync('src/renderer/src/components/ui/ToolChain/ToolChain.tsx', 'utf8')
   assert.ok(source.includes('function CodeModeSummary'))
-  assert.ok(source.includes('<CodeModeSummary trace={iter.result.codeMode.trace} />'))
+  // Трейс берётся с шага результата, а до его прихода — с шага вызова
+  // (живой трейс agent:code_trace), иначе во время выполнения карточка пуста.
+  assert.ok(source.includes('iter.result?.codeMode ?? iter.call.codeMode'))
+  assert.match(source, /<CodeModeSummary trace=\{codeMode\.trace\}/)
   assert.ok(source.includes('codeTraceArgs(entry.args)'))
-  assert.ok(source.includes('entry.result || \'(пустой вывод)\''))
-  assert.ok(source.includes('Показать TypeScript-код'))
+  assert.ok(source.includes('result={{ content: entry.result, success:'))
+  assert.ok(source.includes('title="Скрипт TypeScript"'))
+})
+test('code mode streams nested tool trace while the script runs', () => {
+  const codeMode = readFileSync('src/core/codeMode/index.ts', 'utf8')
+  // Запись появляется со status:'running' ДО ответа тула, затем апсертится.
+  assert.ok(codeMode.includes("status: 'running'"))
+  assert.match(codeMode, /emitTrace\(traceEntry\)/)
+  const agent = readFileSync('src/core/agent/Agent.ts', 'utf8')
+  assert.match(agent, /onTrace: entry => \{/)
+  const hook = readFileSync('src/renderer/src/hooks/useToolProgress.ts', 'utf8')
+  assert.ok(hook.includes("window.syntee.on('agent:code_trace'"))
+})
+test('onTrace fires running first and final status with the same id', async () => {
+  const seen = []
+  let release
+  const gate = new Promise(resolve => { release = resolve })
+  const promise = executeCode({
+    code: "const r = await tools.slow({}); return r.output;",
+    callTool: async () => {
+      await gate
+      return { success: true, output: 'ok' }
+    },
+    onTrace: entry => seen.push({ id: entry.id, status: entry.status, result: entry.result }),
+  })
+  // Дать гостю дойти до вызова тула (он ждёт gate).
+  await new Promise(resolve => setTimeout(resolve, 50))
+  assert.equal(seen.length, 1)
+  assert.equal(seen[0].status, 'running')
+  assert.ok(seen[0].id)
+  release()
+  const r = await promise
+  assert.equal(r.success, true)
+  assert.equal(seen.length, 2)
+  assert.equal(seen[1].id, seen[0].id)
+  assert.equal(seen[1].status, 'success')
+  assert.equal(seen[1].result, 'ok')
 })
 test('live agent:step preserves execute_code trace in ToolStep', () => {
   const source = readFileSync('src/renderer/src/hooks/useToolProgress.ts', 'utf8')

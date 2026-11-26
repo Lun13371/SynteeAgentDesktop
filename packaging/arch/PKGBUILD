@@ -1,0 +1,42 @@
+pkgname=syntee-helper
+pkgver=1.1.5
+pkgrel=1
+pkgdesc='Syntee Helper — desktop AI assistant'
+arch=('x86_64')
+url='https://github.com/Lun13371/SynteeAgentDesktop'
+license=('MIT')
+depends=('alsa-lib' 'desktop-file-utils' 'git' 'gtk3' 'libcups' 'libgomp' 'libnotify'
+         'libpulse' 'libstdc++' 'libxss' 'libxtst' 'mesa' 'nss' 'openssl-3'
+         'xdg-utils')
+optdepends=('vulkan-icd-loader: GPU acceleration for local models')
+makedepends=('clang' 'cmake' 'nodejs>=24' 'npm' 'pkgconf' 'python-setuptools' 'rust')
+# Cargo already enables thin LTO. GCC's LTO objects are incompatible with Rust's LLD linker.
+options=('!strip' '!debug' '!lto')
+
+# This recipe builds the current checkout, including any local changes.
+pkgver() {
+  cd "$startdir/../.."
+  node -p "require('./package.json').version"
+}
+
+build() {
+  cd "$startdir/../.."
+  export SYNTEE_API_URL="${SYNTEE_API_URL:-https://syntee.fun}"
+  export SYNTEE_WEB_URL="${SYNTEE_WEB_URL:-https://syntee.fun}"
+  npm run build:linux
+}
+
+package() {
+  local appdir="$pkgdir/opt/$pkgname"
+  local desktop_id=com.synteehelper.app
+  cd "$startdir/../.."
+
+  test -x dist/linux-unpacked/syntee-helper
+  test -x dist/linux-unpacked/resources/sidecar/syntee-sidecar
+  install -d "$appdir" "$pkgdir/usr/bin"
+  cp -a dist/linux-unpacked/. "$appdir/"
+  chmod 4755 "$appdir/chrome-sandbox"
+  ln -s "/opt/$pkgname/$pkgname" "$pkgdir/usr/bin/$pkgname"
+  install -Dm644 "packaging/arch/$desktop_id.desktop" "$pkgdir/usr/share/applications/$desktop_id.desktop"
+  install -Dm644 resources/icon.png "$pkgdir/usr/share/icons/hicolor/512x512/apps/$desktop_id.png"
+}

@@ -42,10 +42,9 @@ export const TOOL_META: Record<string, ToolMeta> = {
   fetch_page:    { label: 'Чтение страницы',    icon: 'downloadCloud', color: '#10b981' },
   search_images: { label: 'Поиск картинок',     icon: 'camera',       color: '#f472b6' },
   search_code:   { label: 'Поиск кода',          icon: 'code',       color: '#818cf8' },
-  get_fast_context:{ label: 'Быстрый контекст',  icon: 'compass',     color: '#06b6d4' },
+  project_map:   { label: 'Карта кода',          icon: 'compass',    color: '#38bdf8' },
 
   // ── Система и генерация ──
-  get_system_info:{ label: 'Система',            icon: 'monitor',     color: '#38bdf8' },
   generate_image: { label: 'Генерация',          icon: 'image',       color: '#fb923c' },
   analyze_image:  { label: 'Распознавание',      icon: 'eye',         color: '#2dd4bf' },
 
@@ -59,6 +58,7 @@ export const TOOL_META: Record<string, ToolMeta> = {
   update_working_memory: { label: 'Память чата', icon: 'database',    color: '#34d399' },
   save_memory:    { label: 'Сохранить в память',  icon: 'database',    color: '#10b981' },
   recall_memory:  { label: 'Поиск в памяти',      icon: 'database',    color: '#059669' },
+  recall_context: { label: 'Восстановить контекст', icon: 'database',   color: '#059669' },
 
   // ── Расширения ──
   list_extensions:{ label: 'Расширения',        icon: 'puzzle',      color: '#a78bfa' },

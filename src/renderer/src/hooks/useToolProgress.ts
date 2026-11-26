@@ -1,13 +1,13 @@
 import { useEffect } from 'react'
 import { v4 as uuid } from 'uuid'
-import type { ToolStep } from '../../../shared/types'
+import type { ToolStep, SteerAttachmentMeta } from '../../../shared/types'
 import { useChatStore } from '../store/chat.store'
 import { buffers, getBuf, liveSet, drainBufs, isAuxWindow } from './chatRunRuntime'
 
 // ── Time-based throttle для agent:tool_progress → liveSet ──────────────
 // Паттерн как у tokenBuf (FLUSH_MS в chatRunRuntime): события прогресса
-// копятся в buf.toolProgress, store-обновление — не чаще 80мс. Индексатор
-// fastContext эмитит прогресс per-batch (каждый батч файлов), run_command —
+// копятся в buf.toolProgress, store-обновление — не чаще 80мс. Долгие тулы
+// эмитят прогресс per-batch (например process_attachments), run_command —
 // построчно: без троттлинга каждое событие = store-обновление + полный
 // ре-рендер стримящегося сообщения. Trailing-флеш доносит последнее
 // состояние; guard по buffers.get — если стрим уже завершён (buffers.delete
@@ -41,8 +41,8 @@ export function useToolProgress() {
   useEffect(() => {
     if (isAuxWindow()) return
 
-    // agent:tool_progress — live progress для долгих тулов (get_fast_context,
-    // run_command, process_attachments). Эфемерный — не персистится в БД.
+    // agent:tool_progress — live progress для долгих тулов
+    // (run_command, process_attachments). Эфемерный — не персистится в БД.
     const offToolProgress = window.syntee.on('agent:tool_progress', (data: {
       msgId: string; chatId: string; toolName: string; stage: string
       detail?: string; sessionId?: string; filesProcessed?: number; filesTotal?: number
@@ -128,23 +128,32 @@ export function useToolProgress() {
       msgId?: string; callId?: string; pendingCallId?: string; chatId?: string
       diff?: string
       // execute_code: trace должен попасть в live ToolStep так же, как в сохранённый.
-      codeMode?: { code: string; trace?: Array<{ name: string; args: unknown; result: string; status: 'success' | 'failure' }> }
+      codeMode?: { code: string; trace?: Array<{ name: string; args: unknown; result: string; status: 'success' | 'failure'; diff?: string }> }
       // Native analyze_image lifecycle: 'tool_result' несёт pending, отдельный
       // 'tool_result_update' (тот же callId) — responded/failed + findings.
       visualAnalysis?: { status: 'pending' | 'responded' | 'failed'; findings?: string }
       // §steer — реплика пользователя, внедрённая в контекст активного рана.
       steerId?: string
       steerApplied?: boolean
+      attachments?: SteerAttachmentMeta[]
+      // Мини-агенты: подсказки и оптимизация контекста (live-карточки).
+      hintSource?: string
+      hintId?: string
+      janitorKind?: string
+      janitorTokensSaved?: number
+      janitorArchiveId?: string
+      janitorActions?: Array<{ kind: string; description: string; tokensSaved: number; archiveId?: string }>
     }) => {
       if (!step.chatId) return
       const chatId = step.chatId
       const buf = getBuf(chatId)
       if (!buf.streamMsgId) return
 
-      // Усваиваем реальный msgId из первого события (как в offToken)
-      if (buf.streamMsgId === 'streaming-pending' && step.msgId) {
+      // Усваиваем реальный msgId из первого события. null трактуем как
+      // 'streaming-pending' (буфер создан ранним событием до ответа chat:send).
+      if ((!buf.streamMsgId || buf.streamMsgId === 'streaming-pending') && step.msgId) {
         buf.streamMsgId = step.msgId
-        liveSet(chatId, { msgId: step.msgId })
+        liveSet(chatId, { msgId: step.msgId, isTyping: true })
       }
       if (step.msgId && step.msgId !== buf.streamMsgId) return
 
@@ -436,6 +445,7 @@ export function useToolProgress() {
           timestamp: Date.now(),
           steerId: step.steerId,
           steerApplied: true,
+          ...(step.attachments?.length ? { attachments: step.attachments } : {}),
         }
         let replaced = false
         if (step.steerId) {
@@ -467,11 +477,76 @@ export function useToolProgress() {
           isAgentRunning: true,
           isTyping: true,
         })
+      } else if (step.type === 'hint' || step.type === 'janitor') {
+        // Мини-агенты: карточка подсказки/оптимизации в live-ленте текущей итерации.
+        const aStep: ToolStep = {
+          id: uuid(), type: step.type as 'hint' | 'janitor',
+          content: step.content, timestamp: Date.now(),
+          hintSource: step.hintSource as ToolStep['hintSource'], hintId: step.hintId,
+          janitorKind: step.janitorKind, janitorTokensSaved: step.janitorTokensSaved,
+          janitorArchiveId: step.janitorArchiveId, janitorActions: step.janitorActions,
+        }
+        buf.steps.push(aStep)
+        const last = buf.iters[buf.iters.length - 1]
+        if (last) buf.iters = [...buf.iters.slice(0, -1), { ...last, steps: [...last.steps, aStep] }]
+        else buf.iters = [{ textBefore: buf.text, steps: [aStep] }]
+        liveSet(chatId, {
+          iters: [...buf.iters],
+          steps: [...buf.steps],
+          isAgentRunning: true,
+          isTyping: true,
+        })
       }
     })
 
+    // agent:code_trace — живой трейс вложенных тулов execute_code.
+    // Запись приходит дважды (status 'running' → финал) с одинаковым id,
+    // поэтому апсертим по id: в карточке видно, ЧТО вызвано и что
+    // выполняется прямо сейчас, а не только итог после конца скрипта.
+    const offCodeTrace = window.syntee.on('agent:code_trace', (data: {
+      msgId?: string; chatId?: string
+      entry?: {
+        id?: string; name: string; args: unknown; result: string
+        status: 'success' | 'failure' | 'running'; diff?: string
+      }
+    }) => {
+      const entry = data?.entry
+      if (!data?.chatId || !entry) return
+      const chatId = data.chatId
+      const buf = getBuf(chatId)
+      if (!buf.streamMsgId) return
+      if (data.msgId && data.msgId !== buf.streamMsgId) return
+      const upsert = (trace: NonNullable<ToolStep['codeMode']>['trace']): NonNullable<ToolStep['codeMode']>['trace'] => {
+        const idx = entry.id ? trace.findIndex(e => e.id === entry.id) : -1
+        if (idx === -1) return [...trace, entry]
+        const next = trace.slice()
+        next[idx] = { ...trace[idx], ...entry }
+        return next
+      }
+      let changed = false
+      const iters = buf.iters.slice()
+      // Новейший вызов execute_code — в последней итерации/шаге.
+      for (let i = iters.length - 1; i >= 0 && !changed; i--) {
+        const steps = iters[i].steps
+        for (let j = steps.length - 1; j >= 0; j--) {
+          const s = steps[j]
+          if (s.type !== 'tool_call' || s.toolName !== 'execute_code') continue
+          const argsCode = (s.toolArgs as { code?: unknown } | undefined)?.code
+          const code = s.codeMode?.code ?? (typeof argsCode === 'string' ? argsCode : '')
+          const nextSteps = steps.slice()
+          nextSteps[j] = { ...s, codeMode: { code, trace: upsert(s.codeMode?.trace ?? []) } }
+          iters[i] = { ...iters[i], steps: nextSteps }
+          changed = true
+          break
+        }
+      }
+      if (!changed) return
+      buf.iters = iters
+      liveSet(chatId, { iters: [...iters] })
+    })
+
     return () => {
-      offToolProgress(); offSpawn(); offStep()
+      offToolProgress(); offSpawn(); offStep(); offCodeTrace()
     }
   }, [])
 }

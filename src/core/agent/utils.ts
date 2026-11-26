@@ -52,6 +52,14 @@ export interface MissingArg {
   description: string
 }
 
+// Поля, для которых пустая строка — ЛЕГИТИМНОЕ значение, а не «аргумент не передан».
+// edit_file: документированный способ удалить строки — new_str: "" (см. схему
+// src/shared/toolSchemas/edit.ts и fileEdit.ts, который проверяет строго
+// `params.new_str === undefined`). Пока '' считался отсутствующим, КАЖДАЯ
+// правка-удаление отбивалась как failure («missing required args: new_str»),
+// файл не менялся, а карточка тула показывала ошибку.
+const EMPTY_STRING_ALLOWED = new Set(['edit_file:new_str'])
+
 export function findMissingRequiredArgs(
   name: string,
   args: Record<string, unknown>,
@@ -61,8 +69,14 @@ export function findMissingRequiredArgs(
   const required = schema?.function.parameters?.required
   if (!required?.length) return []
   const props = schema?.function.parameters?.properties ?? {}
+  const isMissing = (key: string): boolean => {
+    const value = args[key]
+    if (value === undefined || value === null) return true
+    if (value === '') return !EMPTY_STRING_ALLOWED.has(`${name}:${key}`)
+    return false
+  }
   return required
-    .filter(key => args[key] === undefined || args[key] === null || args[key] === '')
+    .filter(isMissing)
     .map(key => {
       const prop = props[key] as { type?: string; description?: string } | undefined
       return {

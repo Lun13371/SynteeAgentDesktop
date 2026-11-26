@@ -13,6 +13,11 @@ const { spawnSync } = require('node:child_process')
 //
 // Порог 0.9999 — не «примерно похоже», а «тот же вектор с точностью до
 // float32-арифметики». Ниже — сначала ищем причину, а не меняем тег модели.
+//
+// GPU (DirectML) — отдельная история: тот же пайплайн, но другая арифметика,
+// поэтому same-text cosine с CPU-эталоном ниже порога. Это не баг — сайдкарь
+// пинится на CPU для эталона ниже, а GPU-режим проверяется замером
+// (нормировка векторов) и smoke-тестом.
 
 const root = path.join(__dirname, '..')
 const binaryName = process.platform === 'win32' ? 'syntee-sidecar.exe' : 'syntee-sidecar'
@@ -68,6 +73,12 @@ function runSidecar(requests) {
     timeout: 180_000,
     windowsHide: true,
     maxBuffer: 64 * 1024 * 1024,
+    // Паритет проверяет ПАЙПЛАЙН (токенизация/префикс/pooling) против JS,
+    // а не fp-точность другого EP: DirectML ведёт часть арифметики иначе —
+    // same-text cosine с CPU-эталоном ~0.996-0.998, на патологических
+    // строках ниже. Вектор-эталон считаем строго на CPU; смешивание
+    // CPU/GPU-векторов в одной базе допустимо (шум на 3-4-м знаке).
+    env: { ...process.env, SYNTEE_SEMANTIC_DEVICE: 'cpu' },
   })
   assert.equal(result.status, 0, result.stderr)
   return result.stdout

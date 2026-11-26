@@ -5,6 +5,7 @@ import { BUILTIN_MODELS } from '../../shared/data/builtinModels'
 import { getCatalogModel, inferSpeed, getCatalogStatus, type CatalogModelInfo } from '../../core/tokens/modelCatalog'
 import { getGatewayModelsCache } from '../../core/tokens/gatewayModelsCache'
 import { getOpencodeZenHeaders, isOpencodeProvider } from '../../shared/constants'
+import { fetchCodexModels } from '../services/codexAuth'
 
 // ── Кэш моделей Syntee-Gateway ─────────────────────────────────────────────
 // Переехал в core/tokens/gatewayModelsCache.ts: его теперь читает и core-код
@@ -87,14 +88,13 @@ export function getNextApiKey(store: Store, providerId: string): string {
 const DEFAULT_ASSIGNMENTS: ModelAssignment[] = [
   { role: 'main',      modelId: 'claude-sonnet-4-6',  providerId: 'anthropic' },
   { role: 'fast',      modelId: 'mimo-v2.5-free',     providerId: 'opencode-free' },
-  { role: 'fastContext', modelId: 'inclusionai/ling-3.0-flash:free', providerId: 'openrouter' },
   { role: 'vision',    modelId: 'gpt-4o',             providerId: 'openai' },
   { role: 'video',     modelId: '',                   providerId: '' },
   { role: 'audio',     modelId: '',                   providerId: '' },
   { role: 'stt',       modelId: '',                   providerId: '' },
   { role: 'tts',       modelId: '',                   providerId: '' },
   { role: 'embedding', modelId: '',                   providerId: '' },
-  { role: 'memory',    modelId: 'claude-haiku-4-5',   providerId: 'anthropic' },
+  { role: 'memory',    modelId: 'inclusionai/ling-3.0-flash:free', providerId: 'openrouter' },
   { role: 'summary',   modelId: 'claude-haiku-4-5',   providerId: 'anthropic' },
 ]
 
@@ -113,69 +113,81 @@ async function fetchProviderModels(
   let fetched: ModelMeta[] = []
   let error: string | null = null
 
-  try {
-    const url = provider.baseUrl.replace(/\/$/, '') + (provider.modelsEndpoint || '/models')
-    const res = await fetch(url, {
-      headers: {
-        // Анонимные провайдеры (opencode-free) шлют apiKey 'public' → Bearer public.
-        // Если apiKey пуст — fallback на 'public' (как делает opencode CLI).
-        'Authorization': `Bearer ${provider.apiKey || 'public'}`,
-        'Content-Type': 'application/json',
-        // Zen-провайдерам — cli-заголовки (иначе Cloudflare 403 / анонимные rate-лимиты)
-        ...(isOpencodeProvider(provider.id, provider.type) ? getOpencodeZenHeaders() : {}),
-      },
-    })
-    if (!res.ok) {
-      error = `HTTP ${res.status}: ${res.statusText}`
-    } else {
-      const data = await res.json() as { data?: { id: string }[]; models?: { id: string }[] }
-      // Поддерживаем оба формата: { data: [...] } и { models: [...] }
-      const items = data.data || data.models || []
-      let ids: string[] = items.map((m: { id: string }) => m.id).filter(Boolean)
-
-      // OpenCode Zen Free — анонимный провайдер, оставляем только free-модели.
-      // Live-endpoint /zen/v1/models возвращает все id; дискриминатор free —
-      // суффикс -free. Исключения:
-      //   big-pickle — free без суффикса (stealth-модель, Free в доке Zen);
-      //   deepseek-v4-flash-free — фантом: есть в /models, но отсутствует в
-      //     доке free-моделей и бэкенд отдаёт 400 «Model is unavailable».
-      if (provider.id === 'opencode-free') {
-        ids = ids.filter(id => (id.endsWith('-free') || id === 'big-pickle') && id !== 'deepseek-v4-flash-free')
-      }
-
-      fetched = ids.map(id => {
-        const known = BUILTIN_MODELS.find(b => b.id === id)
-        if (known) return { ...known, providerId }
-        // Пытаемся получить статы из каталога models.dev
-        const fromCatalog = getCatalogModel(providerId, id)
-        return {
-          id, providerId,
-          name: fromCatalog?.displayName ?? id,
-          contextWindow: fromCatalog?.contextWindow ?? 0,
-          // Цена — только если models.dev реально отдал cost (hasPricing);
-          // иначе undefined = «цена неизвестна» (не путаем с «бесплатно»).
-          inputPrice: fromCatalog?.hasPricing ? fromCatalog.inputPricePerM / 100 : undefined,
-          outputPrice: fromCatalog?.hasPricing ? fromCatalog.outputPricePerM / 100 : undefined,
-          speed: inferSpeed(id),
-          capabilities: fromCatalog?.capabilities ?? [],
-          description: fromCatalog?.description ?? '',
-        }
+  if (provider.type === 'openai-codex') {
+    // ChatGPT-подписка: список моделей живёт не на provider.baseUrl + '/models',
+    // а на бэкенде Codex (/backend-api/codex/models?client_version=…). Бэкенд
+    // сам фильтрует по тарифу аккаунта и отдаёт display_name, контекст и уровни
+    // reasoning — поэтому каталога в BUILTIN_MODELS для этой ветки нет.
+    const result = await fetchCodexModels()
+    error = result.error ?? null
+    fetched = result.models
+  } else {
+    try {
+      const url = provider.baseUrl.replace(/\/$/, '') + (provider.modelsEndpoint || '/models')
+      const res = await fetch(url, {
+        headers: {
+          // Анонимные провайдеры (opencode-free) шлют apiKey 'public' → Bearer public.
+          // Если apiKey пуст — fallback на 'public' (как делает opencode CLI).
+          'Authorization': `Bearer ${provider.apiKey || 'public'}`,
+          'Content-Type': 'application/json',
+          // Zen-провайдерам — cli-заголовки (иначе Cloudflare 403 / анонимные rate-лимиты)
+          ...(isOpencodeProvider(provider.id, provider.type) ? getOpencodeZenHeaders() : {}),
+        },
       })
+      if (!res.ok) {
+        error = `HTTP ${res.status}: ${res.statusText}`
+      } else {
+        const data = await res.json() as { data?: { id: string }[]; models?: { id: string }[] }
+        // Поддерживаем оба формата: { data: [...] } и { models: [...] }
+        const items = data.data || data.models || []
+        let ids: string[] = items.map((m: { id: string }) => m.id).filter(Boolean)
 
-      // Обновляем timestamp провайдера
-      const idx = list.findIndex(p => p.id === providerId)
-      if (idx >= 0) {
-        list[idx].lastModelsFetch = Date.now()
-        store.set('providers', list)
+        // OpenCode Zen Free — анонимный провайдер, оставляем только free-модели.
+        // Live-endpoint /zen/v1/models возвращает все id; дискриминатор free —
+        // суффикс -free. Исключения:
+        //   big-pickle — free без суффикса (stealth-модель, Free в доке Zen);
+        //   deepseek-v4-flash-free — фантом: есть в /models, но отсутствует в
+        //     доке free-моделей и бэкенд отдаёт 400 «Model is unavailable».
+        if (provider.id === 'opencode-free') {
+          ids = ids.filter(id => (id.endsWith('-free') || id === 'big-pickle') && id !== 'deepseek-v4-flash-free')
+        }
+
+        fetched = ids.map(id => {
+          const known = BUILTIN_MODELS.find(b => b.id === id)
+          if (known) return { ...known, providerId }
+          // Пытаемся получить статы из каталога models.dev
+          const fromCatalog = getCatalogModel(providerId, id)
+          return {
+            id, providerId,
+            name: fromCatalog?.displayName ?? id,
+            contextWindow: fromCatalog?.contextWindow ?? 0,
+            // Цена — только если models.dev реально отдал cost (hasPricing);
+            // иначе undefined = «цена неизвестна» (не путаем с «бесплатно»).
+            inputPrice: fromCatalog?.hasPricing ? fromCatalog.inputPricePerM / 100 : undefined,
+            outputPrice: fromCatalog?.hasPricing ? fromCatalog.outputPricePerM / 100 : undefined,
+            speed: inferSpeed(id),
+            capabilities: fromCatalog?.capabilities ?? [],
+            description: fromCatalog?.description ?? '',
+          }
+        })
       }
-
-      // Сохраняем модели в cachedModels — убираем старые от этого провайдера, добавляем новые
-      const cached = store.get('cachedModels', []) as ModelMeta[]
-      const filtered = cached.filter(m => m.providerId !== providerId)
-      store.set('cachedModels', [...filtered, ...fetched])
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e)
     }
-  } catch (e) {
-    error = e instanceof Error ? e.message : String(e)
+  }
+
+  // Timestamp провайдера + кэш моделей — общий шаг для обоих источников.
+  if (!error) {
+    const idx = list.findIndex(p => p.id === providerId)
+    if (idx >= 0) {
+      list[idx].lastModelsFetch = Date.now()
+      store.set('providers', list)
+    }
+
+    // Сохраняем модели в cachedModels — убираем старые от этого провайдера, добавляем новые
+    const cached = store.get('cachedModels', []) as ModelMeta[]
+    const filtered = cached.filter(m => m.providerId !== providerId)
+    store.set('cachedModels', [...filtered, ...fetched])
   }
 
   // Добавляем ручные переопределения

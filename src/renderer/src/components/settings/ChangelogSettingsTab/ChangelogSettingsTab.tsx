@@ -9,7 +9,7 @@
  */
 import { useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
-import { RefreshCw, Zap, Check } from 'lucide-react'
+import { RefreshCw, Zap, Check, Download } from 'lucide-react'
 import AppIcon from '../../ui/AppIcon/AppIcon'
 import ChangelogMarkdown from '../../ui/ChangelogMarkdown/ChangelogMarkdown'
 import { useUpdateStore } from '../../../store/update.store'
@@ -23,6 +23,11 @@ export default function ChangelogSettingsTab() {
   const [error, setError] = useState<string | null>(null)
   const check = useUpdateStore((s) => s.check)
   const checking = useUpdateStore((s) => s.status === 'checking')
+  const updateError = useUpdateStore((s) => s.error)
+  const updatable = useUpdateStore((s) => s.status === 'available' && s.available ? s.available : null)
+  const upToDate = useUpdateStore((s) => s.status === 'no-update' && s.available === null)
+  const openUpdate = useUpdateStore((s) => s.quitAndInstall)
+  const [downloadError, setDownloadError] = useState<string | null>(null)
 
   const load = async () => {
     setLoading(true)
@@ -55,6 +60,17 @@ export default function ChangelogSettingsTab() {
       <h2 className="settings-section-title">Список изменений</h2>
 
       <div className="changelog-settings-toolbar">
+        {upToDate && <span role="status">Установлена актуальная версия</span>}
+        {updatable && (
+          <button className="changelog-settings-check-btn" onClick={async () => {
+            setDownloadError(null)
+            const result = await openUpdate()
+            if (!result.ok) setDownloadError(result.error ?? 'Не удалось запустить обновление')
+          }}>
+            <Download size={14} />
+            Обновить до v{updatable.version}
+          </button>
+        )}
         <motion.button
           className="changelog-settings-check-btn"
           onClick={() => check().then(() => load())}
@@ -67,6 +83,9 @@ export default function ChangelogSettingsTab() {
           Проверить обновления
         </motion.button>
       </div>
+
+      {updateError && <div className="changelog-settings-error">{updateError}</div>}
+      {downloadError && <div className="changelog-settings-error" role="alert">{downloadError}</div>}
 
       {loading ? (
         <div className="changelog-settings-loading">
