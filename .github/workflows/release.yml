@@ -168,11 +168,37 @@ jobs:
     needs: [prepare, windows, linux]
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
           path: release
           merge-multiple: true
+
+      # Тело релиза берём из docs/changelog/<версия>.md — того же файла, что
+      # отдаётся на сайт. Если файла нет, откатываемся на список коммитов.
+      - name: Prepare release body
+        id: notes
+        run: |
+          set -euo pipefail
+          version="${{ needs.prepare.outputs.version }}"
+          src="docs/changelog/${version}.md"
+          if [ ! -f "$src" ]; then
+            echo "::warning::$src не найден — тело релиза будет собрано из коммитов"
+            exit 0
+          fi
+          out="$RUNNER_TEMP/release-body.md"
+          # H1 и строку даты не дублируем: имя релиза и дату GitHub показывает сам.
+          awk 'NR==1 && /^# / {next} /^\*Дата релиза:/ {next} {print}' "$src" > "$out"
+          sed -i '/./,$!d' "$out"
+          if [ ! -s "$out" ]; then
+            echo "::warning::$src пуст после очистки — тело релиза будет собрано из коммитов"
+            exit 0
+          fi
+          printf 'body_path=%s\n' "$out" >> "$GITHUB_OUTPUT"
+          echo "Тело релиза из $src ($(wc -c < "$out") байт)"
 
       - name: Generate checksums
         run: |
@@ -181,13 +207,28 @@ jobs:
           sha256sum * > SHA256SUMS
           cat SHA256SUMS
 
-      - name: Create release
+      - name: Create release (body from changelog)
+        if: steps.notes.outputs.body_path != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          name: Syntee Helper ${{ needs.prepare.outputs.version }}
+          body_path: ${{ steps.notes.outputs.body_path }}
+          # Ручной запуск публикует черновик — его проверяют и выпускают руками.
+          draft: ${{ github.event_name == 'workflow_dispatch' }}
+          prerelease: false
+          files: |
+            release/*.exe
+            release/*.tar.zst
+            release/SHA256SUMS
+
+      - name: Create release (notes from commits)
+        if: steps.notes.outputs.body_path == ''
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.prepare.outputs.tag }}
           name: Syntee Helper ${{ needs.prepare.outputs.version }}
           generate_release_notes: true
-          # Ручной запуск публикует черновик — его проверяют и выпускают руками.
           draft: ${{ github.event_name == 'workflow_dispatch' }}
           prerelease: false
           files: |
