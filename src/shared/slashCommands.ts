@@ -74,6 +74,12 @@ export interface SlashCommand {
   promptTemplate?: string
   /** Шаблон содержит $ARGS (плейсхолдер аргумента). */
   hasArgsPlaceholder?: boolean
+  /**
+   * Одноразовый режим оркестрации (/orchestrate). Команда не инъектится в
+   * промпт: ChatPage включает блок выбора исполнителя/ревьюера и сохраняет
+   * черновик. Backend получает выбор отдельным полем chat.send.orchestration.
+   */
+  orchestration?: boolean
 }
 
 export const SLASH_COMMANDS: SlashCommand[] = [
@@ -81,6 +87,21 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: 'goal-resume', label: '/goal-resume', description: 'Продолжить активную цель с этого места', icon: 'zap', source: 'builtin', systemPrompt: () => '' },
   { name: 'goal-pause', label: '/goal-pause', description: 'Поставить цель на паузу (продолжится со следующим сообщением)', icon: 'pause', source: 'builtin', systemPrompt: () => '' },
   { name: 'goal-stop', label: '/goal-stop', description: 'Снять цель (то же, что /goal clear)', icon: 'x', source: 'builtin', systemPrompt: () => '' },
+  {
+    // Одноразовая оркестрация: команда НЕ инъектится в промпт — ChatPage
+    // перехватывает её до агента, включает компактный блок выбора моделей
+    // (исполнитель + опциональный ревьюер) и сохраняет черновик/вложения.
+    // Модель чата при этом не меняется: она остаётся координатором хода.
+    name: 'orchestrate',
+    label: '/orchestrate',
+    description: 'Один ход с отдельным исполнителем и ревьюером (модель чата не меняется)',
+    icon: 'layers',
+    placeholder: 'задача для исполнителя...',
+    argumentHint: 'задача',
+    source: 'builtin',
+    orchestration: true,
+    systemPrompt: () => '',
+  },
   {
     name: 'image',
     label: '/image',

@@ -609,6 +609,11 @@ export function registerChatIPC(store: Store, mainWindow: { getWindow: () => Bro
       bufferedAgentStatus: run.bufferedAgentStatus,
       bufferedRateLimitSec: run.bufferedRateLimitSec,
       bufferedRetry: run.bufferedRetry,
+      // §orchestration — прогресс фаз one-turn оркестрации активного рана.
+      // Отдаём на ВЕРХНЕМ уровне (renderer читает live.orchestration ??
+      // live.liveState?.orchestration): карточка сразу показывает актуальные
+      // фазы при возврате в чат, не дожидаясь следующего события.
+      orchestration: run.orchestration,
       // Единый снапшот ephemeral live-состояния (toolProgress, spawnedAgents,
       // и любые будущие ephemeral-блоки). Renderer гидрирует их целиком.
       liveState: run.bufferedLiveState,

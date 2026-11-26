@@ -92,8 +92,8 @@ export interface AgentCallbacks {
    * (см. Agent.recordAllowlist).
    */
   onConfirm?: (toolName: string, args: Record<string, unknown>) => Promise<boolean | { approved: boolean; always?: AllowScope; match?: 'action' | 'tool' }>
-  approvalMode?: 'auto' | 'ask'
-  onSpawnAgent?: (opts: { id: string; task: string; model?: string; approvalMode?: 'auto' | 'ask' | 'full'; isolation?: 'auto' | 'worktree' | 'none'; role?: string; callId?: string }) => Promise<{ summary: string; error?: string }>
+  approvalMode?: import('../../shared/types').ApprovalMode
+  onSpawnAgent?: (opts: { id: string; task: string; model?: string; isolation?: 'auto' | 'worktree' | 'none'; role?: string; callId?: string }) => Promise<{ summary: string; error?: string }>
   onGetAgentStatus?: (agentId: string) => Promise<{ status: string; currentStep?: string; stepsCount: number } | null>
   /**
    * SPA-fallback для fetch_page: рендерит страницу через скрытый BrowserWindow
@@ -161,6 +161,13 @@ export interface AgentCallbacks {
    * транслирует stage-прогресс в main для live-индикации этапов в UI.
    */
   onToolProgress?: (p: { toolName: string; stage: string; detail?: string; filesProcessed?: number; filesTotal?: number; filesFound?: Array<{ path: string; score: number; why: string }> }) => void
+  /**
+   * §orchestration — прогресс фазового рана. Одно событие на переход фазы:
+   * 'running' при входе в фазу, 'done'/'blocked' при выходе. UI накапливает
+   * фазы по startedAt (см. renderer/utils/orchestrationProgress.ts).
+   * Не приходит для обычных (неоркестрированных) ранов.
+   */
+  onOrchestrationProgress?: (progress: import('../../shared/orchestration').OrchestrationProgress) => void
   /** AbortSignal для долгих тулов — позволяет отменить долгий tool-call. */
   signal?: AbortSignal
   /**
@@ -295,6 +302,9 @@ export interface AgentSummaryDetails {
   // изменённого файла. contentBefore = null = файл был создан этим turn'ом.
   // Перегоняется в file_snapshots (DB) на main-стороне для checkpoint/rewind.
   fileSnapshots: Array<{ path: string; contentBefore: string | null }>
+  /** §orchestration — атрибуция по моделям-ролям и история фаз (только для
+   *  оркестрированных ранов; undefined у обычных). */
+  orchestration?: import('./orchestration').OrchestrationRunSummary
 }
 
 export type ContentPart =
@@ -357,6 +367,13 @@ export type AgentRuntimeOptions = {
     *  поддерживает vision). Agent.run встраивает их в user-сообщение
     *  как multipart content вместо текстового описания от vision-модели. */
   imageParts?: ContentPart[]
+  /**
+   * §orchestration — снимок фазовых моделей. Если задан, тот же самый цикл
+   * Agent.run() исполняет фазы planning → executing → reviewing/replanning
+   * на ЯВНО выбранных моделях с read-only allowlist'ом для исследовательских
+   * фаз. undefined = обычное поведение без изменений.
+   */
+  orchestration?: import('../../shared/orchestration').OrchestrationRun
 
 }
 

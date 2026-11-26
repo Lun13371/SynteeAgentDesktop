@@ -30,6 +30,14 @@ interface ChatInputActionButtonProps {
    * кольцо-прогресс, что и при удержании мышью. Логику таймера держит ChatInput.
    */
   holdActive?: boolean
+  /**
+   * Отправка недоступна (например, one-turn оркестрация без выбранного
+   * исполнителя): клик и удержание ничего не делают, кнопка выглядит
+   * заблокированной, tooltip объясняет причину.
+   */
+  blocked?: boolean
+  /** Текст tooltip в заблокированном состоянии. */
+  blockedTitle?: string
 }
 
 /**
@@ -56,6 +64,8 @@ export function ChatInputActionButton({
   onMicClick,
   onSteer,
   holdActive,
+  blocked,
+  blockedTitle,
 }: ChatInputActionButtonProps) {
   const voiceActive = voice.state === 'recording' || voice.state === 'transcribing' || voice.state === 'requesting'
   const btnMode = voiceActive
@@ -98,7 +108,7 @@ export function ChatInputActionButton({
   }, [])
 
   const handlePointerDown = () => {
-    if (!canSteer) return
+    if (blockedSend || !canSteer) return
     firedRef.current = false
     setHolding(true)
     if (holdTimer.current !== null) clearTimeout(holdTimer.current)
@@ -110,7 +120,17 @@ export function ChatInputActionButton({
     }, STEER_HOLD_MS)
   }
 
+  // Блокируется только ОТПРАВКА: стоп генерации и микрофон должны работать
+  // даже при невалидном выборе оркестрации.
+  const blockedSend = !!blocked && btnMode === 'send'
+
   const handleClick = () => {
+    // Заблокировано: ни отправки, ни стопа, ни микрофона — причина в tooltip
+    // и в блоке оркестрации над инпутом.
+    if (blockedSend) {
+      firedRef.current = false
+      return
+    }
     if (firedRef.current) {
       firedRef.current = false
       return
@@ -122,16 +142,17 @@ export function ChatInputActionButton({
 
   return (
     <motion.button
-      className={`chat-input-action-btn chat-input-action-btn--${btnMode}${sendBurst ? ' chat-input-action-btn--burst' : ''}${sendToQueue ? ' chat-input-action-btn--queue' : ''}${canSteer ? ' chat-input-action-btn--steerable' : ''}${holdingView ? ' chat-input-action-btn--holding' : ''}${voice.state === 'recording' ? ' chat-input-action-btn--recording' : ''}${voice.state === 'transcribing' || voice.state === 'requesting' ? ' chat-input-action-btn--busy' : ''}${micBusy ? ' chat-input-action-btn--busy' : ''}`}
+      className={`chat-input-action-btn chat-input-action-btn--${btnMode}${sendBurst ? ' chat-input-action-btn--burst' : ''}${sendToQueue ? ' chat-input-action-btn--queue' : ''}${canSteer ? ' chat-input-action-btn--steerable' : ''}${holdingView ? ' chat-input-action-btn--holding' : ''}${voice.state === 'recording' ? ' chat-input-action-btn--recording' : ''}${voice.state === 'transcribing' || voice.state === 'requesting' ? ' chat-input-action-btn--busy' : ''}${micBusy ? ' chat-input-action-btn--busy' : ''}${blockedSend ? ' chat-input-action-btn--blocked' : ''}`}
+      aria-disabled={blockedSend || undefined}
       onClick={handleClick}
       onPointerDown={handlePointerDown}
       onPointerUp={clearHold}
       onPointerLeave={clearHold}
       onPointerCancel={clearHold}
-      whileTap={{ scale: 0.88 }}
-      whileHover={{ scale: 1.08 }}
+      whileTap={blockedSend ? undefined : { scale: 0.88 }}
+      whileHover={blockedSend ? undefined : { scale: 1.08 }}
       transition={{ type: 'spring', stiffness: 400, damping: 25 }}
-      title={btnMode === 'stop' ? 'Остановить генерацию' : btnMode === 'send' ? (sendToQueue ? (holdingView ? 'Держите ещё немного — уйдёт в контекст агента' : 'Клик — в очередь · удержать 0,5с — внедрить в контекст агента') : 'Отправить (Enter)') : voice.state === 'recording' ? `Запись... ${voice.recordingSec}с — нажмите чтобы остановить` : voice.state === 'transcribing' ? 'Распознавание речи...' : micBusy ? (voice.progress?.message || 'Загрузка модели Whisper...') : 'Голосовой ввод'}
+      title={blockedSend ? (blockedTitle || 'Отправка недоступна') : btnMode === 'stop' ? 'Остановить генерацию' : btnMode === 'send' ? (sendToQueue ? (holdingView ? 'Держите ещё немного — уйдёт в контекст агента' : 'Клик — в очередь · удержать 0,5с — внедрить в контекст агента') : 'Отправить (Enter)') : voice.state === 'recording' ? `Запись... ${voice.recordingSec}с — нажмите чтобы остановить` : voice.state === 'transcribing' ? 'Распознавание речи...' : micBusy ? (voice.progress?.message || 'Загрузка модели Whisper...') : 'Голосовой ввод'}
     >
       {/* §steer — индикатор удержания: дуга наливается по кругу кнопки.
           Работает и для мыши, и для удержания Enter (holdActive из ChatInput). */}

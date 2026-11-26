@@ -1,4 +1,5 @@
 import type { Message, ToolStep, QueueItemMeta, SteerAttachmentMeta } from '../../../shared/types'
+import type { OrchestrationProgress } from '../utils/orchestrationProgress'
 import { useChatStore, type LiveIter, type ChatLiveState } from '../store/chat.store'
 
 // Per-chat mutable буферы для высокочастотных обновлений (токены стриминга).
@@ -26,6 +27,8 @@ export interface ChatBuffers {
   toolProgress: Record<string, { stage: string; detail?: string; sessionId?: string; filesProcessed?: number; filesTotal?: number; filesFound?: Array<{ path: string; score: number; why: string }>; ts: number }>
   /** Live-маппинг саб-агентов текущего стрима (для мгновенной карточки). */
   spawnedAgents: Array<{ agentId: string; callId?: string; task: string; msgId: string; model?: string; role?: string; ts: number }>
+  /** Прогресс оркестрации текущего рана (одна запись на фазу). */
+  orchestration: OrchestrationProgress[]
   retry: { attempt: number; maxAttempts?: number; reason: string; waitSec?: number } | null
   lastError: string | null
 }
@@ -86,7 +89,7 @@ export function getBuf(chatId: string): ChatBuffers {
       text: '', thinking: '', thinkingMs: undefined, isThinkingLive: false,
       iters: [], steps: [], todo: [], agentStatus: null, rateLimitSec: 0,
       tokenBuf: '', thinkingBuf: '', flushTimer: null, streamMsgId: null,
-      toolProgress: {}, retry: null, lastError: null, spawnedAgents: [],
+      toolProgress: {}, retry: null, lastError: null, spawnedAgents: [], orchestration: [],
     }
     buffers.set(chatId, buf)
   }
@@ -123,6 +126,7 @@ export function initChatSend(chatId: string) {
   buf.retry = null
   buf.lastError = null
   buf.spawnedAgents = []
+  buf.orchestration = []
   useChatStore.getState().hydrateLiveState(chatId, {
     msgId: 'streaming-pending',
     text: '',
@@ -135,6 +139,8 @@ export function initChatSend(chatId: string) {
     rateLimitSec: 0,
     retry: null,
     lastError: null,
+    spawnedAgents: [],
+    orchestration: [],
     isTyping: true,
     isAgentRunning: false,
   })
@@ -164,10 +170,14 @@ export async function hydrateFromMain(chatId: string): Promise<boolean> {
       bufferedTodo: Array<{ text: string; status: 'pending' | 'in_progress' | 'done' | 'skipped' }>
       bufferedAgentStatus: string | null; bufferedRateLimitSec: number
       bufferedRetry: { attempt: number; maxAttempts?: number; reason: string; waitSec?: number } | null
+      /** Прогресс оркестрации активного рана (main отдаёт на верхнем уровне
+       *  live state payload; liveState-вариант — на случай старого формата). */
+      orchestration?: OrchestrationProgress[]
       liveState?: {
         toolProgress: Record<string, { stage: string; detail?: string; sessionId?: string; filesProcessed?: number; filesTotal?: number; filesFound?: Array<{ path: string; score: number; why: string }>; ts: number }>
         spawnedAgents: Array<{ agentId: string; callId?: string; task: string; msgId: string; model?: string; role?: string; ts: number }>
         steers?: Array<{ steerId: string; text: string; ts: number; applied: boolean; attachments?: SteerAttachmentMeta[] }>
+        orchestration?: OrchestrationProgress[]
       }
       meta: QueueItemMeta | null
     } | null
@@ -195,6 +205,9 @@ export async function hydrateFromMain(chatId: string): Promise<boolean> {
     // в main и автоматически подхватываются здесь.
     buf.toolProgress = live.liveState?.toolProgress ?? {}
     buf.spawnedAgents = live.liveState?.spawnedAgents ?? []
+    // Прогресс оркестрации: main — источник истины, при возврате в чат
+    // копируем снапшот целиком (карточка сразу показывает актуальные фазы).
+    buf.orchestration = live.orchestration ?? live.liveState?.orchestration ?? []
     // §steer — восстанавливаем карточки реплик, которые агент ЕЩЁ не подхватил
     // (applied:false). Применённые уже лежат в bufferedIters как обычные шаги
     // и не дублируются — матчинг по steerId. Без этого при переключении чата
@@ -240,6 +253,7 @@ export async function hydrateFromMain(chatId: string): Promise<boolean> {
       retry: live.bufferedRetry ?? null,
       toolProgress: buf.toolProgress,
       spawnedAgents: buf.spawnedAgents,
+      orchestration: buf.orchestration,
       isTyping: true,
       isAgentRunning: buf.iters.length > 0 || buf.steps.length > 0,
     })

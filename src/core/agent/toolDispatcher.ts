@@ -473,7 +473,6 @@ export class ToolDispatcher {
           id: agentId,
           task: resolvedArgs.task as string,
           model: resolvedArgs.model as string | undefined,
-          approvalMode: resolvedArgs.approval_mode as 'auto' | 'ask' | 'full' | undefined,
           isolation: resolvedArgs.isolation as 'auto' | 'worktree' | 'none' | undefined,
           role: resolvedArgs.role as string | undefined,
           callId,

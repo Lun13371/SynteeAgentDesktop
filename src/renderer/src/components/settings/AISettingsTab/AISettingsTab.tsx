@@ -11,10 +11,17 @@ import type {
 } from '../../../../../shared/types'
 import { BUILTIN_PROVIDERS_META } from '../../../../../shared/data/builtinModels'
 import ModelPicker from '../../ui/ModelPicker/ModelPicker'
+import ReasoningSelector from '../../ui/ReasoningSelector/ReasoningSelector'
 import AppIcon from '../../ui/AppIcon/AppIcon'
 import BrandAvatar from '../../ui/BrandAvatar/BrandAvatar'
 import { getBrandLogo } from '../../../utils/modelFormat'
 import { useGatewayModelsStore } from '../../../store/gatewayModels.store'
+import { useSettingsStore } from '../../../store/settings.store'
+import {
+  ORCHESTRATION_DEFAULTS_KEY,
+  normalizeOrchestrationDefaults,
+  type OrchestrationDefaults
+} from '../../../utils/orchestration'
 import {
   whileHoverWide,
   whileTapWide,
@@ -98,6 +105,9 @@ export default function AISettingsTab() {
   )
   const [imageModelId, setImageModelId] = useState('')
   const [imageProviderId, setImageProviderId] = useState('')
+  // Дефолты one-turn оркестрации (/orchestrate): settings['orchestrationDefaults'].
+  // Модель чата при этом не меняется — она остаётся координатором.
+  const [orchDefaults, setOrchDefaults] = useState<OrchestrationDefaults>({})
   // ChatGPT-подписка авторизуется токеном, а не API-ключом, поэтому признак
   // «настроен» берём из реального статуса входа (codex:status).
   const [codexAuth, setCodexAuth] = useState<CodexAuthState | null>(null)
@@ -117,19 +127,21 @@ export default function AISettingsTab() {
 
   const load = async () => {
     try {
-      const [p, a, pm, imgS, models, codexState] = await Promise.all([
+      const [p, a, pm, imgS, models, codexState, orchRaw] = await Promise.all([
         window.syntee.providers.getAll() as Promise<Provider[]>,
         window.syntee.models.getAssignments() as Promise<ModelAssignment[]>,
         window.syntee.models.getParams() as Promise<ModelParams>,
         window.syntee.image.getSettings(),
         window.syntee.models.getAll() as Promise<ModelMeta[]>,
-        window.syntee.codex.status() as Promise<CodexAuthState>
+        window.syntee.codex.status() as Promise<CodexAuthState>,
+        window.syntee.settings.get(ORCHESTRATION_DEFAULTS_KEY)
       ])
       setProviders(p)
       setAllModels(models)
       setAssignments(a)
       setParams(pm)
       setCodexAuth(codexState)
+      setOrchDefaults(normalizeOrchestrationDefaults(orchRaw))
       if (!systemPromptTimerRef.current) setSystemPromptDraft(pm.systemPrompt)
       setImageModelId(imgS.modelId || '')
       setImageProviderId(imgS.providerId || '')
@@ -144,6 +156,29 @@ export default function AISettingsTab() {
     }, 0)
     return () => window.clearTimeout(timer)
   }, [])
+
+  /** Сохранить дефолты оркестрации (Settings → AI → Оркестрация).
+   *  Пишем через settings-store: ChatPage читает тот же ключ и сразу видит
+   *  новые дефолты без перезагрузки окна. */
+  const saveOrchestrationDefaults = (patch: OrchestrationDefaults) => {
+    const next: OrchestrationDefaults = { ...orchDefaults, ...patch }
+    if (!next.executor) delete next.executor
+    if (!next.reviewer) delete next.reviewer
+    setOrchDefaults(next)
+    void useSettingsStore.getState().set(ORCHESTRATION_DEFAULTS_KEY, next)
+  }
+
+  /** Effort (уровень мышления) дефолтной роли: пустая строка = дефолт модели. */
+  const setExecutorReasoning = (v: string) => {
+    const cur = orchDefaults.executor
+    if (!cur) return
+    saveOrchestrationDefaults({ executor: { ...cur, reasoningValue: v || undefined } })
+  }
+  const setReviewerReasoning = (v: string) => {
+    const cur = orchDefaults.reviewer
+    if (!cur) return
+    saveOrchestrationDefaults({ reviewer: { ...cur, reasoningValue: v || undefined } })
+  }
 
   // Refresh lists after gateway models have been updated.
   const gatewayLastFetch = useGatewayModelsStore((s) => s.lastFetchAt)
@@ -572,6 +607,93 @@ export default function AISettingsTab() {
                 sharedModels={allModels}
                 sharedProviders={providers}
               />
+            </div>
+          </div>
+
+          {/* ── Оркестрация (/orchestrate) — дефолты одного хода ── */}
+          <div className="assignment-row assignment-row--orchestration" style={{ marginTop: 12 }}>
+            <div className="assignment-info">
+              <AppIcon name="layers" size="sm" tone="accent" />
+              <div>
+                <div className="assignment-label">Исполнитель (оркестрация)</div>
+                <div className="assignment-desc">
+                  Дефолт для /orchestrate — модель чата остаётся координатором. Не выбрано:
+                  блок оркестрации откроется пустым, отправка без исполнителя заблокирована
+                </div>
+              </div>
+            </div>
+            <div className="assignment-picker" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <ModelPicker
+                value={orchDefaults.executor?.modelId || ''}
+                providerId={orchDefaults.executor?.providerId || ''}
+                onChange={(modelId, pid) =>
+                  saveOrchestrationDefaults({
+                    executor: modelId
+                      ? {
+                          modelId,
+                          providerId: pid,
+                          // Effort не переезжает на другую модель.
+                          reasoningValue:
+                            orchDefaults.executor?.modelId === modelId
+                              ? orchDefaults.executor?.reasoningValue
+                              : undefined
+                        }
+                      : undefined
+                  })
+                }
+                placeholder="Не выбрано"
+                sharedModels={allModels}
+                sharedProviders={providers}
+              />
+              {orchDefaults.executor?.modelId && (
+                <ReasoningSelector
+                  modelId={orchDefaults.executor.modelId}
+                  value={orchDefaults.executor.reasoningValue ?? ''}
+                  onChange={setExecutorReasoning}
+                />
+              )}
+            </div>
+          </div>
+
+          <div className="assignment-row">
+            <div className="assignment-info">
+              <AppIcon name="users" size="sm" tone="accent" />
+              <div>
+                <div className="assignment-label">Ревьюер (оркестрация)</div>
+                <div className="assignment-desc">
+                  Необязательно. Не выбрано — ревьюером работает модель чата
+                </div>
+              </div>
+            </div>
+            <div className="assignment-picker" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <ModelPicker
+                value={orchDefaults.reviewer?.modelId || ''}
+                providerId={orchDefaults.reviewer?.providerId || ''}
+                onChange={(modelId, pid) =>
+                  saveOrchestrationDefaults({
+                    reviewer: modelId
+                      ? {
+                          modelId,
+                          providerId: pid,
+                          reasoningValue:
+                            orchDefaults.reviewer?.modelId === modelId
+                              ? orchDefaults.reviewer?.reasoningValue
+                              : undefined
+                        }
+                      : undefined
+                  })
+                }
+                placeholder="Как модель чата"
+                sharedModels={allModels}
+                sharedProviders={providers}
+              />
+              {orchDefaults.reviewer?.modelId && (
+                <ReasoningSelector
+                  modelId={orchDefaults.reviewer.modelId}
+                  value={orchDefaults.reviewer.reasoningValue ?? ''}
+                  onChange={setReviewerReasoning}
+                />
+              )}
             </div>
           </div>
         </div>

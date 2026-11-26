@@ -140,6 +140,14 @@ export function runIncrementalMigrations(db: Database.Database): void {
     if (!cols.find(c => c.name === 'reply_to')) {
       db.prepare(`ALTER TABLE messages ADD COLUMN reply_to TEXT`).run()
     }
+    // orchestration — JSON-снапшот фаз one-turn оркестрации (/orchestrate):
+    // по записи на фазу (planning/executing/reviewing/replanning) со статусом,
+    // моделью и таймингами. Пишется только у assistant-сообщений
+    // оркестрированного рана (см. main/ipc/orchestrationRun.slimOrchestrationPhases),
+    // чтобы карточка прогресса восстанавливалась после перезахода в чат.
+    if (!cols.find(c => c.name === 'orchestration')) {
+      db.prepare(`ALTER TABLE messages ADD COLUMN orchestration TEXT`).run()
+    }
   }
 
   // Cleanup requires the attachments column, including on first launch.

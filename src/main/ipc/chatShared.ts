@@ -157,6 +157,12 @@ export interface ActiveRun {
   // без этого буфера такие правки нельзя было откатить вообще (чекпоинт
   // сохранялся с filesChanged=0 и пустыми file_snapshots).
   liveSnapshots: Array<{ path: string; contentBefore: string | null }>
+  // ── §orchestration: прогресс фаз one-turn оркестрации ──
+  // Одна запись на фазу (merge по phase, см. orchestrationRun.ts). Источник —
+  // события 'orchestration_progress' из воркера; отсюда уходит в
+  // chat:getLiveState (top-level orchestration) и в Message.orchestration
+  // при финальном сохранении (слим-снапшот). Пусто у обычных ранов.
+  orchestration: import('../../shared/orchestration').OrchestrationProgress[]
 }
 
 export const activeRuns = new Map<string, ActiveRun>()

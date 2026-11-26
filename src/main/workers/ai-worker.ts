@@ -31,6 +31,10 @@ import type { ModelMeta, McpToolRuntime, PluginToolRuntime } from '../../shared/
 
 const storeData: Record<string, unknown> = workerData.storeData
 const planningMode: boolean = !!(workerData as Record<string, unknown>).planningMode
+// §orchestration — снимок фазовых моделей (planning/executing/reviewing/
+// replanning). main снимает его на старте хода; undefined = обычный ран.
+const orchestration = (workerData as Record<string, unknown>).orchestration as
+  import('../../shared/orchestration').OrchestrationRun | undefined
 const askMode: boolean = !!(workerData as Record<string, unknown>).askMode
 // Тумблер «Управление браузером»: browser_* тулы в тулсете с самого старта
 // рана. Может быть включён ПОСРЕДИ рана (request_access → confirm) — тогда
@@ -282,7 +286,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
     agentSettings: {
       enableTools: boolean
       maxSteps: number
-      approvalMode: string
+      approvalMode: import('../../shared/types').ApprovalMode
       toolOutputMode: string
       enableThinking: boolean
       autoMemoryInterval?: number
@@ -871,7 +875,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
               send({ type: 'rate_limit', chatId, waitSec })
             }
           },
-          approvalMode: agentSettings.approvalMode as never,
+          approvalMode: agentSettings.approvalMode,
           onConfirm: (toolName, args) => {
             return new Promise((resolve) => {
               const reqId = `confirm-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
@@ -925,8 +929,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
               replyHandlers.set(replyId, (reply) => {
                 resolve({ summary: reply.summary as string, error: reply.error as string | undefined })
               })
-              const { approvalMode, ...rest } = opts
-              send({ type: 'spawn_agent', chatId, msgId, replyId, ...rest, approval_mode: approvalMode, callId: opts.callId })
+              send({ type: 'spawn_agent', chatId, msgId, replyId, ...opts })
             })
           },
           onRenderPage: (url, renderOpts) => {
@@ -1023,6 +1026,11 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
           },
           onTodoUpdate: (items) => {
             send({ type: 'todo_update', chatId, msgId, items })
+          },
+          // §orchestration — прогресс фаз. Одно событие на переход (running при
+          // входе в фазу, done/blocked при выходе); UI накапливает по startedAt.
+          onOrchestrationProgress: (progress) => {
+            send({ type: 'orchestration_progress', chatId, msgId, progress })
           },
           onThinkingToken: (token) => {
             if (!thinkingStartMs) thinkingStartMs = Date.now()
@@ -1197,6 +1205,7 @@ parentPort?.on('message', async (msg: Record<string, unknown>) => {
           fileCacheSnapshot: (workerData as Record<string, unknown>).fileCacheSnapshot as Record<string, import('../../core/context/fileCacheTypes').FileCacheEntry> | undefined,
           planningMode,
           subagentRole,
+          orchestration,
           imageParts: imageParts as Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string; detail?: string } }> | undefined,
         }
       )

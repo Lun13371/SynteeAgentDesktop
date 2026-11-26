@@ -172,6 +172,13 @@ export interface Message {
    *  (затемнено, с пометкой), но модель не получает — getLiveMessages
    *  фильтрует. 1 = скрыто, 0/undefined = обычное. */
   hiddenFromContext?: number
+  /** §orchestration — прогресс фаз one-turn оркестрации (/orchestrate).
+   *  Одна запись на фазу (planning/executing/reviewing/replanning), слитая
+   *  по фазе и подсушенная (см. main/ipc/orchestrationRun.slimOrchestrationPhases).
+   *  Live-события идут отдельным каналом (agent:orchestration_progress);
+   *  здесь — персистентный снапшот для карточки после перезахода в чат.
+   *  Заполняется только у assistant-сообщений оркестрированного рана. */
+  orchestration?: import('../orchestration').OrchestrationProgress[]
 }
 
 // ── Checkpoint / Rewind ──────────────────────────────────────────────────

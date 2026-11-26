@@ -503,7 +503,6 @@ class AgentManager {
     mode?: ChatMode
     storeData: Record<string, unknown>
     context?: SubagentContext
-    approvalMode?: 'auto' | 'ask' | 'full'  // §1.10 — override глобального режима
     isolation?: IsolationMode  // §изоляция — override режима worktree
     role?: string  // §roles — специализация суб-агента (researcher/editor/...)
     onFileSnapshot?: (snapshots: Array<{ path: string; contentBefore: string | null }>) => void
@@ -576,14 +575,13 @@ class AgentManager {
     this.persist(record)
     this.broadcast('agent:update', record)
 
-    return this._runWorker(record, subStoreData, opts.context, opts.approvalMode, opts.onFileSnapshot)
+    return this._runWorker(record, subStoreData, opts.context, opts.onFileSnapshot)
   }
 
   private async _runWorker(
     record: AgentRecord,
     storeData: Record<string, unknown>,
     context?: SubagentContext,
-    approvalModeOverride?: 'auto' | 'ask' | 'full',
     onFileSnapshot?: (snapshots: Array<{ path: string; contentBefore: string | null }>) => void,
   ): Promise<{ summary: string; error?: string }> {
     // §roles — получаем roleDef из record.role (roleDef из spawn здесь не виден).
@@ -765,10 +763,6 @@ class AgentManager {
       const agentSettings: Record<string, unknown> = {
         approvalMode: 'auto', toolOutputMode: 'normal', enableThinking: false,
         ...((storeData.agentSettings as Record<string, unknown> | undefined) ?? {}),
-      }
-      // §1.10 — позволяем суб-агенту иметь свой approval режим
-      if (approvalModeOverride) {
-        agentSettings.approvalMode = approvalModeOverride
       }
       // §roles — keep sub-agent runs bounded. The previous hard-coded 1024
       // made a delegation potentially run for a very long time. Respect an

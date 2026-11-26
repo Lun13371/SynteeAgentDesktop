@@ -1,4 +1,5 @@
 import type { SkillFolderUpdate } from '../shared/types';
+import type { SubagentOverviewItem } from '../shared/types/subagentOverview';
 declare const synteeAPI: {
     window: {
         hide: () => Promise<any>;
@@ -293,7 +294,7 @@ declare const synteeAPI: {
         }) => void;
         setInteractive: (v: boolean) => void;
         captureScreen: () => Promise<string | null>;
-        onPush: (cb: (payload: import("../../shared/types").NotificationPayload) => void) => () => Electron.IpcRenderer;
+        onPush: (cb: (payload: import("../shared/types").NotificationPayload) => void) => () => Electron.IpcRenderer;
         onDismissAll: (cb: () => void) => () => Electron.IpcRenderer;
     };
     activity: {
@@ -360,8 +361,8 @@ declare const synteeAPI: {
         pluginAction: (pluginId: string, label: string, command?: string) => Promise<any>;
     };
     dots: {
-        list: () => Promise<import("../../shared/types").Dot[]>;
-        get: (dotId: string) => Promise<import("../../shared/types").Dot | null>;
+        list: () => Promise<import("../shared/types").Dot[]>;
+        get: (dotId: string) => Promise<import("../shared/types").Dot | null>;
         create: (input: {
             name: string;
             icon: string;
@@ -378,12 +379,12 @@ declare const synteeAPI: {
             modelProvider?: string | null;
         }) => Promise<{
             ok: boolean;
-            dot?: import("../../shared/types").Dot;
+            dot?: import("../shared/types").Dot;
             error?: string;
         }>;
-        update: (dotId: string, patch: Partial<import("../../shared/types").DotConfig>) => Promise<{
+        update: (dotId: string, patch: Partial<import("../shared/types").DotConfig>) => Promise<{
             ok: boolean;
-            dot?: import("../../shared/types").Dot;
+            dot?: import("../shared/types").Dot;
             error?: string;
         }>;
         delete: (dotId: string) => Promise<{
@@ -393,14 +394,14 @@ declare const synteeAPI: {
             ok: boolean;
             reason?: string;
         }>;
-        getRuns: (dotId: string, limit?: number) => Promise<import("../../shared/types").DotRun[]>;
+        getRuns: (dotId: string, limit?: number) => Promise<import("../shared/types").DotRun[]>;
         unreadCounts: (pairs: Array<{
             dotId: string;
             since: number;
         }>) => Promise<Record<string, number>>;
         getWebhookUrl: (dotId: string) => Promise<string | null>;
-        getSettings: () => Promise<import("../../shared/types").DotSettings>;
-        setSettings: (patch: Partial<import("../../shared/types").DotSettings>) => Promise<import("../../shared/types").DotSettings>;
+        getSettings: () => Promise<import("../shared/types").DotSettings>;
+        setSettings: (patch: Partial<import("../shared/types").DotSettings>) => Promise<import("../shared/types").DotSettings>;
     };
     browser: {
         importSources: () => Promise<import("../shared/browserImport").BrowserImportSource[]>;
@@ -540,7 +541,7 @@ declare const synteeAPI: {
         }>;
         getMessages: (chatId: string) => Promise<any>;
         getMessagesPage: (chatId: string, limit?: number, beforeCreatedAt?: number, beforeId?: string) => Promise<{
-            messages: import("../../shared/types").Message[];
+            messages: import("../shared/types").Message[];
             hasMore: boolean;
         }>;
         send: (params: {
@@ -567,9 +568,18 @@ declare const synteeAPI: {
             oneShotMode?: "ask" | "plan" | "code";
             /** Уровень мышления из UI на момент отправки (source of truth для main). */
             reasoningValue?: string;
-            attachments?: import("../../shared/types").Attachment[];
+            attachments?: import("../shared/types").Attachment[];
             /** Реплай-цитаты: сообщения, на которые отвечает эта отправка. */
-            replyTo?: import("../../shared/types").ReplyTarget[];
+            replyTo?: import("../shared/types").ReplyTarget[];
+            /** §orchestration — one-turn оркестрация (/orchestrate): роли моделей
+             *  на ОДИН запрос. Планировщика снимает main (текущая модель чата);
+             *  reviewer не задан → main явно подставляет планировщика.
+             *  Несовместимые режимы (Ask/Plan/image) main отклоняет броском —
+             *  renderer показывает причину в блоке оркестрации. */
+            orchestration?: import("../shared/orchestration").OrchestrationSelection;
+          /** §resume — «Продолжить» с карточки прерванного рана: план и
+           *  список сделанного. Ран стартует сразу с исполнения. */
+          orchestrationResume?: import("../shared/orchestration").OrchestrationResume;
         }) => Promise<any>;
         delete: (chatId: string) => Promise<any>;
         rename: (chatId: string, title: string) => Promise<any>;
@@ -596,9 +606,9 @@ declare const synteeAPI: {
         rewindTo: (chatId: string, userMessageId: string) => Promise<any>;
         redo: (chatId: string, rewindMessageId: string) => Promise<any>;
         canRedo: (chatId: string, rewindMessageId: string) => Promise<any>;
-        getLastTurnChanges: (chatId: string) => Promise<import("../../shared/types").LastTurnChanges | null>;
-        getTurnChanges: (chatId: string, userMessageId?: string) => Promise<import("../../shared/types").LastTurnChanges | null>;
-        getSessionTurnChanges: (chatId: string) => Promise<Record<string, import("../../shared/types").LastTurnChanges>>;
+        getLastTurnChanges: (chatId: string) => Promise<import("../shared/types").LastTurnChanges | null>;
+        getTurnChanges: (chatId: string, userMessageId?: string) => Promise<import("../shared/types").LastTurnChanges | null>;
+        getSessionTurnChanges: (chatId: string) => Promise<Record<string, import("../shared/types").LastTurnChanges>>;
         getCheckpointFileDiffs: (chatId: string, userMessageId: string) => Promise<Array<{
             filePath: string;
             original: string;
@@ -666,6 +676,11 @@ declare const synteeAPI: {
             chatId: string;
             enabled: boolean;
         }) => void) => () => Electron.IpcRenderer;
+        onOrchestrationProgress: (cb: (event: {
+            chatId: string;
+            msgId: string;
+            progress: import("../shared/orchestration").OrchestrationProgress;
+        }) => void) => () => Electron.IpcRenderer;
         setAskMode: (chatId: string, val: boolean) => Promise<any>;
         getBrowserMode: (chatId: string) => Promise<boolean>;
         setBrowserMode: (chatId: string, val: boolean) => Promise<any>;
@@ -729,6 +744,7 @@ declare const synteeAPI: {
         run: (query: string) => Promise<any>;
         cancel: (id?: string) => Promise<any>;
         list: () => Promise<any>;
+        overview: (chatId: string) => Promise<SubagentOverviewItem[]>;
         get: (id: string) => Promise<any>;
         children: (parentId: string) => Promise<any>;
         clearChat: (chatId: string) => Promise<any>;
@@ -1277,7 +1293,7 @@ declare const synteeAPI: {
     };
     draft: {
         getAttachments: (chatId: string) => Promise<any>;
-        setAttachments: (chatId: string, attachments: import("../../shared/types").Attachment[]) => Promise<any>;
+        setAttachments: (chatId: string, attachments: import("../shared/types").Attachment[]) => Promise<any>;
         clearAttachments: (chatId: string) => Promise<any>;
     };
     voice: {
@@ -1314,25 +1330,25 @@ declare const synteeAPI: {
         sendQuery: (text: string) => Promise<void>;
     };
     updates: {
-        check: () => Promise<import("../../shared/types").UpdateState>;
-        getStatus: () => Promise<import("../../shared/types").UpdateState>;
+        check: () => Promise<import("../shared/types").UpdateState>;
+        getStatus: () => Promise<import("../shared/types").UpdateState>;
         getHistory: (params?: {
             channel?: string;
             limit?: number;
-        }) => Promise<import("../../shared/types").ChangelogEntry[]>;
-        dismiss: (version: string) => Promise<import("../../shared/types").UpdateState>;
-        quitAndInstall: () => Promise<import("../../shared/types").QuitAndInstallResult>;
-        onStateChanged: (cb: (state: import("../../shared/types").UpdateState) => void) => () => Electron.IpcRenderer;
+        }) => Promise<import("../shared/types").ChangelogEntry[]>;
+        dismiss: (version: string) => Promise<import("../shared/types").UpdateState>;
+        quitAndInstall: () => Promise<import("../shared/types").QuitAndInstallResult>;
+        onStateChanged: (cb: (state: import("../shared/types").UpdateState) => void) => () => Electron.IpcRenderer;
     };
     clipboard: {
         writeText: (text: string) => Promise<boolean>;
         readText: () => Promise<string>;
     };
     assistants: {
-        getSettings: () => Promise<import("../../shared/assistants").AssistantsSettings>;
-        updateSettings: (patch: Partial<import("../../shared/assistants").AssistantsSettings>) => Promise<import("../../shared/assistants").AssistantsSettings>;
-        getLog: (since?: number) => Promise<import("../../shared/assistants").AssistantLogEntry[]>;
-        getStats: () => Promise<import("../../shared/assistants").AgentStatsMap>;
+        getSettings: () => Promise<import("../shared/assistants").AssistantsSettings>;
+        updateSettings: (patch: Partial<import("../shared/assistants").AssistantsSettings>) => Promise<import("../shared/assistants").AssistantsSettings>;
+        getLog: (since?: number) => Promise<import("../shared/assistants").AssistantLogEntry[]>;
+        getStats: () => Promise<import("../shared/assistants").AgentStatsMap>;
         getStatus: () => Promise<{
             serverState: string;
             modelSize: string;
@@ -1353,33 +1369,33 @@ declare const synteeAPI: {
         }) => void) => () => Electron.IpcRenderer;
     };
     projectMap: {
-        getGraph: (projectId: string, opts?: import("../../shared/projectMap").GetGraphOptions) => Promise<import("../../shared/projectMap").CodeMapGraph>;
-        getFileGraph: (projectId: string, filePath: string) => Promise<import("../../shared/projectMap").CodeMapGraph>;
-        getStatus: (projectId: string) => Promise<import("../../shared/projectMap").CodeMapStatus>;
-        getSemanticStatus: (projectId: string) => Promise<import("../../shared/projectMap").CodeMapSemanticStatus>;
-        getStats: (projectId: string) => Promise<import("../../shared/projectMap").CodeMapStatus & {
+        getGraph: (projectId: string, opts?: import("../shared/projectMap").GetGraphOptions) => Promise<import("../shared/projectMap").CodeMapGraph>;
+        getFileGraph: (projectId: string, filePath: string) => Promise<import("../shared/projectMap").CodeMapGraph>;
+        getStatus: (projectId: string) => Promise<import("../shared/projectMap").CodeMapStatus>;
+        getSemanticStatus: (projectId: string) => Promise<import("../shared/projectMap").CodeMapSemanticStatus>;
+        getStats: (projectId: string) => Promise<import("../shared/projectMap").CodeMapStatus & {
             files: number;
         }>;
-        listStats: () => Promise<import("../../shared/projectMap").ProjectMapProjectStats[]>;
-        getAutoInfo: () => Promise<import("../../shared/projectMap").ProjectMapAutoInfo>;
+        listStats: () => Promise<import("../shared/projectMap").ProjectMapProjectStats[]>;
+        getAutoInfo: () => Promise<import("../shared/projectMap").ProjectMapAutoInfo>;
         getSemanticDevice: () => Promise<{
             requested: string;
             active: string | null;
         }>;
-        findNodes: (projectId: string, query: string, limit?: number) => Promise<import("../../shared/projectMap").CodeMapNode[]>;
+        findNodes: (projectId: string, query: string, limit?: number) => Promise<import("../shared/projectMap").CodeMapNode[]>;
         getNeighbors: (projectId: string, nodeId: string) => Promise<{
-            node: import("../../shared/projectMap").CodeMapNode | null;
-            callers: import("../../shared/projectMap").CodeMapEdge[];
-            callees: import("../../shared/projectMap").CodeMapEdge[];
+            node: import("../shared/projectMap").CodeMapNode | null;
+            callers: import("../shared/projectMap").CodeMapEdge[];
+            callees: import("../shared/projectMap").CodeMapEdge[];
         }>;
         getFileDeps: (projectId: string, filePath: string) => Promise<{
-            imports: import("../../shared/projectMap").CodeMapEdge[];
-            importedBy: import("../../shared/projectMap").CodeMapEdge[];
+            imports: import("../shared/projectMap").CodeMapEdge[];
+            importedBy: import("../shared/projectMap").CodeMapEdge[];
         }>;
         rebuild: (projectId: string) => Promise<boolean>;
         ensure: (projectId: string) => Promise<boolean>;
         setActiveProject: (projectId: string | null) => Promise<boolean>;
-        onProgress: (cb: (p: import("../../shared/projectMap").CodeMapProgress) => void) => () => void;
+        onProgress: (cb: (p: import("../shared/projectMap").CodeMapProgress) => void) => () => void;
     };
 };
 export type SynteeAPI = typeof synteeAPI;

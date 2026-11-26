@@ -42,6 +42,10 @@ interface ChatInputPlusMenuProps {
   customCommands?: SlashCommand[]
   /** Вставить slash-команду в инпут (ChatInput.selectCommand). */
   onInsertCommand?: (cmd: SlashCommand) => void
+  /** Одноразовая оркестрация: активна ли сейчас (бейдж/подсветка пункта). */
+  orchestrationActive?: boolean
+  /** Включить блок оркестрации над инпутом (то же, что /orchestrate). */
+  onOrchestrate?: () => void
 }
 
 // ── Анимации ─────────────────────────────────────────────────────────────
@@ -181,6 +185,8 @@ export function ChatInputPlusMenu({
   onAttachMcp,
   customCommands = [],
   onInsertCommand,
+  orchestrationActive = false,
+  onOrchestrate,
 }: ChatInputPlusMenuProps) {
   const t = (ru: string, en: string) => (lang === 'en' ? en : ru)
   const [open, setOpen] = useState(false)
@@ -498,6 +504,30 @@ export function ChatInputPlusMenu({
                 </div>
 
                 {/* Текстовые действия — строки на всю ширину */}
+                {onOrchestrate && (
+                  <motion.button
+                    type="button"
+                    {...reveal(4)}
+                    className={`plus-row plus-row--action plus-row--orchestration${orchestrationActive ? ' plus-row--on' : ''}`}
+                    style={{ '--cat': '#8b5cf6' } as React.CSSProperties}
+                    onClick={() => { onOrchestrate(); setOpen(false) }}
+                    title={t(
+                      'Один ход с отдельным исполнителем и ревьюером. Модель чата остаётся координатором',
+                      'One turn with a separate executor and reviewer. The chat model stays the coordinator'
+                    )}
+                    aria-pressed={orchestrationActive}
+                  >
+                    <span className="plus-row-icon" style={{ '--cat': '#8b5cf6' } as React.CSSProperties}><AppIcon name="layers" size="sm" /></span>
+                    <span className="plus-row-text">
+                      <span className="plus-row-label">{t('Оркестрация', 'Orchestration')}</span>
+                      <span className="plus-row-sub">{t('Исполнитель + ревьюер на один ход', 'Executor + reviewer for one turn')}</span>
+                    </span>
+                    {orchestrationActive
+                      ? <span className="plus-cat-count plus-cat-count--accent">{t('вкл', 'on')}</span>
+                      : <span className="plus-row-chev"><AppIcon name="chevronRight" size="xs" /></span>}
+                  </motion.button>
+                )}
+
                 <motion.button
                   type="button"
                   {...reveal(4)}

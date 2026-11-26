@@ -24,6 +24,8 @@ import MessageFileChanges from '../MessageFileChanges/MessageFileChanges'
 import { collectFileChanges } from '../../../../../shared/fileChanges'
 import TodoChecklist from '../TodoChecklist/TodoChecklist'
 import AgentCard, { type AgentCardData } from '../AgentCard/AgentCard'
+import OrchestrationCard, { type OrchestrationRunStatus } from '../OrchestrationCard/OrchestrationCard'
+import type { OrchestrationProgress } from '../../../utils/orchestrationProgress'
 import ThinkingBlock from '../ThinkingBlock/ThinkingBlock'
 import { useUIStore, type AvatarStyle } from '../../../store/ui.store'
 import { useChatStore } from '../../../store/chat.store'
@@ -117,6 +119,10 @@ interface MessageBubbleProps {
   workdir?: string
   /** Доступен ли редактор чата (false — инкогнито-чаты, live-пузыри). */
   editorAvailable?: boolean
+  /** Продолжить прерванный оркестрированный ран из карточки прогресса. */
+  onOrchestrationContinue?: (message: Message) => void
+  /** По этому сообщению «Продолжить» уже нажали — кнопку не показываем. */
+  orchestrationContinued?: boolean
 }
 
 // Memoized code highlighter — рендерит HTML-строку через dangerouslySetInnerHTML.
@@ -514,9 +520,13 @@ const MessageContent = memo(function MessageContent({
   liveThinking, isStreaming, isWaiting, liveIters, liveTodo, liveTextAfter, rateLimitSec,
   userMarkdown = true, timeEl, agentStatus, toolProgress, retry, lastError,
   spawnedAgents,
+  orchestration,
+  orchestrationRunStatus,
   onPreviewAttachment,
   workdir,
   editorAvailable = true,
+  onOrchestrationContinue,
+  orchestrationContinued,
 }: {
   content: string; isUser: boolean; searchQuery?: string
   toolOutputMode: ToolOutputMode; toolSteps?: Message['toolSteps']
@@ -538,10 +548,18 @@ const MessageContent = memo(function MessageContent({
   lastError?: string | null
   toolProgress?: Record<string, { stage: string; detail?: string; sessionId?: string; filesProcessed?: number; filesTotal?: number; filesFound?: Array<{ path: string; score: number; why: string }>; ts: number }>
   spawnedAgents?: Array<{ agentId: string; callId?: string; task: string; msgId: string; model?: string; ts: number }>
+  /** Прогресс оркестрации этого рана: live — из store, история — message.orchestration. */
+  orchestration?: OrchestrationProgress[]
+  /** Как завершился ран (для различения stopped/failed/«без подтверждения»). */
+  orchestrationRunStatus?: OrchestrationRunStatus
   onPreviewAttachment?: (a: Attachment | null) => void
   workdir?: string
   /** Доступен ли редактор чата для этого сообщения (false в инкогнито). */
   editorAvailable?: boolean
+  /** Продолжить прерванный оркестрированный ран (кнопка на карточке). */
+  onOrchestrationContinue?: (message: Message) => void
+  /** «Продолжить» уже нажали — кнопку не показываем. */
+  orchestrationContinued?: boolean
 }) {
   const [statsOpen, setStatsOpen] = useState(false)
   // Если панель статистики не влезает сверху (сообщение в самом верху чата) —
@@ -823,6 +841,22 @@ const MessageContent = memo(function MessageContent({
               <span className="message-slash-pill-args">{message.slashCommand.args}</span>
             )}
           </div>
+        )}
+
+        {/* ── Прогресс оркестрации ──────────────────────────────────────
+            Одна компактная карточка на ран (в духе AgentCard, но это НЕ
+            сабагент: нет своего id/панели/IPC — только фазы и модели).
+            Live: liveByChat[chatId].orchestration (событие
+            agent:orchestration_progress), история: message.orchestration.
+            Стоит над лентой хода работы — это верхнеуровневый прогресс. */}
+        {!isUser && orchestration && orchestration.length > 0 && (
+          <OrchestrationCard
+            progress={orchestration}
+            runStatus={orchestrationRunStatus}
+            live={isStreaming}
+            onContinue={onOrchestrationContinue ? () => onOrchestrationContinue(message) : undefined}
+            continued={orchestrationContinued}
+          />
         )}
 
         {!isUser && toolSteps && toolSteps.length > 0 && !liveIters?.length && !(message as Message & { iterations?: unknown[] }).iterations?.length && (
@@ -1484,7 +1518,7 @@ function AssistantAvatar({ style }: { style: AvatarStyle }) {
 
 
 const MessageBubble = memo(function MessageBubble({
-  message, onPin, onCopy, onReadAloud, onReply, onRewind, toolOutputMode = 'normal', searchQuery, liveThinking, isStreaming, isWaiting, rateLimitSec, shouldAnimate = true, workdir, editorAvailable = true,
+  message, onPin, onCopy, onReadAloud, onReply, onRewind, toolOutputMode = 'normal', searchQuery, liveThinking, isStreaming, isWaiting, rateLimitSec, shouldAnimate = true, workdir, editorAvailable = true, onOrchestrationContinue, orchestrationContinued,
 }: MessageBubbleProps) {
   const isUser = message.role === 'user'
 
@@ -1534,6 +1568,29 @@ const MessageBubble = memo(function MessageBubble({
   const spawnedAgentsFromStore = useChatStore(s =>
     isLiveBubble && message.chatId ? s.liveByChat[message.chatId]?.spawnedAgents : undefined
   )
+  // ── Прогресс оркестрации ────────────────────────────────────────────
+  // Live-пузырь читает массив напрямую из store (событие
+  // agent:orchestration_progress мержит фазы в буфер, см. useOrchestrationProgress).
+  // Сохранённое сообщение — из message.orchestration (persisted main'ом).
+  // Селекторы узкие: массив получает новую ссылку только при событиях
+  // оркестрации, поэтому чужие обновления live-state не пробивают memo.
+  const orchestrationFromStore = useChatStore(s =>
+    isLiveBubble && message.chatId ? s.liveByChat[message.chatId]?.orchestration : undefined
+  )
+  const runStatusFromStore = useChatStore(s =>
+    isLiveBubble && message.chatId ? s.runStatusByChat[message.chatId]?.status : undefined
+  )
+  const orchestration = isLiveBubble
+    ? orchestrationFromStore
+    : (message as Message & { orchestration?: OrchestrationProgress[] }).orchestration
+  // Различение «остановлено / упало / завершено без подтверждения»:
+  // live — статус рана из store, история — message.finishReason.
+  const orchestrationRunStatus: OrchestrationRunStatus = isLiveBubble
+    ? (runStatusFromStore === 'compacting' ? 'running' : runStatusFromStore)
+    : message.finishReason === 'stopped' ? 'cancelled'
+      : message.finishReason === 'error' ? 'error'
+        : message.finishReason === 'done' ? 'done'
+          : undefined
   const retryFromStore = useChatStore(s =>
     isLiveBubble && message.chatId ? s.liveByChat[message.chatId]?.retry : undefined
   )
@@ -1702,6 +1759,10 @@ const MessageBubble = memo(function MessageBubble({
             lastError={lastErrorFromStore}
             toolProgress={toolProgressFromStore}
             spawnedAgents={spawnedAgentsFromStore}
+            orchestration={orchestration}
+            orchestrationRunStatus={orchestrationRunStatus}
+            onOrchestrationContinue={onOrchestrationContinue}
+            orchestrationContinued={orchestrationContinued}
             onPreviewAttachment={setPreviewAttachment}
             workdir={workdir}
             editorAvailable={editorAvailable}
@@ -1736,6 +1797,10 @@ const MessageBubble = memo(function MessageBubble({
         lastError={lastErrorFromStore}
         toolProgress={toolProgressFromStore}
         spawnedAgents={spawnedAgentsFromStore}
+        orchestration={orchestration}
+        orchestrationRunStatus={orchestrationRunStatus}
+        onOrchestrationContinue={onOrchestrationContinue}
+        orchestrationContinued={orchestrationContinued}
         onPreviewAttachment={setPreviewAttachment}
         workdir={workdir}
         editorAvailable={editorAvailable}

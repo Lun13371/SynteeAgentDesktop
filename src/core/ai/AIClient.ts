@@ -161,6 +161,19 @@ export interface ChatMessage {
   content: string
 }
 
+/**
+ * §orchestration — явная модель/провайдер/effort для ОДНОГО вызова.
+ *
+ * Нужен фазовому рану: planning/reviewing идут на одной модели, executing — на
+ * другой. Никакого неявного fallback: если providerId задан и недоступен,
+ * chatWithTools бросает ошибку, а не подставляет провайдера роли.
+ */
+export interface ModelOverride {
+  providerId?: string
+  modelId?: string
+  reasoningValue?: string
+}
+
 export class AIClient {
   private client: OpenAI
   private maxRetries = 6
@@ -333,6 +346,33 @@ export class AIClient {
   }
 
   /**
+   * §orchestration — провайдер, заданный ЯВНО (фазовая модель), без участия
+   * modelAssignments. Возвращает null, если провайдер выключен/без baseUrl/без
+   * ключа: вызывающая сторона обязана бросить ошибку (fallback запрещён).
+   */
+  private getProviderInfoExplicit(providerId: string): { provider: Provider; apiKey: string } | null {
+    const providers = this.store.get('providers') as Provider[] | undefined
+    const provider = providers?.find(p => p.id === providerId && p.enabled)
+    if (!provider?.baseUrl) return null
+    if (provider.id === 'syntee-gateway' || provider.type === 'syntee-gateway') {
+      return { provider, apiKey: '__JWT__' }
+    }
+    if (provider.type === 'openai-codex') {
+      return { provider, apiKey: CODEX_KEY_MARKER }
+    }
+    const { key, updatedProviders } = getNextApiKey(providers || [], providerId)
+    if (!key) return null
+    this.store.set('providers', updatedProviders)
+    return { provider, apiKey: key }
+  }
+
+  /** Responses-API нужен модели по её провайдеру (фазовый override). */
+  private usesResponsesApiForProvider(model: string, provider: Provider | undefined): boolean {
+    if (this.responsesOnlyModels.has(model)) return true
+    return provider?.type === 'openai-codex'
+  }
+
+  /**
    * Meta для buildReasoningParams: если модель принадлежит Syntee-Gateway —
    * кэш /v1/models (authoritative: reasoning.supported + levels группы).
    * Иначе — каталог models.dev (reasoning_options: effort/toggle/budget).
@@ -342,8 +382,9 @@ export class AIClient {
   private getReasoningMeta(
     model: string,
     role: string,
+    providerIdOverride?: string,
   ): { reasoning?: { supported: boolean; levels: string[] }; reasoningOptions?: ReasoningOptionSpec[] } | null {
-    const providerId = this.getProviderInfoForRole(role)?.provider.id
+    const providerId = providerIdOverride ?? this.getProviderInfoForRole(role)?.provider.id
     if (!providerId) return null
     if (providerId === 'syntee-gateway') {
       return getGatewayModelsCache().find(m => m.id === model) ?? null
@@ -1278,6 +1319,9 @@ export class AIClient {
     // index стабилен в рамках раунда (см. tc.index у провайдера) — по нему
     // Agent.ts матчит этот ранний сигнал с финальным tool_call.
     onToolCallStarted?: (index: number, toolName: string) => void,
+    // §orchestration — явная модель фазы (provider/model/effort). undefined =
+    // прежнее поведение: модель и провайдер берутся из назначений роли.
+    override?: ModelOverride,
   ): Promise<{ content: string; tool_calls?: unknown[]; reasoning?: string; hadStreamedTokens?: boolean; thinking_blocks?: Array<{ thinking: string; signature: string }> }> {
     // Slicing inherited history/compaction may leave orphan tool outputs.
     // Repair before both API paths, including gateways converting to Responses.
@@ -1285,8 +1329,19 @@ export class AIClient {
     const effectiveRole = role === 'subagent' ? 'subagent' as never : 'main'
     const subagentModel = role === 'subagent' ? this.getModel('subagent' as never) : ''
     const resolvedRole = (subagentModel && subagentModel !== '') ? effectiveRole : 'main'
-    const model = this.getModel(resolvedRole) || this.getModel('main')
-    const providerInfo = this.getProviderInfoForRole(resolvedRole)
+    // §orchestration: фазовая модель перекрывает роль ПОЛНОСТЬЮ (и модель, и
+    // провайдера, и reasoning). Провайдер резолвится явно — никакого
+    // «провайдера роли по умолчанию», иначе ран молча уедет на другую модель.
+    const model = override?.modelId || this.getModel(resolvedRole) || this.getModel('main')
+    const providerInfo = override?.providerId
+      ? this.getProviderInfoExplicit(override.providerId)
+      : this.getProviderInfoForRole(resolvedRole)
+    if (override?.providerId && !providerInfo) {
+      throw new Error(
+        `Orchestration: provider "${override.providerId}" is not available (disabled, missing base URL or API key). `
+        + 'Fix the orchestration model selection — no fallback provider is used.',
+      )
+    }
     // Для syntee-gateway apiKey === '__JWT__' — реальный JWT получаем ниже.
     const isGateway = providerInfo?.apiKey === '__JWT__'
     // ChatGPT-подписка: ключа нет, токен и accountId резолвим отдельно.
@@ -1312,10 +1367,18 @@ export class AIClient {
     }
     const temperature = DEFAULT_TEMPERATURE
     const maxTokensRaw = DEFAULT_MAX_TOKENS
-    const reasoningValue = (this.store.get('reasoningValue') as string) || ''
+    // §orchestration: effort фазы (если задан) перекрывает глобальный тумблер.
+    const reasoningValue = override?.reasoningValue ?? ((this.store.get('reasoningValue') as string) || '')
     const reasoningExtra = reasoningValue
-      ? buildReasoningParams(reasoningValue, this.getReasoningMeta(model, resolvedRole))
+      ? buildReasoningParams(
+          reasoningValue,
+          this.getReasoningMeta(model, resolvedRole, override?.providerId),
+        )
       : {}
+    // Responses-API решается провайдером фазы, а не ролью чата.
+    const responsesApi = override?.providerId
+      ? this.usesResponsesApiForProvider(model, providerInfo?.provider)
+      : this.usesResponsesApi(model, resolvedRole)
 
     // Для Anthropic extended thinking: max_tokens ВКЛЮЧАЕТ reasoning токены.
     // Если budget_tokens > max_tokens, API обрежет на max_tokens и ответ будет пустой.
@@ -1393,7 +1456,7 @@ export class AIClient {
     }
     if (routedVisualPayload.images) log('[vision:send]', {
       model, provider: providerInfo?.provider.id ?? 'default',
-      api: this.usesResponsesApi(model, resolvedRole) ? 'responses' : 'chat-completions',
+      api: responsesApi ? 'responses' : 'chat-completions',
       format: 'user/image_url', ...routedVisualPayload,
     })
 
@@ -1420,7 +1483,7 @@ export class AIClient {
     // ── Модели только с Responses API (muse-spark и runtime-выявленные) ─────
     // Известные модели идут в /responses сразу; остальные — авто-фоллбэком
     // в catch ниже (completions упал → пробуем Responses → запоминаем).
-    if (this.usesResponsesApi(model, resolvedRole)) {
+    if (responsesApi) {
       const viaResponses = () => this.chatWithToolsViaResponses(client, model, messages, tools, signal, maxTokens, reasoningExtra, isCodex, {
         onToken, onUsage, onThinkingToken, onThinkingDone, onToolCallStarted,
       })
@@ -1607,7 +1670,7 @@ export class AIClient {
         // пробуем /responses ДО сетевых ретраев (для таких моделей ретраи
         // completions бессмысленны — в логе это выглядело как 5×500).
         // Успех → запоминаем модель (в следующий раз идём в /responses сразу).
-        if (this.isOpencodeRole(resolvedRole) && !this.usesResponsesApi(model, resolvedRole)
+        if (!override?.providerId && this.isOpencodeRole(resolvedRole) && !responsesApi
           && !signal?.aborted
           && this.isCompletionsUnsupported({ status: realStatus || undefined, message: errMsg })) {
           try {

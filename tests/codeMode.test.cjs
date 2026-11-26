@@ -133,7 +133,11 @@ test('denied nested call is returned to the guest instead of aborting the progra
 })
 test('Agent blocks execute_code recursion and unknown tools at the bridge', () => {
   const source = readFileSync('src/core/agent/Agent.ts', 'utf8')
-  assert.match(source, /toolName === 'execute_code' \|\| !activeSchemas\.some\(s => s\.function\.name === toolName\)/)
+  // Ре-энтри execute_code и тулы вне схем раунда блокируются на мосту.
+  assert.match(source, /toolName === 'execute_code' \|\| !roundSchemas\.some\(s => s\.function\.name === toolName\)/)
+  // §orchestration — фазовый allowlist проверяется и для вложенных вызовов:
+  // read-only фаза не даёт «убежать» через Code Mode.
+  assert.match(source, /orchestration && !isToolAllowedInPhase\(orchestration\.phase, toolName\)/)
 })
 test('ToolChain shows execute_code calls in the collapsed card and arguments/results after opening', () => {
   const source = readFileSync('src/renderer/src/components/ui/ToolChain/ToolChain.tsx', 'utf8')

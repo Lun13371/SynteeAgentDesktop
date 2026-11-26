@@ -8,6 +8,8 @@ import { filterCommands, resolveSlashContext, getCommandArguments } from '../../
 import type { SlashCommand } from '../../../../../shared/slashCommands'
 import { findMentionTokenNearCaret, mentionToAttachment } from '../../../../../shared/mentions'
 import type { Attachment, MentionItem, ApprovalMode, AutoModeSettings, LastTurnChanges, ProjectPermissionOverride } from '../../../../../shared/types'
+import type { OrchestrationModel, OrchestrationSelection } from '../../../../../shared/orchestration'
+import { validateOrchestration, type OrchestrationIssueText } from '../../../utils/orchestration'
 import type { ContextInfo } from '../../../hooks/useContextCounter'
 import { useUIStore } from '../../../store/ui.store'
 import { useSettingsStore } from '../../../store/settings.store'
@@ -21,6 +23,7 @@ import { ChatInputPlusMenu } from './ChatInputPlusMenu'
 import { ChatInputActionButton, STEER_HOLD_MS } from './ChatInputActionButton'
 import { ChatInputEditor, type EditorApi } from './ChatInputEditor'
 import { ChatInputMenus } from './ChatInputMenus'
+import OrchestrationBar from './OrchestrationBar'
 import { AudioVisualizerLayer } from './AudioVisualizerLayer'
 import { PluginInputActions } from './PluginInputActions'
 import ChatActivityStrip from '../ActivityStrip/ChatActivityStrip'
@@ -113,6 +116,25 @@ interface ChatInputProps {
   onGitSyncApply?: (projectId: string) => Promise<void>
   onGitSyncLater?: (projectId: string) => void
   onGitSyncOpenGit?: (projectId: string) => void
+  /**
+   * One-turn оркестрация (`/orchestrate` или «+» → Оркестрация).
+   * null/undefined — выключена. Это НЕ режим: выбор живёт один ход и
+   * снимается после принятой отправки (ChatPage).
+   */
+  orchestration?: OrchestrationSelection | null
+  /** Включить оркестрацию (плюс-меню, /orchestrate). Сид выбора строит ChatPage. */
+  onOrchestrationActivate?: () => void
+  /** Изменить выбор в блоке / снять его (null — выключить). */
+  onOrchestrationChange?: (next: OrchestrationSelection | null) => void
+  /** Отказ отправки оркестрации (валидация/плагин/ошибка) — показываем в блоке. */
+  orchestrationIssue?: OrchestrationIssueText | null
+  /**
+   * Сигнал «очисти поле» (растущий счётчик). Нужен one-turn оркестрации:
+   * ChatInput в этом режиме не чистит ввод оптимистично, а ChatPage снимает
+   * черновик только после принятой отправки — и только если пользователь не
+   * начал печатать заново (иначе сигнал не приходит вовсе).
+   */
+  clearDraftToken?: number
 }
 
 // memo: ChatPage ре-рендерится ~20×/сек при стриминге и на scroll-range
@@ -169,6 +191,11 @@ function ChatInput({
   onGitSyncApply,
   onGitSyncLater,
   onGitSyncOpenGit,
+  orchestration = null,
+  onOrchestrationActivate,
+  onOrchestrationChange,
+  orchestrationIssue = null,
+  clearDraftToken = 0,
 }: ChatInputProps) {
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>('ask')
   // Глобальные настройки авто-режима (agentPermissions.autoMode) и проектный
@@ -276,6 +303,23 @@ function ChatInput({
     setLiveText(next)
     onChangeValue(next)
   }, [onChangeValue])
+
+  // ── Программная очистка поля по сигналу родителя ────────────────────────
+  // Единственный путь, которым ChatPage снимает черновик one-turn оркестрации:
+  // только после принятой отправки и только если пользователь не начал печатать
+  // заново (иначе токен не инкрементится). value-проп для этого не годится —
+  // он «снимок» и при обычном наборе не меняется.
+  const prevClearTokenRef = useRef(clearDraftToken)
+  useEffect(() => {
+    if (clearDraftToken === prevClearTokenRef.current) return
+    prevClearTokenRef.current = clearDraftToken
+    if (liveTextRef.current === '') return
+    applyLive('')
+    setSlashCmds([])
+    setMentionItems([])
+    mentionTokenRef.current = null
+    if (textareaRef.current) textareaRef.current.style.height = 'auto'
+  }, [clearDraftToken, applyLive])
 
   // ── Голосовой ввод (STT) в инпут-баре — вынесен в хук useChatInputVoice ──
   // Провайдер и размер модели читаются из персистентных настроек (electron-store).
@@ -426,7 +470,17 @@ function ChatInput({
   }, [chatId])
 
   // Обновляем слеш-меню и @mention-меню при вводе
-  const handleChange = (text: string) => {
+  const handleChange = (raw: string) => {
+    // ── /orchestrate — одноразовая оркестрация ───────────────────────────
+    // Ведущая команда (набрана руками или вставлена из буфера) включает блок
+    // выбора исполнителя/ревьюера и вырезается из текста: остаток остаётся
+    // черновиком, вложения не трогаем. Повторно уже включённый режим текст
+    // не переписывает (иначе правки пользователя затирались бы).
+    let text = raw
+    if (!orchestration && /^\/orchestrate(?:\s+|$)/i.test(raw)) {
+      text = raw.replace(/^\/orchestrate\s*/i, '')
+      onOrchestrationActivate?.()
+    }
     // Любой ручной ввод сбрасывает режим навигации по истории — иначе
     // следующий ArrowUp продолжил бы с устаревшего индекса.
     historyIdxRef.current = null
@@ -538,6 +592,19 @@ function ChatInput({
   }
 
   const selectCommand = (cmd: SlashCommand) => {
+    // ── /orchestrate — не вставляем текст команды в поле ────────────────
+    // Включаем one-turn оркестрацию: снимаем набираемый токен команды,
+    // сохраняя остальной черновик и вложения.
+    if (cmd.orchestration) {
+      historyIdxRef.current = null
+      argDismissedRef.current = null
+      applyLive(liveText.replace(/^\/\S*\s*/, ''))
+      setSlashCmds([])
+      closeArgPicker()
+      onOrchestrationActivate?.()
+      setTimeout(() => editorApiRef.current?.focus(), 0)
+      return
+    }
     // Заменяем ввод на "/command " и фокусируем
     const next = `/${cmd.name} `
     historyIdxRef.current = null
@@ -624,24 +691,41 @@ function ChatInput({
     closeArgPicker()
   }
 
+  // ── Блокировка отправки без исполнителя ──────────────────────────────────
+  // Оркестрация без валидного выбора (исполнитель не выбран / выбор
+  // противоречив) не отправляется вообще: кнопка отправки заблокирована, а
+  // причина постоянно видна в блоке над инпутом (OrchestrationBar сама
+  // показывает validateOrchestration, если явной ошибки ещё нет). Это не
+  // «мягкий» отказ ChatPage — сюда просто нельзя нажать.
+  const orchestrationBlocked = !!orchestration && !!validateOrchestration(orchestration)
+
   const handleSend = () => {
     // Пустой = нет текста (токены не считаем) И нет вложений
     const cleanText = stripAttachTokens(liveText).trim()
     if (!cleanText && attachments.length === 0) return
     if (disabled && !isGenerating) return
+    // Оркестрация без исполнителя: ни Enter, ни кнопка ничего не отправляют.
+    if (orchestrationBlocked) return
+    // One-turn оркестрация: НЕ чистим поле оптимистично. Черновик и вложения
+    // снимает ChatPage только после принятой отправки — отказ (валидация,
+    // плагин, ошибка старта) не должен съедать набранное. Enter и hover-кнопка
+    // ведут сюда же: one-shot нельзя обойти «обычной» отправкой.
+    const oneShotOrchestration = !!orchestration
     // Отправляем value С токенами — ChatPage положит его в message.content
     // (рендер в чате восстановит чипы на местах), а в AI уйдёт чистый текст.
     onSend(liveText.trim())
     historyIdxRef.current = null
     pluginAutoReqRef.current++
     setPluginAuto(null)
-    applyLive('')
+    if (!oneShotOrchestration) {
+      applyLive('')
+    }
     setSlashCmds([])
     setMentionItems([])
     mentionTokenRef.current = null
     closeArgPicker()
     // Вложения очищаются в ChatPage после отправки (после chat:send)
-    if (textareaRef.current) textareaRef.current.style.height = 'auto'
+    if (!oneShotOrchestration && textareaRef.current) textareaRef.current.style.height = 'auto'
     if (uiSounds) playSendSound()
     if (sendEffect) { setSendBurst(true); setTimeout(() => setSendBurst(false), 400) }
   }
@@ -654,6 +738,9 @@ function ChatInput({
   // [[attach:id]]-токенами, main их чистит и инлайнит файлы в контекст рана
   // (processAttachmentsAndStream). Чипы ChatPage снимет после acceptance.
   const handleSteer = () => {
+    // One-turn оркестрация всегда идёт через обычную отправку (в очередь):
+    // внедрение в контекст активного рана обошло бы одноразовый выбор.
+    if (orchestration) { handleSend(); return }
     const hasAttachments = attachments.length > 0
     const cleanText = stripAttachTokens(liveText).trim()
     if (!cleanText && !hasAttachments) return
@@ -1000,6 +1087,7 @@ function ChatInput({
       // бы в очередь. Отправку НЕ делаем сразу: ждём keyup (короткое нажатие)
       // либо порога STEER_HOLD_MS (внедрение).
       const canSteerKeyboard = !!onSteer &&
+        !orchestration &&
         (!!stripAttachTokens(liveText).trim() || attachments.length > 0) &&
         !!isGenerating
       if (canSteerKeyboard) {
@@ -1106,6 +1194,24 @@ function ChatInput({
           onClosePluginAuto={() => { pluginAutoReqRef.current++; setPluginAuto(null) }}
         />
 
+      {/* Компактный блок one-turn оркестрации — ВЫШЕ строки статуса (модель,
+          проект, размышление), только когда режим включён (/orchestrate или
+          «+» → Оркестрация). */}
+      <AnimatePresence initial={false}>
+        {orchestration && (
+          <OrchestrationBar
+            key="orchestration-bar"
+            selection={orchestration}
+            error={orchestrationIssue}
+            mainModelId={mainModelId}
+            mainModelProviderId={mainModelProviderId}
+            onExecutorChange={(m: OrchestrationModel) => onOrchestrationChange?.({ ...orchestration, executor: m })}
+            onReviewerChange={(m: OrchestrationModel | null) => onOrchestrationChange?.({ executor: orchestration.executor, reviewer: m ?? undefined })}
+            onClose={() => onOrchestrationChange?.(null)}
+          />
+        )}
+      </AnimatePresence>
+
       {/* Строка статуса над инпутом: workdir-бейдж + planning/image-бейджи + бейджи голоса/очереди/расширений/изменений + селектор модели. */}
       <ChatInputStatusRow
         workdir={workdir}
@@ -1205,6 +1311,8 @@ function ChatInput({
             onAttachMcp={handleMenuAttachMcp}
             customCommands={customCommands}
             onInsertCommand={selectCommand}
+            orchestrationActive={!!orchestration}
+            onOrchestrate={onOrchestrationActivate}
           />
 
           {/* Кнопки плагинов над инпутом (registerInputAction) */}
@@ -1233,7 +1341,8 @@ function ChatInput({
             editorApiRef={editorApiRef}
             editorRef={textareaRef}
             placeholder={
-              planningMode ? 'Режим планирования — опишите задачу...'
+              orchestration ? 'Оркестрация — опишите задачу для исполнителя...'
+              : planningMode ? 'Режим планирования — опишите задачу...'
               : askMode ? 'Ask-режим — только чтение, задайте вопрос...'
               : imageMode ? 'Режим генерации изображений — опишите картинку...'
               : isIncognito ? 'Режим инкогнито — чат не сохраняется...'
@@ -1268,21 +1377,24 @@ function ChatInput({
             voice={voice}
             micBusy={micBusy}
             sendBurst={sendBurst}
+            // Оркестрация без исполнителя — отправка недоступна (см. выше).
+            blocked={orchestrationBlocked}
+            blockedTitle="Оркестрация: выберите модель-исполнителя"
             onStop={onStop}
             onSend={handleSend}
-            onSteer={onSteer ? handleSteer : undefined}
+            onSteer={onSteer && !orchestration ? handleSteer : undefined}
             // §steer — кольцо удержания Enter на кнопке: условие то же, что в
-            // canSteerKeyboard (текст ИЛИ вложения). Раньше здесь оставалось
-            // «нет вложений» — при вложениях внедрение срабатывало, а анимация
-            // на кнопке не показывалась.
-            holdActive={enterHold && !!isGenerating &&
+            // canSteerKeyboard (текст ИЛИ вложения).
+            // Раньше здесь оставалось «нет вложений» — при вложениях внедрение
+            // срабатывало, а анимация на кнопке не показывалась.
+            holdActive={enterHold && !!isGenerating && !orchestration &&
               (!!stripAttachTokens(liveText).trim() || attachments.length > 0)}
             onMicClick={handleMicClick}
           />
         </div>
       </div>
 
-      <p className="chat-input-hint">Enter — отправить · Shift+Enter — новая строка · / — команды · @ — файлы и сущности · удержать Enter или кнопку отправки — внедрить в контекст работающего агента</p>
+      <p className="chat-input-hint">Enter — отправить · Shift+Enter — новая строка · / — команды · /orchestrate — один ход с ревьюером · @ — файлы и сущности · удержать Enter или кнопку отправки — внедрить в контекст работающего агента</p>
       <ChatActivityStrip />
       </div>
 

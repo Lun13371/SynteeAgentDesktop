@@ -70,7 +70,13 @@ import { resolveActive } from '../services/protectedVarsStore'
 import { secretPlaceholder } from '../../core/prompts/sections/secretsSection'
 import { classifyDiagnosticOutcome, isExplicitTaskContinuation, isVerificationCommand } from '../../shared/types/taskSummary'
 import { DEFAULT_AGENT_SETTINGS } from '../../shared/types'
-import type { Message, AgentSettings, ChatMode, QueueItemMeta, Attachment, AttachmentProcessingResult, ReplyTarget, Dot, DotConfig } from '../../shared/types'
+import type { Message, AgentSettings, ChatMode, QueueItemMeta, Attachment, AttachmentProcessingResult, ReplyTarget, Dot, DotConfig, Provider } from '../../shared/types'
+import type { OrchestrationModel, OrchestrationProgress, OrchestrationRun, OrchestrationSelection } from '../../shared/orchestration'
+import {
+  blockRunningOrchestrationPhase, freezeOrchestrationRun, mergeOrchestrationProgress,
+  orchestrationModeIssue, orchestrationProviderIssue, orchestrationSelectionIssue,
+  slimOrchestrationPhases,
+} from './orchestrationRun'
 import { executeManageChats } from '../services/delegatedChats'
 import { cleanupOrphanDraftFiles } from './mentions.ipc'
 // Разбитые модули chat.ipc (рефакторинг — код перенесён как есть).
@@ -147,6 +153,15 @@ async function runChatSendScoped(
       replyTo?: ReplyTarget[]
       /** Тумблер «Управление браузером»: browser_* тулы с первого раунда. */
       browserMode?: boolean
+      /** §orchestration — one-turn оркестрация: выбор из UI (executor/reviewer).
+       *  Планировщик снимает main на момент приёма запроса (см. chatSendHandler). */
+      orchestration?: OrchestrationSelection
+      /** Замороженный снапшот рана (planner+executor+reviewer), собранный при
+       *  приёме запроса в очередь. Именно он уходит в workerData.orchestration —
+       *  смена модели чата/настроек после постановки в очередь ран не меняет. */
+    orchestrationRun?: OrchestrationRun
+    /** §resume — «Продолжить»: план и сделанное из прерванного рана. */
+    orchestrationResume?: unknown
     },
     win: BrowserWindow | null,
     chatMode: ChatMode,
@@ -556,6 +571,7 @@ async function runChatSendScoped(
       checkpointDirty: false,
       liveSnapshots: [],
       pendingQuestions: new Set<string>(),
+      orchestration: [],
     }
 
     // ── UI-батчинг токенов: флеш накопленного перед любыми другими
@@ -707,6 +723,17 @@ async function runChatSendScoped(
                 cacheWriteTokens: run.bufferedUsage.cacheWriteTokens || undefined,
               }
             : undefined)
+      // §orchestration — финальный слим-снапшот фаз. При Стопе/обрыве фаза,
+      // оставшаяся в статусе 'running', закрывается как 'blocked': иначе
+      // карточка в истории навсегда показывала бы «выполняется».
+      const orchestrationPhases = run.orchestration.length > 0
+        ? slimOrchestrationPhases(finishReason === 'done'
+          ? run.orchestration
+          : blockRunningOrchestrationPhase(
+              run.orchestration,
+              finishReason === 'stopped' ? 'stopped by the user' : 'run failed',
+            ))
+        : undefined
       const assistantMsg: Message & { iterations?: unknown } = {
         id: assistantMsgId,
         chatId: params.chatId,
@@ -728,6 +755,9 @@ async function runChatSendScoped(
         thinkingMs,
         planData: computedPlan,
         todo: todoArr && todoArr.length > 0 ? todoArr : undefined,
+        // §orchestration — компактная карточка фаз для истории (после рестарта
+        // live-событий уже нет, снапшот приходит из БД).
+        orchestration: orchestrationPhases,
         // Результат обработки вложений — для AttachmentProcessingBlock.
         // null если вложений не было или обработка не запускалась.
         attachmentResult: run.attachmentResult ?? undefined,
@@ -890,6 +920,19 @@ async function runChatSendScoped(
     const workerPath = path.join(__dirname, 'ai-worker.js')
     const mainAssignment = (storeData.modelAssignments as Array<{ role: string; modelId: string; providerId: string }> | undefined)
       ?.find(a => a.role === 'main')
+    // §orchestration — ревалидация провайдеров на СТАРТЕ рана. Снапшот
+    // заморожен на момент приёма запроса (chat:send), но пока запрос ждал в
+    // очереди, провайдера могли отключить/удалить. Никакого fallback на модель
+    // чата: ран не стартует, пользователь получает причину (failRunCleanup →
+    // error-статус), а не тихую подмену исполнителя.
+    const orchestrationRun = params.orchestrationRun ?? null
+    if (orchestrationRun) {
+      const providerIssue = orchestrationProviderIssue(
+        orchestrationRun,
+        store.get('providers') as Provider[] | undefined,
+      )
+      if (providerIssue) throw new Error(providerIssue)
+    }
     const catalogCachePath = path.join(app.getPath('userData'), 'modelsCatalog.json')
     const { workdir: chatWorkdir, verificationCommand } = (() => {
       try { return getChatWorkdirContext(dbChatId) } catch { return {} as ReturnType<typeof getChatWorkdirContext> }
@@ -1040,6 +1083,9 @@ async function runChatSendScoped(
         // Мини-агенты: применяются воркером ДО первого раунда (см. ai-worker).
         assistantsSettings: assistantsSettingsSnapshot,
         briefingContinuity,
+        // §orchestration — замороженный снапшот ролей (planner/executor/reviewer).
+        // undefined → воркер работает как обычно (ни фаз, ни инструкций).
+        orchestration: orchestrationRun ?? undefined,
       },
       env: process.env,
     })
@@ -1118,6 +1164,10 @@ async function runChatSendScoped(
           thinkingMs: run.bufferedThinkingMs,
           todo: run.bufferedTodo.length > 0 ? run.bufferedTodo : undefined,
           attachmentResult: run.attachmentResult ?? undefined,
+          // §orchestration — фазы попадают в recovery-буфер: после краша
+          // процесса буфер переносится в messages (historyCache) и карточка
+          // прогресса не теряется.
+          orchestration: slimOrchestrationPhases(run.orchestration),
           durationMs: Date.now() - run.startedAt,
         }
         // Только в буфер, не в messages: чекпоинты не должны дёргать
@@ -1557,6 +1607,33 @@ async function runChatSendScoped(
           win?.webContents.send('agent:todo', { msgId: msg.msgId, chatId: msg.chatId, items: msg.items })
           break
 
+        case 'orchestration_progress': {
+          // §orchestration — прогресс фаз one-turn оркестрации. Одно событие на
+          // переход (running при входе в фазу, done/blocked при выходе).
+          // msgId в событии — id assistant-сообщения рана, но источником истины
+          // для UI/live-буфера считаем run.msgId: событие чужого (уже
+          // завершённого) рана не должно оживлять карточку нового пузыря.
+          const progress = msg.progress as OrchestrationProgress | undefined
+          // Событие принадлежит КОНКРЕТНОМУ рану: воркер шлёт id своего
+          // assistant-сообщения. Позднее событие прошлого рана (terminate не
+          // мгновенный) не должно ни оживлять карточку нового пузыря, ни
+          // попадать в буфер нового рана.
+          if (!progress || !progress.phase || (msg.msgId && msg.msgId !== assistantMsgId)) break
+          const orchRun = activeRuns.get(msg.chatId as string)
+          if (orchRun && orchRun.msgId === assistantMsgId) {
+            orchRun.orchestration = mergeOrchestrationProgress(orchRun.orchestration, progress)
+            // Фаза сменилась — checkpoint-таймер должен записать снапшот даже
+            // если токенов с прошлого чекпоинта не было.
+            orchRun.checkpointDirty = true
+          }
+          win?.webContents.send(IPC_EVENTS.AGENT_ORCHESTRATION_PROGRESS, {
+            chatId: params.chatId,
+            msgId: assistantMsgId,
+            progress,
+          })
+          break
+        }
+
         case 'tool_progress':
           // Progress для долгих тулов — live-индикация этапов.
           // Не персистим в БД (ephemeral), только в live state renderer'а.
@@ -1646,7 +1723,6 @@ async function runChatSendScoped(
               chatId: msg.chatId as string,
               task: msg.task as string,
               model: msg.model as string | undefined,
-              approvalMode: msg.approval_mode as 'auto' | 'ask' | 'full' | undefined,
               isolation: msg.isolation as 'auto' | 'worktree' | 'none' | undefined,
               role: msg.role as string | undefined,
               onFileSnapshot: (snapshots) => {
@@ -1657,7 +1733,7 @@ async function runChatSendScoped(
                 }
               },
               mode: chatMode,
-              storeData,
+              storeData: { ...storeData, agentSettings },
               context: {
                 systemPrompt: buildSubagentSystemPrompt({
                   role: roleDef,
@@ -2862,6 +2938,51 @@ export function runChatSend(...args: Parameters<typeof runChatSendScoped>): Retu
   return withAIUsageContext({ chatId: args[1].chatId }, () => runChatSendScoped(...args))
 }
 
+/**
+ * §orchestration — модель-планировщик на момент приёма запроса.
+ *
+ * Планировщик = текущая модель чата (chats.model_id/provider) либо глобальное
+ * назначение role:'main', плюс её уровень мышления. Та же приоритетность, что
+ * у основного рана (params.reasoningValue > chats.reasoning_value > store),
+ * поэтому планировщик видит ровно тот reasoning, который видит чат.
+ */
+function resolvePlannerModel(
+  store: Store,
+  dbChatId: string,
+  reasoningValue?: string,
+): OrchestrationModel | null {
+  let providerId = ''
+  let modelId = ''
+  try {
+    const chatModel = getChatModel(dbChatId)
+    if (chatModel) {
+      providerId = chatModel.modelProvider
+      modelId = chatModel.modelId
+    }
+  } catch { /* чат мог быть удалён */ }
+  if (!providerId || !modelId) {
+    const assignment = (store.get('modelAssignments') as Array<{ role: string; modelId: string; providerId: string }> | undefined)
+      ?.find(a => a.role === 'main')
+    providerId = assignment?.providerId ?? ''
+    modelId = assignment?.modelId ?? ''
+  }
+  if (!providerId || !modelId) return null
+  let reasoning = reasoningValue
+  if (reasoning === undefined) {
+    try {
+      const chatReasoning = getChatReasoning(dbChatId)
+      if (chatReasoning !== null) reasoning = chatReasoning
+    } catch { /* ok */ }
+  }
+  if (reasoning === undefined) {
+    const globalReasoning = store.get('reasoningValue')
+    if (typeof globalReasoning === 'string') reasoning = globalReasoning
+  }
+  const model: OrchestrationModel = { providerId, modelId }
+  if (typeof reasoning === 'string' && reasoning.length > 0) model.reasoningValue = reasoning
+  return model
+}
+
 export async function chatSendHandler(store: Store, mainWindow: IpcMainWindow, params: {
     chatId: string
     content: string
@@ -2895,6 +3016,15 @@ export async function chatSendHandler(store: Store, mainWindow: IpcMainWindow, p
      *  Дублируется chats.browser_mode из БД (main читает обе — request_access
      *  включает режим посреди сессии и пишет в БД). */
     browserMode?: boolean
+    /** Side-чат: DB-lookups (модель/reasoning/workdir) идут по родителю. */
+    sideChatParentId?: string
+    /** §orchestration — one-turn оркестрация (renderer шлёт только роли
+     *  executor/reviewer; планировщика снимает main). */
+    orchestration?: OrchestrationSelection
+    /** Замороженный снапшот рана — заполняется ниже (внутреннее поле). */
+    orchestrationRun?: OrchestrationRun
+    /** §resume — «Продолжить» с карточки прерванного рана. */
+    orchestrationResume?: unknown
   }): Promise<{ userMsg: Message; assistantMsgId: string; queued?: boolean }> {
     const win = mainWindow.getWindow()
 
@@ -2905,6 +3035,46 @@ export async function chatSendHandler(store: Store, mainWindow: IpcMainWindow, p
     const chatMode: ChatMode = params.mode ?? (() => { try { return getChatMode(params.chatId) } catch { return 'code' } })()
 
     const agentSettings = store.get('agentSettings', DEFAULT_AGENT_SETTINGS) as AgentSettings
+
+    // ── §orchestration — one-turn оркестрация (/orchestrate) ────────────────
+    // Валидация ДО любых side-effect'ов (user-сообщение, pending-вложения,
+    // очередь): renderer показывает текст ошибки в блоке оркестрации и НЕ
+    // чистит черновик. Бросок отсюда = отказ старта (renderer ловит и
+    // показывает «Оркестрация не запустилась: <причина>»).
+    // Снапшот замораживается ЗДЕСЬ — на момент приёма запроса в очередь:
+    // планировщик = текущая модель чата (+её reasoning), ревьюер по умолчанию
+    // = планировщик (явно; core при undefined фазу ревью ПРОПУСКАЕТ).
+    if (params.orchestration) {
+      // Флаги режимов берём из запроса И из БД (chats.ask_mode/planning_mode/
+      // image_mode): клиент может не прислать тоггл, но права рана от этого не
+      // должны расширяться — Ask/Plan остаются запретом на запись/реализацию.
+      let dbModes: { askMode?: boolean; planningMode?: boolean; imageMode?: boolean } = {}
+      try { dbModes = getChatModes(params.sideChatParentId ?? params.chatId) } catch { /* чат мог быть удалён */ }
+      const modeIssue = orchestrationModeIssue({
+        askMode: params.askMode || dbModes.askMode || params.slashCommand?.name === 'ask',
+        planningMode: params.planningMode || dbModes.planningMode,
+        imageMode: params.imageMode || dbModes.imageMode || params.slashCommand?.name === 'image',
+        oneShotMode: params.oneShotMode,
+      })
+      if (modeIssue) throw new Error(modeIssue)
+      const selectionIssue = orchestrationSelectionIssue(params.orchestration)
+      if (selectionIssue) throw new Error(selectionIssue)
+      const planner = resolvePlannerModel(store, params.sideChatParentId ?? params.chatId, params.reasoningValue)
+      if (!planner) throw new Error('модель чата не выбрана — оркестрация невозможна')
+      const frozen = freezeOrchestrationRun(params.orchestration, planner, params.orchestrationResume)
+      if (!frozen) throw new Error('некорректный выбор моделей оркестрации')
+      // Провайдеры сверяем уже на приёме: ран не должен «повиснуть» на
+      // недоступной модели. На старте рана проверка повторяется (см. ниже) —
+      // без fallback в обоих местах.
+      const providerIssue = orchestrationProviderIssue(frozen, store.get('providers') as Provider[] | undefined)
+      if (providerIssue) throw new Error(providerIssue)
+      params.orchestrationRun = frozen
+      log('[chat:send] orchestration chatId=%s planner=%s/%s executor=%s/%s reviewer=%s/%s',
+        params.chatId,
+        frozen.planner.providerId, frozen.planner.modelId,
+        frozen.executor.providerId, frozen.executor.modelId,
+        frozen.reviewer?.providerId, frozen.reviewer?.modelId)
+    }
 
     const attachments = params.attachments ?? []
 

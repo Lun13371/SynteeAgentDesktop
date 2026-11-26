@@ -257,6 +257,10 @@ export const IPC_EVENTS = {
   MEMORY_MEMORIZED: 'memory:memorized',
   AGENT_ACTION: 'agent:action',
   AGENT_PERMISSION_REQUEST: 'agent:permission:request',
+  /** §orchestration — прогресс фаз one-turn оркестрации (/orchestrate).
+   *  main → renderer: { chatId, msgId, progress: OrchestrationProgress }.
+   *  Тот же канал слушает useOrchestrationProgress (renderer). */
+  AGENT_ORCHESTRATION_PROGRESS: 'agent:orchestration_progress',
   SYSTEM_STATS: 'system:stats',
   RATE_LIMIT: 'ai:rate_limit',
   VOICE_STATE: 'voice:state',

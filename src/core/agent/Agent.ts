@@ -45,6 +45,17 @@ import { GoalRuntime } from './goalRuntime'
 import { formatTranscript, makeGoalJudge } from './goalEvaluator'
 import type { ChatGoal } from '../../shared/types/goal'
 import { filterToolSchemas, getToolSettings, isToolDisabled } from '../../shared/toolSettings'
+import type { OrchestrationProgress } from '../../shared/orchestration'
+import {
+  OrchestrationRuntime,
+  advanceAfterPhaseAnswer,
+  filterSchemasForPhase,
+  isToolAllowedInPhase,
+  phaseInstruction,
+  portableizeMessages,
+  sameModel,
+} from './orchestration'
+import type { OrchestrationModel } from '../../shared/orchestration'
 import { sanitizeToolInstructions, splitSystemPromptForCache } from '../prompts/buildSystemPrompt'
 import { executeCode, EphemeralArtifactStore } from '../codeMode'
 import type { CodeTraceEntry } from '../codeMode'
@@ -149,6 +160,12 @@ export class Agent {
    *  аргументы тулов и обратная маскировка в результатах. */
   secretValues?: Map<string, string>
   pendingDiffEntries: DiffEntry[] = []
+  /**
+   * §orchestration — рантайм фазового рана (только пока идёт оркестрованный
+   * run). Нужен, чтобы buildSummaryDetails отдал атрибуцию по моделям без
+   * протаскивания объекта через все onDone-вызовы.
+   */
+  private orchestrationRuntime: OrchestrationRuntime | null = null
   private readFileCache = new Map<string, string>()
   private fileMap = new Map<string, { reads: number; writes: number; note: string }>()
   private recentToolFingerprints: AgentToolCallFingerprint[] = []
@@ -781,6 +798,62 @@ export class Agent {
     // hallucinates a tool outside the role's allowlist).
     const subagentRole = options?.subagentRole
     const subagentRoleDef = subagentRole ? getSubagentRole(subagentRole) : undefined
+
+    // ── §orchestration ──────────────────────────────────────────────────────
+    // Тот же самый цикл, но фазы исполняются ЯВНО выбранными моделями:
+    // planning/replanning → planner, executing → executor, reviewing → reviewer.
+    // Без снимка (options.orchestration === undefined) поведение не меняется
+    // ни на байт: ни событий, ни инструкций, ни смены схем.
+    const orchestration = options?.orchestration ? new OrchestrationRuntime(options.orchestration) : null
+    this.orchestrationRuntime = orchestration
+    let activePhaseModel: OrchestrationModel | null = orchestration?.currentModel() ?? null
+    const emitOrchestration = (events: OrchestrationProgress[] | null | undefined): void => {
+      if (!events || events.length === 0) return
+      for (const event of events) {
+        // Телеметрия не должна ломать ран.
+        try { callbacks.onOrchestrationProgress?.(event) } catch { /* ignore */ }
+      }
+    }
+    /**
+     * Смена фазовой модели = смена провайдера в середине рана. Подписанные
+     * thinking_blocks (Anthropic) и reasoning_content ([OI] thinking-mode) —
+     * артефакты конкретной модели; чужой провайдер на них отвечает 400.
+     * Снимаем их с истории (структура tool_calls/tool_call_id сохраняется).
+     */
+    const switchPhaseModel = (from: OrchestrationModel | null, to: OrchestrationModel | null): void => {
+      if (!orchestration || sameModel(from, to)) return
+      const cleaned = portableizeMessages(messages)
+      if (cleaned > 0) log('[Agent] orchestration: portableized %d messages for cross-provider phase switch', cleaned)
+    }
+    const applyOrchestration = (events: OrchestrationProgress[], instruction?: string): void => {
+      emitOrchestration(events)
+      const nextModel = orchestration?.currentModel() ?? null
+      switchPhaseModel(activePhaseModel, nextModel)
+      activePhaseModel = nextModel
+      if (instruction) messages.push({ role: 'user', content: instruction })
+    }
+    if (orchestration) {
+      const resume = orchestration.run.resume
+      // §resume — продолжение прерванного рана: план уже утверждён и часть
+      // работы сделана, поэтому старт сразу с исполнения. Иначе планировщик
+      // заново «исследует запрос» и пользователь видит Planning вместо остатка.
+      emitOrchestration(orchestration.start(resume ? 'continuing the interrupted run' : 'researching the request'))
+      const startModel = orchestration.currentModel()
+      if (startModel) {
+        messages.push({
+          role: 'user',
+          content: resume
+            ? phaseInstruction('executing', startModel, { resume })
+            : phaseInstruction('planning', startModel),
+        })
+      }
+    }
+    /** Обрыв/ошибка/бюджет: текущая фаза закрывается как blocked. */
+    const blockOrchestration = (detail: string): void => {
+      if (!orchestration) return
+      const event = orchestration.block(detail)
+      if (event) emitOrchestration([event])
+    }
     // Реальный лимит контекста активной модели — для аварийного клапана.
     // Раньше здесь был Math.max(32_000, realContextWindow) — искусственный пол,
     // который мог занижать эффективный лимит для моделей с честным большим
@@ -846,6 +919,11 @@ export class Agent {
     // pixels on a 400: that could turn a failed analysis into a false success.
 
     for (let step = 0; ; step++) {
+      // §orchestration — схемы раунда = срез активного набора по фазе:
+      // planning/reviewing/replanning получают только read-only allowlist,
+      // executing — полный тулсет. Пересчитываем каждый раунд (request_access
+      // может добавить тулы посреди рана).
+      let roundSchemas = orchestration ? filterSchemasForPhase(activeSchemas, orchestration.phase) : activeSchemas
       if (goalRuntime && !signal?.aborted) {
         if (!goalRuntime.active) {
           callbacks.onDone(`Цель закрыта: ${goalRuntime.goal.blocker ?? goalRuntime.goal.status}`, this.buildSummaryDetails(modifiedFiles))
@@ -860,9 +938,14 @@ export class Agent {
       }
       if (signal?.aborted) {
         nativeImageAnalysis.fail('Визуальный анализ остановлен до получения ответа модели.', callbacks.onStep)
+        blockOrchestration('aborted by the user')
         callbacks.onDone('')
         return
       }
+      // §orchestration — жёсткого бюджета токенов на модель-роль НЕТ: ран
+      // идёт, пока исполнитель реально работает. Предохранители остаются
+      // структурными (maxSteps, лимиты перепланирований/ревью, «Стоп»),
+      // а расход по моделям виден в атрибуции карточки.
 
       // maxSteps раньше принимался как параметр, но никогда не проверялся —
       // цикл был фактически бесконечным (агент мог гонять тулы неограниченно
@@ -871,6 +954,7 @@ export class Agent {
       if (step >= EFFECTIVE_MAX_STEPS) {
         console.log('[Agent] maxSteps=%s reached, finishing with partial answer', EFFECTIVE_MAX_STEPS)
         log('[Agent] run() достигнут maxSteps=%s, завершаю с частичным ответом', EFFECTIVE_MAX_STEPS)
+        blockOrchestration('agent step limit reached')
         callbacks.onStep({
           type: 'tool_result',
           toolName: '_limit',
@@ -920,6 +1004,16 @@ export class Agent {
         // посчитанные по старой ревизии, не инжектятся (мост сравнивает).
         this.taskRevision++
         callbacks.onStatus?.('Учтено сообщение пользователя')
+        // §orchestration — ревизия рана: вердикт ревью по старой постановке не
+        // применяется, а идущее ревью возвращается к исполнению, чтобы
+        // реплика пользователя была реально учтена исполнителем.
+        if (orchestration) {
+          orchestration.bumpRevision()
+          if (orchestration.phase === 'reviewing') {
+            applyOrchestration(orchestration.transition('executing', { detail: 'steer revision' }))
+            roundSchemas = filterSchemasForPhase(activeSchemas, orchestration.phase)
+          }
+        }
       }
 
       if (this.pendingHints.length > 0 && !signal?.aborted && this.hintCooldown <= 0) {
@@ -951,7 +1045,7 @@ export class Agent {
       // реальные повторы тулов, или контекст подбирается к порогу окна.
       // Оценка уже откалибрована в usageTracker (единый EWMA-коэффициент на
       // пару provider:model) — второй множитель здесь давал двойное сжатие.
-      const requestContext = computeRequestContextSnapshot(messages, realContextWindow, activeSchemas)
+      const requestContext = computeRequestContextSnapshot(messages, realContextWindow, roundSchemas)
       const calibratedTokens = requestContext.estimated
       // Порог относительно окна модели: 1M → 30%, 500k → 60%, 256k → 70%,
       // <256k → 80%. Ступень 1 (порог) — лёгкий дедуп, ступень 2 (+15%) —
@@ -1005,7 +1099,7 @@ export class Agent {
         // J2: не применяем микро-компакции — они инвалидируют кэш чаще, чем экономят.
         if (report.actions.length > 0 && report.totalTokensSaved >= this.assistantsSettings.janitorMinSavingsTokens) {
           // Снапшот ДО скана уже посчитан в этом раунде — второй раз не считаем.
-          this.applyJanitorReport(messages, report, callbacks, activeSchemas, realContextWindow, requestContext)
+          this.applyJanitorReport(messages, report, callbacks, roundSchemas, realContextWindow, requestContext)
         } else {
           this.onAssistantEvent?.({ kind: 'janitor_skip' })
         }
@@ -1053,8 +1147,8 @@ export class Agent {
 
       try {
         callbacks.onStatus?.('Waiting for response...')
-        console.log('[Agent] round %s/%s: chatWithTools start (messages=%d, tools=%d)', step, EFFECTIVE_MAX_STEPS, messages.length, activeSchemas.length)
-        log('[Agent] round %s/%s: chatWithTools start (messages=%d, tools=%d)', step, EFFECTIVE_MAX_STEPS, messages.length, activeSchemas.length)
+        console.log('[Agent] round %s/%s: chatWithTools start (messages=%d, tools=%d)', step, EFFECTIVE_MAX_STEPS, messages.length, roundSchemas.length)
+        log('[Agent] round %s/%s: chatWithTools start (messages=%d, tools=%d)', step, EFFECTIVE_MAX_STEPS, messages.length, roundSchemas.length)
         // Защитный таймаут по бездействию на раунд chatWithTools. Если
         // провайдер принял запрос, но stream завис (TCP open, нет данных) —
         // for-await(chunk) висит вечно, signal не abort'ится, "Ожидаю
@@ -1083,9 +1177,23 @@ export class Agent {
           }, INACTIVITY_TIMEOUT_MS)
         }
         resetInactivityTimer()
+        // §orchestration — модель ЭТОЙ фазы (может отличаться от модели
+        // предыдущего раунда). undefined = обычный ран по назначениям роли.
+        const phaseModel = orchestration?.currentModel() ?? null
+        const phaseModelOverride = phaseModel
+          ? { providerId: phaseModel.providerId, modelId: phaseModel.modelId, reasoningValue: phaseModel.reasoningValue }
+          : undefined
+        // §orchestration — стрим ответа в рантайме запрещён: текст плана,
+        // вердикт ревьюера и ответы исполнителя на кругах revise не являются
+        // ответом пользователю, а попадание их в live-пузырь давало дубли
+        // (второй ответ исполнителя дописывался к первому). Финальный ответ
+        // отдаётся РОВНО один раз в ветке outcome='done'.
+        const streamPhaseAnswer = !orchestration
         // Match provider tokenization against the complete request, including tools.
         const trackUsage = (promptTokens: number, completionTokens: number, cacheRead?: number, cacheWrite?: number) => {
           if (goalRuntime) goalRuntime.addTokens(promptTokens + completionTokens)
+          // Атрибуция расхода по модели-роли внутри рана.
+          if (orchestration && phaseModel) orchestration.recordUsage(phaseModel, promptTokens, completionTokens)
           callbacks.onUsage?.(promptTokens, completionTokens, cacheRead, cacheWrite)
         }
         // §prompt-cache: конец ТЕКУЩЕГО запроса = breakpoint Anthropic.
@@ -1100,10 +1208,13 @@ export class Agent {
           response = await goalWait(Promise.race([
             this.client.chatWithTools(
               messages,
-              activeSchemas as typeof TOOL_SCHEMAS,
+              roundSchemas as typeof TOOL_SCHEMAS,
               signal,
               this.role,
-              (token) => { resetInactivityTimer(); if (!goalRuntime) callbacks.onStep({ type: 'answer', content: token }) },
+              (token) => {
+                resetInactivityTimer()
+                if (!goalRuntime && streamPhaseAnswer) callbacks.onStep({ type: 'answer', content: token })
+              },
               callbacks.onContextCounted,
               (waitSec) => {
                 resetInactivityTimer()
@@ -1126,7 +1237,7 @@ export class Agent {
               (tok) => { resetInactivityTimer(); callbacks.onThinkingToken?.(tok) },
               callbacks.onThinkingDone,
               (index, rawToolName) => {
-                const normalizedName = normalizeToolName(rawToolName, activeSchemas)
+                const normalizedName = normalizeToolName(rawToolName, roundSchemas)
                 // §final-answer — модель спутала тег <final_answer> с тулом.
                 // Карточку-«вызов» в ленту не показываем вообще: такой вызов
                 // будет вынут ниже, а его текст станет ответом.
@@ -1140,6 +1251,8 @@ export class Agent {
                   callId: `pending-${step}-${index}`,
                 })
               },
+              // §orchestration — явная модель/провайдер/effort фазы.
+              phaseModelOverride,
             ),
             inactivityTimeoutPromise,
           ]))
@@ -1148,6 +1261,7 @@ export class Agent {
         }
 
         if (signal?.aborted) {
+          blockOrchestration('aborted by the user')
           callbacks.onDone('')
           return
         }
@@ -1254,7 +1368,7 @@ export class Agent {
             callbacks.onStep({ type: 'thought', content: response.reasoning })
           }
 
-          if (!response.hadStreamedTokens && !goalRuntime) {
+          if (!response.hadStreamedTokens && !goalRuntime && streamPhaseAnswer) {
             const words = answer.split(/(?<=\s)|(?=\s)/)
             for (const chunk of words) {
               if (signal?.aborted) {
@@ -1318,6 +1432,42 @@ export class Agent {
               })
             }
             log('[Agent] steer pending on final answer — продолжаю ран вместо завершения')
+            continue
+          }
+          // §orchestration — фаза закончилась финальным ответом. Решение
+          // принимает фазовый автомат: план принят → executing; исполнитель
+          // закончил → reviewing; approve/revise/replan → финал или новый круг.
+          // Репланы и круги ревью ограничены (MAX_ORCHESTRATION_*).
+          if (orchestration) {
+            const advance = advanceAfterPhaseAnswer(orchestration, answer)
+            const currentPhase = orchestration.phase
+            if (answer.trim()) {
+              messages.push({
+                role: 'assistant',
+                content: answer,
+                ...(response.reasoning ? { reasoning_content: response.reasoning } : {}),
+                ...(response.thinking_blocks ? { thinking_blocks: response.thinking_blocks } : {}),
+              })
+            }
+            applyOrchestration(advance.events, advance.instruction)
+            if (advance.outcome === 'done') {
+              const finalAnswer = advance.answer ?? answer
+              log('[Agent] orchestration DONE: replans=%d reviewRounds=%d answer=%d chars',
+                orchestration.replanCount, orchestration.reviewRoundCount, finalAnswer.length)
+              // Единственный answer рана. Промежуточные ответы фаз (план,
+              // вердикт, круги revise) в пузырь не попадают — иначе после
+              // revise/replan в сообщении оказывались два-три ответа подряд.
+              if (finalAnswer.trim()) callbacks.onStep({ type: 'answer', content: finalAnswer })
+              flushWorkingMemory(finalAnswer)
+              this.emitArchivist(messages, modifiedFiles)
+              callbacks.onDone(finalAnswer, this.buildSummaryDetails(modifiedFiles))
+              return
+            }
+            if (advance.outcome === 'blocked') {
+              callbacks.onError(new Error(advance.reason ?? 'Orchestration stopped'))
+              return
+            }
+            log('[Agent] orchestration: phase %s ended, continuing in %s', currentPhase, orchestration.phase)
             continue
           }
           // §goal больше не подменяет финальный ответ синтетикой — цель
@@ -1392,7 +1542,7 @@ export class Agent {
           // так что callIndex здесь совпадает с tc.index из onToolCallStarted.
           const pendingCallId = `pending-${step}-${callIndex}`
           const rawName = fn.name
-          const normalizedName = normalizeToolName(rawName, activeSchemas)
+          const normalizedName = normalizeToolName(rawName, roundSchemas)
           if (normalizedName !== rawName) {
             console.warn(`[Agent] Auto-repaired tool name: '${rawName}' -> '${normalizedName}'`)
           }
@@ -1718,7 +1868,7 @@ export class Agent {
           // (закавыченные, которые tryRepairJson не ловит), заполняет дефолты.
           // Если есть непреодолимые ошибки (невалидный enum без близкого матча) —
           // возвращаем ошибку модели с конкретным описанием.
-          const validation = validateAndCoerceArgs(fn.name, args, activeSchemas)
+          const validation = validateAndCoerceArgs(fn.name, args, roundSchemas)
           if (validation.fixes.length > 0) {
             // Тихо применяем исправленные args
             args = validation.args
@@ -1731,7 +1881,7 @@ export class Agent {
             callbacks.onStep({ type: 'tool_result', toolName: fn.name, content: errMsg, success: false, callId, hidden: isHiddenTool })
             return
           }
-          const missingArgs = findMissingRequiredArgs(fn.name, args, activeSchemas)
+          const missingArgs = findMissingRequiredArgs(fn.name, args, roundSchemas)
           if (missingArgs.length > 0) {
             const missingMsg = formatMissingArgsMessage(fn.name, missingArgs)
             resultMap.set(callId, { contentForAI: missingMsg, callId, name: fn.name })
@@ -1747,7 +1897,19 @@ export class Agent {
           // from schemas. Without this guard, executeTool's switch(name) would
           // execute them anyway. MCP tools (mcp__*) are also included in
           // activeSchemas via mcpTools, so the check covers them too.
-          const schemaNameSet = new Set(activeSchemas.map(s => s.function.name))
+          // §orchestration — второй, независимый от схем барьер: даже если
+          // roundSchemas разошлись с фазой (request_access добавил тул посреди
+          // рана, история подсказала имя), read-only фаза не выпустит
+          // мутирующий тул и не пустит execute_code.
+          if (orchestration && !isToolAllowedInPhase(orchestration.phase, fn.name)) {
+            const phaseMsg = `Tool "${fn.name}" is not available in the ${orchestration.phase.toUpperCase()} phase `
+              + '(read-only allowlist: research only, no edits/commands/code execution). '
+              + 'The phase switches automatically when this turn ends — do not call it again.'
+            resultMap.set(callId, { contentForAI: phaseMsg, callId, name: fn.name })
+            callbacks.onStep({ type: 'tool_result', toolName: fn.name, content: phaseMsg, success: false, callId, hidden: isHiddenTool })
+            return
+          }
+          const schemaNameSet = new Set(roundSchemas.map(s => s.function.name))
           if (!schemaNameSet.has(fn.name)) {
             const allowed = [...schemaNameSet].join(', ')
             // В planning-режиме даём явное напоминание вместо generic-блока —
@@ -1783,7 +1945,6 @@ export class Agent {
             }
           }
 
-          const baseMode = (callbacks.approvalMode || 'auto') as 'auto' | 'ask' | 'full'
           // Читаем agentPermissions из store — раньше они были объявлены в
           // DEFAULT_SETTINGS и показаны в UI, но нигде не использовались.
           const agentPerms = (this.store.get('agentPermissions') as {
@@ -1795,15 +1956,11 @@ export class Agent {
           const dryRunMode = agentPerms.dryRunMode === true
 
           // ── Каскад project → global (§permissions) ──
-          // Проектный override применяется ТОЛЬКО к главному агенту чата —
-          // суб-агенты имеют собственный approval-override от spawn_agent.
+          // Применяется одинаково к основному агенту и сабагентам проекта.
           const projectPerms = (this.store.get('projectPermissions') as
             Record<string, ProjectPermissionOverride> | undefined) ?? {}
-          const projOverride = this.role === 'main' && this.projectId
-            ? projectPerms[this.projectId]
-            : undefined
-          const mode = ((this.role === 'main' && projOverride?.approvalMode)
-            ?? baseMode) as 'auto' | 'ask' | 'full'
+          const projOverride = this.projectId ? projectPerms[this.projectId] : undefined
+          const mode = projOverride?.approvalMode ?? callbacks.approvalMode ?? 'auto'
           const autoSettings = resolveAutoModeSettings(agentPerms, projOverride)
           const forbiddenPaths = mergeForbiddenPaths(agentPerms.forbiddenPaths, projOverride)
 
@@ -1935,7 +2092,7 @@ export class Agent {
             // Гард нужен только на случай, когда его нет в наборе: персона с
             // явным allowlist или disabledTools. Тогда вызов отклоняется, а не
             // исполняется (модель может галлюцинировать имя).
-            if (fn.name === 'execute_code' && !activeSchemas.some(s => s.function.name === 'execute_code')) {
+            if (fn.name === 'execute_code' && !roundSchemas.some(s => s.function.name === 'execute_code')) {
               const unavailable = 'Tool "execute_code" is unavailable in the current mode.'
               resultMap.set(callId, { contentForAI: unavailable, callId, name: fn.name })
               callbacks.onStep({ type: 'tool_result', toolName: fn.name, content: unavailable, success: false, callId })
@@ -1955,7 +2112,10 @@ export class Agent {
                 },
                 callTool: async (toolName, toolArgs, childSignal) => {
                   if (childSignal?.aborted || signal?.aborted) return { success: false, output: '', error: 'Execution aborted' }
-                  if (toolName === 'execute_code' || !activeSchemas.some(s => s.function.name === toolName)) {
+                  // §orchestration — вложенный вызов из Code Mode не может
+                  // обойти фазовый allowlist: и схема, и сама фаза проверяются.
+                  if (toolName === 'execute_code' || !roundSchemas.some(s => s.function.name === toolName)
+                    || (orchestration && !isToolAllowedInPhase(orchestration.phase, toolName))) {
                     const reason = `Tool "${toolName}" is unavailable in the current run.`
                     return { success: false, output: '', error: reason }
                   }
@@ -2375,6 +2535,7 @@ export class Agent {
           consecutiveErrors + 1, MAX_CONSECUTIVE_ERRORS)
         if (error?.name === 'AbortError' || signal?.aborted) {
           nativeImageAnalysis.fail('Визуальный анализ остановлен до получения ответа модели.', callbacks.onStep)
+          blockOrchestration('aborted by the user')
           callbacks.onDone('')
           return
         }
@@ -2557,6 +2718,10 @@ export class Agent {
     this.toolDispatcher.undoStack = this.undoStack
     this.toolDispatcher.pendingDiffEntries = this.pendingDiffEntries
     this.toolDispatcher.fileMap = this.fileMap
-    return this.toolDispatcher.buildSummaryDetails(modifiedFiles)
+    const details = this.toolDispatcher.buildSummaryDetails(modifiedFiles)
+    // §orchestration — атрибуция расхода по моделям-ролям и история фаз
+    // уезжают вместе с итогом рана (main может персистить/показать).
+    if (this.orchestrationRuntime) details.orchestration = this.orchestrationRuntime.summary()
+    return details
   }
 }

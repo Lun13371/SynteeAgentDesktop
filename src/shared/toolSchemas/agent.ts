@@ -15,7 +15,6 @@ export const AGENT_TOOL_SCHEMAS = [
             enum: ['researcher', 'deep-researcher', 'editor', 'implementer', 'reviewer'],
             description: 'Sub-agent role determines available tools and built-in system prompt. researcher — read-only code investigation (no edits, no commands); deep-researcher — read-only + web search/HTTP for external research; editor — read + edit files (no run_command, verify via get_diagnostics); implementer — full capabilities (read + edit + run_command, default); reviewer — read-only code review. Choose the most restrictive role that can accomplish the task.',
           },
-          approval_mode: { type: 'string', enum: ['auto', 'ask', 'full'], description: 'Sub-agent approval mode (default: inherited from parent). full — no confirmations, ask — per tool, auto — smart detection' },
           isolation: { type: 'string', enum: ['auto', 'worktree', 'none'], description: 'Sub-agent file isolation. auto (default) — worktree only if there is a parallel sub-agent on this workdir, otherwise shared (sees parent WIP); worktree — always a separate git worktree from HEAD (for independent tasks: the sub-agent does not see the parent uncommitted edits, the delta is merged via git apply --3way); none — explicitly write to the parent workdir (only for dependent/read-only tasks). Non-git workdir always falls back to shared.' },
         },
         required: ['task'],

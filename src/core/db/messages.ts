@@ -19,8 +19,8 @@ export function setMessageSavedCallback(cb: (chatId: string) => void): void { _o
 /** Write the message row only. Callers own the surrounding transaction and side effects. */
 function writeMessageRow(msg: Message): void {
   getDB().prepare(`
-    INSERT OR REPLACE INTO messages (id, chat_id, role, content, created_at, is_pinned, model, tool_steps, thinking, thinking_ms, slash_command, iterations, plan_data, todo, compact_summary, compact_stats, attachments, attachment_result, duration_ms, prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens, tool_calls_count, thinking_blocks, finish_reason, streaming_ms, reply_to, hidden_from_context)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT OR REPLACE INTO messages (id, chat_id, role, content, created_at, is_pinned, model, tool_steps, thinking, thinking_ms, slash_command, iterations, plan_data, todo, compact_summary, compact_stats, attachments, attachment_result, duration_ms, prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens, tool_calls_count, thinking_blocks, finish_reason, streaming_ms, reply_to, hidden_from_context, orchestration)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     msg.id, msg.chatId, msg.role, msg.content, msg.createdAt, msg.isPinned, msg.model ?? null,
     msg.toolSteps ? JSON.stringify(msg.toolSteps) : null,
@@ -47,6 +47,8 @@ function writeMessageRow(msg: Message): void {
     msg.streamingMs ?? null,
     msg.replyTo ? JSON.stringify(msg.replyTo) : null,
     msg.hiddenFromContext ? 1 : 0,
+    // §orchestration — слим-снапшот фаз (main уже слил/урезал его).
+    msg.orchestration ? JSON.stringify(msg.orchestration) : null,
   )
 }
 
@@ -78,11 +80,11 @@ type MessageRow = Message & {
   toolStepsJson?: string; slashCommandJson?: string; iterationsJson?: string
   planDataJson?: string; todoJson?: string; compactStatsJson?: string
   attachmentsJson?: string; attachmentResultJson?: string
-  thinkingBlocksJson?: string; replyToJson?: string
+  thinkingBlocksJson?: string; replyToJson?: string; orchestrationJson?: string
 }
 
 function parseMessageRow(r: MessageRow): Message {
-  const { toolStepsJson, slashCommandJson, iterationsJson, planDataJson, todoJson, compactStatsJson, attachmentsJson, attachmentResultJson, thinkingBlocksJson, replyToJson, ...rest } = r
+  const { toolStepsJson, slashCommandJson, iterationsJson, planDataJson, todoJson, compactStatsJson, attachmentsJson, attachmentResultJson, thinkingBlocksJson, replyToJson, orchestrationJson, ...rest } = r
   return {
     ...rest,
     toolSteps: toolStepsJson ? JSON.parse(toolStepsJson) : undefined,
@@ -95,6 +97,7 @@ function parseMessageRow(r: MessageRow): Message {
     attachmentResult: attachmentResultJson ? JSON.parse(attachmentResultJson) : undefined,
     thinkingBlocks: thinkingBlocksJson ? JSON.parse(thinkingBlocksJson) : undefined,
     replyTo: replyToJson ? JSON.parse(replyToJson) : undefined,
+    orchestration: orchestrationJson ? JSON.parse(orchestrationJson) : undefined,
   }
 }
 
@@ -107,7 +110,7 @@ const MESSAGE_SELECT_COLS = `SELECT
   cache_read_tokens as cacheReadTokens, cache_write_tokens as cacheWriteTokens, tool_calls_count as toolCallsCount,
   finish_reason as finishReason,
   thinking_blocks as thinkingBlocksJson, hidden_from_context as hiddenFromContext,
-  reply_to as replyToJson`
+  reply_to as replyToJson, orchestration as orchestrationJson`
 
 export function getMessages(chatId: string): Message[] {
   const rows = getDB().prepare(`

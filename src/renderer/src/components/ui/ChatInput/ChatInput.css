@@ -1586,3 +1586,214 @@
 
 /* ── Inline-вложения — устаревший ряд (теперь чипы живут в тексте
    редактора, .ce-attach). Блок оставлен пустым намеренно. ──── */
+
+/* ── One-turn оркестрация (/orchestrate): компактный блок над строкой
+   статуса (модель/проект/размышление) ─────────────────────────────────────
+   Не режим-тумблер: живёт один ход. Оформлен тем же «стеклом», что инпут-бар
+   и плюс-панель (--glass-bg + blur), акцент берётся из темы (--accent), чтобы
+   плашка не выбивалась из остального UI. */
+.chat-orch-bar {
+  --orch: var(--accent);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0 0 6px;
+  padding: 9px 12px;
+  border-radius: var(--radius-lg);
+  border: 1px solid color-mix(in srgb, var(--orch) 26%, var(--border-strong));
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--orch) 10%, transparent), transparent 62%),
+    var(--glass-bg);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45), 0 2px 10px rgba(0, 0, 0, 0.3);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  overflow: hidden;
+}
+
+.chat-orch-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.chat-orch-head-icon {
+  display: inline-flex;
+  color: var(--orch);
+  flex-shrink: 0;
+}
+
+.chat-orch-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: 0.01em;
+}
+
+.chat-orch-badge {
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--orch);
+  background: color-mix(in srgb, var(--orch) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--orch) 32%, transparent);
+  flex-shrink: 0;
+}
+
+.chat-orch-main {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 45%;
+}
+
+.chat-orch-main b {
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.chat-orch-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.chat-orch-close:hover {
+  background: var(--overlay-4, rgba(255, 255, 255, 0.08));
+  color: var(--text-primary);
+}
+
+.chat-orch-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: 8px 10px;
+}
+
+.chat-orch-role {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.chat-orch-role-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.chat-orch-required {
+  color: var(--orch);
+  font-style: normal;
+  margin-left: 2px;
+}
+
+/* Пикер + effort в одном ряду: колонки ролей остаются одной высоты, вторая
+   роль не «съезжает» вниз при появлении селектора мышления. */
+.chat-orch-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.chat-orch-picker {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.chat-orch-picker > * {
+  width: 100%;
+}
+
+/* Пикер внутри стеклянной плашки: чуть прозрачнее, чтобы не выглядеть
+   «плашкой в плашке» (единый стиль со строкой статуса). */
+.chat-orch-picker .model-picker-btn {
+  background: color-mix(in srgb, var(--bg-secondary) 74%, transparent);
+}
+
+.chat-orch-reset {
+  align-self: flex-start;
+  margin-top: 2px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  font-size: 11px;
+  color: var(--text-muted);
+  cursor: pointer;
+  text-decoration: underline dotted;
+}
+
+.chat-orch-reset:hover {
+  color: var(--text-primary);
+}
+
+.chat-orch-error {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: #f87171;
+}
+
+/* Кнопка отправки при заблокированной оркестрации (нет исполнителя):
+   визуально «не нажимается», причина — в tooltip и в блоке над инпутом. */
+.chat-input-action-btn--blocked {
+  opacity: 0.45;
+  cursor: not-allowed;
+  filter: grayscale(0.6);
+}
+
+/* Effort (уровень мышления) роли в блоке оркестрации — компактный селектор
+   рядом с пикером модели (не под ним: иначе колонки разъезжаются). */
+.chat-orch-effort {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+
+/* Адаптив: на узком композере роли — в одну колонку, «Координатор» уходит
+   на свою строку, чтобы не давить заголовок и крестик. */
+@media (max-width: 720px) {
+  .chat-orch-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .chat-orch-head {
+    flex-wrap: wrap;
+    row-gap: 4px;
+  }
+
+  .chat-orch-main {
+    order: 3;
+    flex-basis: 100%;
+    max-width: 100%;
+    margin-left: 0;
+  }
+}
+
+/* Пункт «Оркестрация» в плюс-меню: активный статус — акцентный бейдж (тон
+   темы, как у остальных активных элементов). */
+.plus-cat-count--accent {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 34%, transparent);
+}

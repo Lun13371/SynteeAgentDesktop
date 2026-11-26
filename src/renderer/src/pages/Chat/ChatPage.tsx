@@ -41,6 +41,20 @@ import { useRightPanelTabsStore } from '../../store/rightPanelTabs.store'
 import { useTabsStore, tabActions } from '../../store/tabs.store'
 import { parseSlashCommandWithCustom, hydrateCommands } from '../../../../shared/slashCommands'
 import type { SlashCommand } from '../../../../shared/slashCommands'
+import type { OrchestrationSelection } from '../../../../shared/orchestration'
+import type { OrchestrationResume } from '../../../../shared/orchestration'
+import { collectFileChanges } from '../../../../shared/fileChanges'
+import {
+  ORCHESTRATION_BY_CHAT_KEY,
+  ORCHESTRATION_DEFAULTS_KEY,
+  isOrchestrationModel,
+  normalizeOrchestrationDefaults,
+  readOrchestrationForChat,
+  validateOrchestration,
+  writeOrchestrationForChat,
+  type OrchestrationDefaults,
+  type OrchestrationIssueText,
+} from '../../utils/orchestration'
 import { stripAttachTokens } from '../../../../shared/attachmentMarkdown'
 import { toSteerAttachmentMeta } from '../../../../shared/steer'
 import { attachmentKindFromMime, mimeFromExt } from '../../../../shared/mentions'
@@ -113,7 +127,7 @@ const VirtualMessageItem = memo(function VirtualMessageItem({
   msg, vItemStart, vItemIndex, measureRef,
   toolOutputMode, onPin, onCopy, onReply, onRewind,
   searchQuery, liveThinking, isStreaming, isWaiting, rateLimitSec, shouldAnimate,
-  workdir, editorAvailable,
+  workdir, editorAvailable, onOrchestrationContinue, orchestrationContinued,
 }: {
   msg: Message
   vItemStart: number
@@ -132,6 +146,8 @@ const VirtualMessageItem = memo(function VirtualMessageItem({
   shouldAnimate?: boolean
   workdir?: string
   editorAvailable?: boolean
+  onOrchestrationContinue?: (message: Message) => void
+  orchestrationContinued?: boolean
 }) {
   return (
     <div
@@ -155,6 +171,8 @@ const VirtualMessageItem = memo(function VirtualMessageItem({
         shouldAnimate={shouldAnimate}
         workdir={workdir}
         editorAvailable={editorAvailable}
+        onOrchestrationContinue={onOrchestrationContinue}
+        orchestrationContinued={orchestrationContinued}
       />
     </div>
   )
@@ -178,7 +196,9 @@ const VirtualMessageItem = memo(function VirtualMessageItem({
   prev.rateLimitSec === next.rateLimitSec &&
   prev.shouldAnimate === next.shouldAnimate &&
   prev.workdir === next.workdir &&
-  prev.editorAvailable === next.editorAvailable
+  prev.editorAvailable === next.editorAvailable &&
+  prev.onOrchestrationContinue === next.onOrchestrationContinue &&
+  prev.orchestrationContinued === next.orchestrationContinued
 )
 
 function ChatPage({ embedded = false }: { embedded?: boolean }) {
@@ -372,6 +392,19 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   // вручную (плюс-меню) или через подтверждение request_access от AI.
   const [browserMode, setBrowserMode] = useState(false)
   const browserModeRef = useRef(false)
+  // ── One-turn оркестрация (/orchestrate) ────────────────────────────────
+  // Не режим и не глобальная настройка: выбор исполнителя/ревьюера живёт
+  // один ход и снимается после ПРИНЯТОЙ отправки. Сам выбор запоминается
+  // ПО ЧАТАМ в настройках (settings['orchestrationByChat']) — переживает
+  // перезапуск; глобальные дефолты лежат в settings['orchestrationDefaults'].
+  const [orchestration, setOrchestration] = useState<OrchestrationSelection | null>(null)
+  const [orchestrationIssue, setOrchestrationIssue] = useState<OrchestrationIssueText | null>(null)
+  // Сообщения, по которым уже нажали «Продолжить»: кнопка не должна висеть и
+  // давать создать второй ход повторным кликом.
+  const [continuedMsgIds, setContinuedMsgIds] = useState<Set<string>>(() => new Set())
+  // Сигнал ChatInput «очисти поле» (см. clearDraftToken в ChatInput): нужен
+  // потому, что в режиме оркестрации инпут не чистит ввод оптимистично.
+  const [draftClearToken, setDraftClearToken] = useState(0)
   // ── Вложения черновика (attachments) — переживают рестарт как и draft. ──
   // Хранятся в chat_draft_attachments + файлы в userData/draft-attachments/.
   // При отправке передаются в chat.send, draft очищается.
@@ -431,6 +464,58 @@ function ChatPage({ embedded = false }: { embedded?: boolean }) {
   // при создании нового чата (стейт в замыкании протухает в useCallback).
   const mainModelRef = useRef<{ modelId: string; providerId: string } | null>(null)
   const currentChatIdRef = useRef<string | null>(null)
+
+  // ── One-turn оркестрация: дефолты из настроек + per-chat быстрый выбор ──
+  // Дефолты (Settings → AI → Оркестрация) — только сид для блока над инпутом;
+  // сам выбор живёт один ход и НЕ пишется глобально.
+  const orchestrationDefaultsRaw = useSettingsStore(s => s.settings[ORCHESTRATION_DEFAULTS_KEY])
+  const orchestrationDefaults: OrchestrationDefaults = useMemo(
+    () => normalizeOrchestrationDefaults(orchestrationDefaultsRaw),
+    [orchestrationDefaultsRaw]
+  )
+
+  /** Выбор исполнителя явный: основная модель никогда не подставляется за него. */
+  const handleOrchestrationActivate = useCallback(() => {
+    if (orchestration) { setOrchestrationIssue(null); return }
+    // Сначала — что выбирали в ЭТОМ чате раньше (переживает перезапуск),
+    // потом глобальные дефолты из настроек, иначе пустой исполнитель.
+    const remembered = readOrchestrationForChat(
+      useSettingsStore.getState().settings[ORCHESTRATION_BY_CHAT_KEY],
+      currentChatId,
+    )
+    setOrchestration(remembered ?? {
+      ...orchestrationDefaults,
+      executor: orchestrationDefaults.executor ?? { providerId: '', modelId: '' },
+    })
+    setOrchestrationIssue(null)
+  }, [orchestration, orchestrationDefaults, currentChatId])
+
+  /** Изменить выбор в блоке над инпутом (null — выключить оркестрацию). */
+  const handleOrchestrationChange = useCallback((next: OrchestrationSelection | null) => {
+    setOrchestration(next)
+    setOrchestrationIssue(null)
+    // Пишем в стор на каждое изменение (модель, effort, ревьюер): иначе выбор
+    // терялся после перезапуска и при возврате в чат. Закрытие блока (null) и
+    // ещё не выбранный исполнитель сохранённое НЕ затирают.
+    if (!currentChatId || !next || !isOrchestrationModel(next.executor)) return
+    const store = useSettingsStore.getState()
+    void store.set(
+      ORCHESTRATION_BY_CHAT_KEY,
+      writeOrchestrationForChat(store.settings[ORCHESTRATION_BY_CHAT_KEY], currentChatId, next),
+    )
+  }, [currentChatId])
+
+  // Переключение чата — подставляем выбор этого чата. Если в чате ещё ничего
+  // не выбирали, оставляем текущий (не закрываем блок молча).
+  useEffect(() => {
+    const saved = readOrchestrationForChat(
+      useSettingsStore.getState().settings[ORCHESTRATION_BY_CHAT_KEY],
+      currentChatId,
+    )
+    if (saved) setOrchestration(saved)
+    setOrchestrationIssue(null)
+  }, [currentChatId])
+
   const [reasoningValue, setReasoningValue] = useState('')
   // Глобальный reasoning (дефолт для чатов без своего значения) и ref текущего
   // значения — для наследования при создании нового чата.
@@ -1627,9 +1712,39 @@ const chatId = compactingCurrentChatIdRef.current
     return () => { tabActions.selectChat = null; tabActions.createInContext = null }
   }, [selectChat, createNewChat, createChatWithoutProject])
 
-  const handleSend = useCallback(async (text: string) => {
+  const handleSend = useCallback(async (text: string, override?: { orchestration?: OrchestrationSelection | null; orchestrationResume?: OrchestrationResume | null }) => {
     const raw = text.trim()
     const slash = parseSlashCommandWithCustom(raw, customCommands)
+
+    // ── /orchestrate — one-turn оркестрация ─────────────────────────────
+    // Обычно команду снимает ChatInput (активация без потери черновика).
+    // Сюда попадает «сырой» путь (плагин/silent send): включаем блок выбора
+    // моделей и оставляем остаток текста в поле — ничего не отправляем.
+    if (slash?.command.orchestration || /^\/orchestrate(?:\s+|$)/i.test(raw)) {
+      const rest = raw.replace(/^\/orchestrate\s*/i, '')
+      handleOrchestrationActivate()
+      if (rest !== draftRef.current) {
+        draftRef.current = rest
+        setDraft(rest)
+        setDraftLive(rest)
+      }
+      return
+    }
+
+    // Валидация one-turn выбора ДО любых side-effect'ов: при отказе текст и
+    // вложения остаются в поле (ChatInput в этом режиме их не чистит).
+    // override — «Продолжить» с карточки: выбор берётся из сохранённого за
+    // чат, а не из блока над инпутом (он может быть закрыт).
+    const activeOrchestration = override?.orchestration !== undefined ? override.orchestration : orchestration
+    const orchestrationIssueNow = validateOrchestration(activeOrchestration)
+    if (orchestrationIssueNow) {
+      setOrchestrationIssue(orchestrationIssueNow)
+      toast(orchestrationIssueNow.ru, 'error')
+      return
+    }
+    // Снапшот выбора на момент клика: дальше пользователь может менять блок,
+    // а отправка уходит ровно с тем, что видно сейчас.
+    const orchestrationToSend: OrchestrationSelection | undefined = activeOrchestration ?? undefined
 
     // При отправке сообщения — принудительно закрепляем автоскролл.
     // Пользователь ожидает увидеть своё сообщение и ответ, даже если до этого
@@ -2049,7 +2164,16 @@ const chatId = compactingCurrentChatIdRef.current
         const hook = await window.syntee.plugins.beforeSend({ chatId, content: contentToSend }) as { allowed?: boolean; content?: string; reason?: string }
         if (hook && hook.allowed === false) {
           // Восстанавливаем текст в инпуте (ChatInput очистил его при onSend).
-          handleDraftChange(raw)
+          // Для one-turn оркестрации поле не чистилось — восстанавливать
+          // нечего, и нельзя затирать свежие правки пользователя.
+          if (orchestrationToSend) {
+            setOrchestrationIssue({
+              ru: hook.reason ? `Оркестрация отклонена плагином: ${hook.reason}` : 'Оркестрация отклонена плагином',
+              en: hook.reason ? `Orchestration rejected by a plugin: ${hook.reason}` : 'Orchestration rejected by a plugin',
+            })
+          } else {
+            handleDraftChange(raw)
+          }
           toast(hook.reason ? `Отправка отклонена плагином: ${hook.reason}` : 'Отправка отклонена плагином', 'error')
           return
         }
@@ -2070,7 +2194,9 @@ const chatId = compactingCurrentChatIdRef.current
     // обновился (чипы пропадут из инпута). main-процесс получит их в params.
     // mergedAttachments = draft + вложения реплайнутых сообщений (source:'reply').
     const attachmentsToSend = mergedAttachments
-    if (!isIncognito && chatId) {
+    // One-turn оркестрация: чипы снимаем только после принятой отправки
+    // (см. ниже) — при отказе пользователь не теряет вложения.
+    if (!isIncognito && chatId && !orchestrationToSend) {
       setDraftAttachments([])
       draftAttachmentsRef.current = []
       window.syntee.draft.clearAttachments(chatId).catch(() => {})
@@ -2088,7 +2214,9 @@ const chatId = compactingCurrentChatIdRef.current
     // ответы придут позже (assistant1 assistant2 assistant3). Вместо этого
     // откладываем до статуса 'running' (когда запрос реально стартует) —
     // порядок будет нормальным: user1 → assistant1 → user2 → assistant2.
-    const result = await window.syntee.chat.send({
+    // orchestration уже есть в типе chat.send (preload), поэтому каст не нужен:
+    // опечатка в имени поля теперь ловится компилятором.
+    const sendParams = {
       chatId,
       content: contentToSend,
       displayContent: displayContent !== aiContent ? displayContent : undefined,
@@ -2117,7 +2245,56 @@ const chatId = compactingCurrentChatIdRef.current
       attachments: attachmentsToSend.length > 0 ? attachmentsToSend : undefined,
       // Реплай-цитаты — main строит из них цитату для AI и персистит в БД.
       replyTo: replyMeta,
-    }) as { queued?: boolean; assistantMsgId?: string }
+      // One-turn оркестрация: только на этот запрос. Основная модель чата НЕ
+      // меняется — main снимает снапшот планировщика из текущей модели чата.
+      orchestration: orchestrationToSend,
+      // §resume — продолжение прерванного рана: план + сделанное. Без него
+      // новый ран начинается с планирования и «исследует запрос» заново.
+      orchestrationResume: override?.orchestrationResume ?? undefined,
+    }
+
+    let result: { queued?: boolean; assistantMsgId?: string }
+    try {
+      result = await window.syntee.chat.send(sendParams)
+    } catch (e) {
+      // Отказ старта: показываем причину в блоке оркестрации (черновик и
+      // вложения не тронуты — ChatInput их в этом режиме не чистит).
+      if (orchestrationToSend) {
+        const msg = String((e as Error)?.message ?? e)
+        setOrchestrationIssue({
+          ru: `Оркестрация не запустилась: ${msg}`,
+          en: `Orchestration could not start: ${msg}`,
+        })
+      }
+      throw e
+    }
+
+    // Принятая отправка — снимаем АКТИВНЫЙ one-turn выбор и чистим поле/чипы.
+    // Запомненный выбор чата (settings['orchestrationByChat']) НЕ удаляем: блок
+    // просто закрывается, а следующий /orchestrate в этом чате поднимет тот же
+    // выбор — включая модель и уровень мышления.
+    if (orchestrationToSend) {
+      // Сверяемся с ЖИВЫМ чатом: пока шёл IPC, пользователь мог переключиться
+      // или создать другой чат. Тогда setOrchestration/очистка черновика
+      // относятся уже к ДРУГОМУ чату — трогать их нельзя (иначе снесём новый
+      // текст/вложения и закроем блок в новом чате).
+      const stillHere = currentChatIdRef.current === chatId
+      if (stillHere) {
+        setOrchestration(null)
+        setOrchestrationIssue(null)
+        // Текст не тронут — снимаем его; начал печатать заново — оставляем.
+        if (draftRef.current.trim() === raw) setDraftClearToken(t => t + 1)
+        if (!isIncognito && chatId) {
+          // Снимаем только отправленные чипы: добавленные после клика остаются.
+          const sentIds = new Set(attachmentsToSend.map(a => a.id))
+          const left = draftAttachmentsRef.current.filter(a => !sentIds.has(a.id))
+          setDraftAttachments(left)
+          draftAttachmentsRef.current = left
+          if (left.length === 0) window.syntee.draft.clearAttachments(chatId).catch(() => {})
+          else window.syntee.draft.setAttachments(chatId, left).catch(() => {})
+        }
+      }
+    }
 
     if (result.queued && result.assistantMsgId) {
       // Запрос поставлен в очередь — откладываем user-сообщение до старта.
@@ -2164,7 +2341,60 @@ const chatId = compactingCurrentChatIdRef.current
       if (isGoalCommand) toast('Не удалось запустить цель: ' + String(e), 'error')
       else throw e
     } finally { if (isGoalCommand) goalActionRef.current = false }
-  }, [customCommands, currentChatId, activeProjectId, isIncognito, activeMode, planningMode, askMode, imageMode, replyTo, toast, setMessages, setChats, setCurrentChat, setProjects, setActiveProject, addMessage, pinAutoscroll, handleDraftChange, applyGoal, stopChatRun])
+  }, [customCommands, currentChatId, activeProjectId, isIncognito, activeMode, planningMode, askMode, imageMode, replyTo, toast, setMessages, setChats, setCurrentChat, setProjects, setActiveProject, addMessage, pinAutoscroll, handleDraftChange, applyGoal, stopChatRun, orchestration, handleOrchestrationActivate])
+
+  /**
+   * «Продолжить» с карточки прерванного рана.
+   *
+   * Это НЕ возобновление убитого воркера (его нет), а новый ход с сохранённой
+   * историей: исполнитель видит сделанное и доделывает остаток. Выбор моделей
+   * берём в порядке надёжности — сохранённый за чат → модели из фаз карточки →
+   * активный блок → дефолты настроек. Модель молча не подставляем: если ничего
+   * нет, продолжаем обычным ходом.
+   */
+  const handleOrchestrationContinue = useCallback((message: Message) => {
+    const store = useSettingsStore.getState()
+    const fromCard = (() => {
+      const phases = message.orchestration ?? []
+      const executor = phases.find(p => p.phase === 'executing')?.model
+      if (!isOrchestrationModel(executor)) return null
+      const reviewer = phases.find(p => p.phase === 'reviewing')?.model
+      return isOrchestrationModel(reviewer) ? { executor, reviewer } : { executor }
+    })()
+    const selection = readOrchestrationForChat(store.settings[ORCHESTRATION_BY_CHAT_KEY], currentChatId)
+      ?? fromCard
+      ?? (isOrchestrationModel(orchestration?.executor) ? orchestration : null)
+      ?? (isOrchestrationModel(orchestrationDefaults.executor)
+        ? {
+            executor: orchestrationDefaults.executor,
+            ...(isOrchestrationModel(orchestrationDefaults.reviewer)
+              ? { reviewer: orchestrationDefaults.reviewer }
+              : {}),
+          }
+        : null)
+    const text = lang === 'en'
+      ? 'Continue the task from where it stopped. Do not restart from scratch: check the actual state of the files and the unfinished plan items, finish the remainder, and run the checks.'
+      : 'Продолжи выполнение задачи с того места, где остановился. Не начинай заново: проверь фактическое состояние файлов и незавершённые пункты плана, доделай остаток и доведи до проверки.'
+    // §resume — главное: план уже утверждён, поэтому ран стартует СРАЗУ с
+    // исполнения, без фазы Planning. План берём из последней planning/
+    // replanning-фазы карточки, «сделано» — из фактических изменений файлов.
+    const phases = message.orchestration ?? []
+    const planPhase = phases
+      .filter(p => (p.phase === 'planning' || p.phase === 'replanning') && p.plan)
+      .sort((a, b) => a.startedAt - b.startedAt)
+      .pop()
+    const done = collectFileChanges(message.toolSteps).map(c =>
+      `${c.path}${c.created ? ' (created)' : ` (+${c.adds} −${c.dels})`}`)
+    const resume: OrchestrationResume | undefined = planPhase?.plan || done.length
+      ? {
+          ...(planPhase?.plan ? { plan: planPhase.plan } : {}),
+          ...(done.length ? { done } : {}),
+        }
+      : undefined
+    // Кнопка больше не нужна: повторный клик создал бы второй ход.
+    setContinuedMsgIds(prev => new Set(prev).add(message.id))
+    void handleSend(text, { orchestration: selection, orchestrationResume: resume })
+  }, [currentChatId, orchestration, orchestrationDefaults, handleSend, lang])
 
   // ── plugins:chat-action — действия из плагинов в текущем чате ──
   //   send:   отправить сообщение от имени пользователя (silent — вставить в инпут;
@@ -2944,6 +3174,8 @@ const chatId = compactingCurrentChatIdRef.current
                       shouldAnimate={shouldAnimate}
                       workdir={currentWorkdir}
                       editorAvailable={!isIncognito}
+                      onOrchestrationContinue={handleOrchestrationContinue}
+                      orchestrationContinued={continuedMsgIds.has(msg.id)}
                     />
                   )
                 })}
@@ -3053,6 +3285,11 @@ const chatId = compactingCurrentChatIdRef.current
               onGitSyncOpenGit={handleGitSyncOpenGit}
               projectId={currentProject?.id ?? null}
               projectName={currentProject?.name}
+              orchestration={orchestration}
+              onOrchestrationActivate={handleOrchestrationActivate}
+              onOrchestrationChange={handleOrchestrationChange}
+              orchestrationIssue={orchestrationIssue}
+              clearDraftToken={draftClearToken}
             />
           </div>
 
