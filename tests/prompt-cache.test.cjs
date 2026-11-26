@@ -39,16 +39,21 @@ function readSource(file) {
 
 // ─── stubs ──────────────────────────────────────────────────────────────────
 const empty = () => ''
+const mapGuidance = load('src/shared/codeNavigationGuidance.ts')
+const { buildCodeModeBlock } = load('src/core/prompts/sections/codeModeSection.ts', {
+  '../../../shared/codeNavigationGuidance': mapGuidance,
+})
+const { buildProjectMapBlock } = load('src/core/prompts/sections/projectMapSection.ts')
 const builder = load('src/core/prompts/buildSystemPrompt.ts', {
   './sections': {
-    buildCodeModeBlock: () => '## Code mode\nmode-body',
+    buildCodeModeBlock,
     buildSkillsBlock: empty,
     buildOneShotSkillBlock: empty,
     buildPluginsBlock: empty,
     buildInstallPathsBlock: empty,
     buildMemoryStatsBlock: () => '## Memory\nstats-body',
     buildGraphStatsBlock: empty,
-    buildProjectMapBlock: () => '## Project map\nmap-body',
+    buildProjectMapBlock,
     buildSecretsBlock: empty,
     buildPlanningInjection: empty,
     buildAskInjection: empty,

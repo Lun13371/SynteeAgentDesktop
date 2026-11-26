@@ -78,7 +78,9 @@ test('core and code-mode prompts describe the active platform and shell', () => 
     const sections = new Proxy({}, { get: () => () => '' })
     const builder = load('src/core/prompts/buildSystemPrompt.ts', { './sections': sections, '../../shared/toolSettings': {} }, platform)
     assert.ok(builder.buildSystemPromptParts({}).staticPart.startsWith(`You are Syntee — a personal AI assistant for ${osName}.`))
-    const codeMode = load('src/core/prompts/sections/codeModeSection.ts', {}, platform).buildCodeModeBlock()
+    const codeMode = load('src/core/prompts/sections/codeModeSection.ts', {
+      '../../../shared/codeNavigationGuidance': load('src/shared/codeNavigationGuidance.ts', {}, platform),
+    }, platform).buildCodeModeBlock()
     assert.ok(codeMode.includes(`You are running on ${osName}.`))
     assert.ok(codeMode.includes(`use ${shell}-compatible commands by default`))
   }

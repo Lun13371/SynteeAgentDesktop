@@ -88,7 +88,8 @@ export async function getSystemPrompt(store: Store, chatId?: string, isIncognito
         workdir = wctx.workdir
         projectContext = wctx.projectContext
         if (workdir) {
-          const found = getAllProjects().find(p => p.workdir === workdir)
+          const normalizedWorkdir = path.resolve(workdir)
+          const found = getAllProjects().find(p => path.resolve(p.workdir) === normalizedWorkdir)
           promptProjectId = found?.id
         }
       }
@@ -180,18 +181,15 @@ export async function getSystemPrompt(store: Store, chatId?: string, isIncognito
       }
     }
 
-    // Project map (граф кода) — агент знает, что структурный граф доступен,
-    // и получает правило «структурные вопросы — сначала project_map».
+    // Only index state goes in the session tail; tool guidance stays static.
     const projectMapInfo = withRetrySync('projectMap', () => {
       if (!promptProjectId) return undefined
       const st = getProjectMapStatus(promptProjectId)
-      if (st.totalNodes === 0) return undefined
       return {
         state: st.state,
         files: st.indexedFiles,
         nodes: st.totalNodes,
         edges: st.totalEdges,
-        pendingFiles: Math.max(0, st.totalFiles - st.indexedFiles),
       }
     }, undefined)
 

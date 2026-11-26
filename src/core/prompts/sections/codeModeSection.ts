@@ -4,6 +4,7 @@
  * with files, commands, and which tool to prefer for which task.
  */
 
+import { PROJECT_MAP_GUIDANCE } from '../../../shared/codeNavigationGuidance'
 import type { ProjectInstructions } from '../projectInstructions'
 import type { CodeModeBlockParams } from './_shared'
 
@@ -45,7 +46,9 @@ You are running on ${osName}. When using run_command:
 ${shellInstructions}${windowsEncoding}${workdirBlock}
 
 ## Tools
-Use only exposed tools. For unfamiliar code, locate relevant files with search_code or find_files, then read the implementation. Batch independent reads with read_files. Use targeted ranges for large files and narrow broad searches.
+Use only exposed tools. For exact text use search_code; for file names use find_files; if the relevant file is already known, read it directly. Batch independent reads with read_files. Use targeted ranges for large files and narrow broad searches.
+
+${PROJECT_MAP_GUIDANCE} The project map status in session context describes index availability, not tool permissions.
 
 - Read a file before editing. Use edit_file with exact old_str and new_str for targeted changes, and write_file for new files or full rewrites.
 

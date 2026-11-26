@@ -43,7 +43,7 @@ export interface SubagentRoleDef {
 // Переиспользуем паттерн из modes.ts: BASE + RESEARCH + EDIT_NO_RUN.
 
 const READ_TOOLS = [
-  'read_file', 'read_files', 'find_files', 'search_code', 'list_directory',
+  'read_file', 'read_files', 'find_files', 'search_code', 'list_directory', 'project_map',
   'get_diagnostics',
   'recall_memory',
 ] as const

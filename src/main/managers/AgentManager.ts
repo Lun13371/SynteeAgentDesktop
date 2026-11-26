@@ -30,6 +30,7 @@ import { saveSubagent, loadAllSubagents, loadSubagentOverview, deleteSubagentsBy
 import type { SubagentOverviewItem } from '../../shared/types/subagentOverview'
 import { getChatBrowserMode } from '../../core/db/chats'
 import { getSubagentRole, buildSubagentSystemPrompt } from '../../shared/subagent-roles'
+import { buildSubagentMapGuidance } from '../../shared/codeNavigationGuidance'
 import { stripFinalMarkers } from '../../shared/finalAnswer'
 import { activeRuns, confirmCallbacks, questionCallbacks } from '../ipc/chatShared'
 import { getNotificationManager } from './NotificationManager'
@@ -793,7 +794,8 @@ class AgentManager {
             return roleDef.allowedTools.includes(name)
           })
         : fullSchemas
-      ).filter(s => !NO_NESTED_TOOLS.has((s as { function: { name: string } }).function.name))
+      ).filter(s => !NO_NESTED_TOOLS.has(s.function.name)
+        && (s.function.name !== 'project_map' || !!context?.projectId))
       // §roles — subagentRole для Agent.run() options (defense-in-depth в Agent.ts)
       const subagentRole = record.role
 
@@ -802,7 +804,12 @@ class AgentManager {
       const fallbackSystemPrompt = buildSubagentSystemPrompt({ role: roleDef, task: record.task })
       // §worktree — добавляем блок с реальной workdir суб-агента (worktree или
       // workdir проекта) к промпту из контекста или fallback.
-      const effectiveSystemPrompt = (context?.systemPrompt ?? fallbackSystemPrompt) + workdirNotice
+      const mapGuidance = buildSubagentMapGuidance({
+        hasProject: !!context?.projectId,
+        hasMapTool: effectiveToolSchemas.some(s => s.function.name === 'project_map'),
+        isolatedWorktree: !!record.worktreeInfo,
+      })
+      const effectiveSystemPrompt = (context?.systemPrompt ?? fallbackSystemPrompt) + workdirNotice + mapGuidance
 
       worker.postMessage({
         chatId: `subagent:${record.id}`,
