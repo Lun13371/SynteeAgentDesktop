@@ -33,6 +33,24 @@ test('автозапуск лаунчера переводится на новы
   assert.match(installerScript, /WriteRegStr HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Run" "\$1" '"\$INSTDIR\\\$\{APP_EXECUTABLE_FILENAME\}"'/)
 })
 
+test('ярлыки переписываются на новый exe после удаления current\\', () => {
+  // При повторной установке штатный addDesktopLink видит KeepShortcuts=true
+  // и одинаковые old/new пути — и не трогает ярлык. Без своей перезаписи
+  // ярлык остался бы битым: он указывал бы на удалённый current\.
+  assert.match(installerScript, /!macro syntee_repointShortcuts/)
+  assert.match(installerScript, /CreateShortCut "\$newDesktopLink" "\$INSTDIR\\\$\{APP_EXECUTABLE_FILENAME\}"/)
+  assert.match(installerScript, /CreateShortCut "\$newStartMenuLink" "\$INSTDIR\\\$\{APP_EXECUTABLE_FILENAME\}"/)
+  // Перезапись идёт после удаления current\.
+  const cleanupAt = installerScript.indexOf('!insertmacro syntee_removeLegacyLauncherFiles')
+  const repointAt = installerScript.indexOf('!insertmacro syntee_repointShortcuts')
+  assert.ok(cleanupAt > 0 && repointAt > cleanupAt, 'ярлыки переписываются после зачистки лаунчера')
+})
+
+test('nsExec в .onInit снимает код возврата со стека', () => {
+  // nsExec::Exec оставляет результат на стеке; в .onInit это мусор.
+  assert.match(installerScript, /nsExec::Exec 'taskkill \/f \/im syntee-launcher\.exe'\s*\n\s*Pop \$0/)
+})
+
 test('установщик не трогает данные пользователя и собственный каталог', () => {
   // Данные приложения лежат в %APPDATA%\SynteeHelper — их удалять нельзя.
   assert.doesNotMatch(installerScript, /APPDATA\\SynteeHelper/)

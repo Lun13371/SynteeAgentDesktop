@@ -54,7 +54,24 @@
 
   # Лаунчер при старте «починяет» ярлыки на свой current\Syntee Helper.exe.
   # Гасим его до установки, иначе после неё ярлык снова смотрел бы на 1.1.4.
+  # nsExec кладёт код возврата на стек — снимаем его, чтобы не оставлять
+  # мусор в стеке .onInit.
   nsExec::Exec 'taskkill /f /im syntee-launcher.exe'
+  Pop $0
+!macroend
+
+# Ярлыки прежней установки указывают на current\Syntee Helper.exe. При первой
+# установке штатный addDesktopLink их пересоздаёт (keepShortcuts = false), но
+# при повторной установке он видит KeepShortcuts = true и одинаковые old/new
+# пути — и не трогает ярлык вообще. Переписываем сами, чтобы ярлык никогда не
+# остался указывать на удалённый current\.
+!macro syntee_repointShortcuts
+  IfFileExists "$newDesktopLink" 0 syntee_no_desktop_link
+    CreateShortCut "$newDesktopLink" "$INSTDIR\${APP_EXECUTABLE_FILENAME}" "" "$INSTDIR\${APP_EXECUTABLE_FILENAME}" 0 "" "" "${APP_DESCRIPTION}"
+  syntee_no_desktop_link:
+  IfFileExists "$newStartMenuLink" 0 syntee_no_menu_link
+    CreateShortCut "$newStartMenuLink" "$INSTDIR\${APP_EXECUTABLE_FILENAME}" "" "$INSTDIR\${APP_EXECUTABLE_FILENAME}" 0 "" "" "${APP_DESCRIPTION}"
+  syntee_no_menu_link:
 !macroend
 
 !macro customInstall
@@ -62,6 +79,7 @@
   IfFileExists "$INSTDIR\launcher.json" 0 syntee_no_legacy_launcher
   !insertmacro syntee_removeLegacyLauncherFiles
   !insertmacro syntee_repointAutostart
+  !insertmacro syntee_repointShortcuts
   syntee_no_legacy_launcher:
 
   # Своя запись лаунчера в «Установке и удаление программ». Установщик
