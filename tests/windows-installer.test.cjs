@@ -46,6 +46,12 @@ test('ярлыки переписываются на новый exe после �
   assert.ok(cleanupAt > 0 && repointAt > cleanupAt, 'ярлыки переписываются после зачистки лаунчера')
 })
 
+test('запущенный sidecar гасится перед удалением лишней установки', () => {
+  // syntee-sidecar.exe — отдельный процесс с другим именем, CHECK_APP_RUNNING
+  // его не трогает. С запущенным sidecar каталог не удалится.
+  assert.match(installerScript, /taskkill \/f \/im syntee-sidecar\.exe/)
+})
+
 test('nsExec в .onInit снимает код возврата со стека', () => {
   // nsExec::Exec оставляет результат на стеке; в .onInit это мусор.
   assert.match(installerScript, /nsExec::Exec 'taskkill \/f \/im syntee-launcher\.exe'\s*\n\s*Pop \$0/)

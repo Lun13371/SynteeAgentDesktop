@@ -89,7 +89,12 @@
 
   # Установка 1.1.5, сделанная до этого исправления, лежит рядом в каталоге
   # со строчными буквами — убираем, чтобы не осталось двух копий приложения.
+  # Sidecar — отдельный процесс со своим именем, CHECK_APP_RUNNING его не
+  # трогает; с запущенным syntee-sidecar.exe каталог не удалится.
   StrCmp $INSTDIR "$LOCALAPPDATA\Programs\syntee-helper" syntee_skip_stray_install
+  nsExec::Exec 'taskkill /f /im syntee-sidecar.exe'
+  Pop $0
+  Sleep 300
   RMDir /r "$LOCALAPPDATA\Programs\syntee-helper"
   syntee_skip_stray_install:
 !macroend
